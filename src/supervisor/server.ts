@@ -61,10 +61,36 @@ interface LiveSession {
   readonly summary: SupervisorSession;
   readonly identityKey: string;
   readonly createdAt: string;
-  readonly server: StaticSessionServer;
+  readonly server: ManagedStaticSessionServer;
 }
 
-type StartSessionServer = (grant: ServingGrant) => Promise<StaticSessionServer>;
+interface ManagedStaticSessionServer extends StaticSessionServer {
+  close(): Promise<void>;
+}
+
+type StartSessionServer = (
+  grant: ServingGrant,
+) => Promise<ManagedStaticSessionServer>;
+
+async function acquireStaticServer(
+  grant: ServingGrant,
+): Promise<ManagedStaticSessionServer> {
+  const scope = await Effect.runPromise(Scope.make());
+  try {
+    const server = await Effect.runPromise(
+      startStaticServer(grant).pipe(Effect.provideService(Scope.Scope, scope)),
+    );
+    let closePromise: Promise<void> | undefined;
+    return {
+      ...server,
+      close: () =>
+        (closePromise ??= Effect.runPromise(Scope.close(scope, Exit.void))),
+    };
+  } catch (error) {
+    await Effect.runPromise(Scope.close(scope, Exit.void));
+    throw error;
+  }
+}
 
 export interface RunningSupervisor {
   readonly controlAddress: string;
@@ -283,10 +309,11 @@ class SessionRegistry {
   }
 
   async #create(grant: ServingGrant, key: string): Promise<LiveSession> {
-    let server: StaticSessionServer;
+    let server: ManagedStaticSessionServer;
     try {
       server = await this.startServer(grant);
     } catch (error) {
+      if (error instanceof ContentListenerError) throw error;
       throw new ContentListenerError({
         code: "http.start_failed",
         message: "The loopback content listener could not start",
@@ -385,7 +412,7 @@ export async function startSupervisor(
   await Effect.runPromise(ensurePrivateStateDirectory(paths));
   const instanceId = randomUUID();
   const sessions = new SessionRegistry(
-    options.startSessionServer ?? ((grant) => startStaticServer(grant)),
+    options.startSessionServer ?? acquireStaticServer,
     options.maximumSessions ?? maximumConcurrentSessions,
   );
   const resolveGrantBase = options.resolveGrant ?? resolveServingGrant;

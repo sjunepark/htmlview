@@ -50,6 +50,9 @@ caller.
 - Effect v4 adoption Phase 3 is complete: private runtime-state operations are
   typed Effects, ownership is a scoped resource, and lock polling and transfer
   are deterministic and interruption-safe without weakening native fencing.
+- Effect v4 adoption Phase 4 is complete: disclosure grants use typed path
+  Effects, and raw listeners, request fibers, authorized descriptors, and
+  native streams have explicit scoped ownership without behavior changes.
 - Final validation passes `pnpm run check`, the Node 22 Linux package workflow,
   `pnpm run validate:browser-use`, and `pnpm audit` with zero vulnerabilities.
 
@@ -285,5 +288,5 @@ annotation transport before a working second use case requires it.
 
 ## Next action
 
-Execute Phase 4 of `docs/plans/effect-v4-adoption.md`; do not publish the
+Execute Phase 5 of `docs/plans/effect-v4-adoption.md`; do not publish the
 pre-migration artifact. Optional annotation work remains deferred.

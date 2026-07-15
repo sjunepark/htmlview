@@ -20,7 +20,10 @@ import path from "node:path";
 import { afterEach, describe, it } from "node:test";
 import { Effect, Exit, Scope } from "effect";
 import { resolveServingGrant } from "../src/serving/grant.js";
-import { startStaticServer } from "../src/serving/http.js";
+import {
+  startStaticServer,
+  type StaticSessionServer,
+} from "../src/serving/http.js";
 import { SupervisorClient } from "../src/supervisor/client.js";
 import {
   controlHost,
@@ -41,6 +44,24 @@ import { htmlviewVersion } from "../src/version.js";
 
 const temporaryDirectories: string[] = [];
 const supervisors: RunningSupervisor[] = [];
+
+async function acquireTestStaticServer(
+  grant: Parameters<typeof startStaticServer>[0],
+): Promise<StaticSessionServer & { close(): Promise<void> }> {
+  const scope = await Effect.runPromise(Scope.make());
+  try {
+    const session = await Effect.runPromise(
+      startStaticServer(grant).pipe(Effect.provideService(Scope.Scope, scope)),
+    );
+    return {
+      ...session,
+      close: () => Effect.runPromise(Scope.close(scope, Exit.void)),
+    };
+  } catch (error) {
+    await Effect.runPromise(Scope.close(scope, Exit.void));
+    throw error;
+  }
+}
 
 async function acquireTestLock(
   paths: StatePaths,
@@ -854,7 +875,7 @@ describe("supervisor lifecycle", () => {
         }),
       startSessionServer: async (sessionGrant) => {
         contentStarts += 1;
-        return startStaticServer(sessionGrant);
+        return acquireTestStaticServer(sessionGrant);
       },
     });
     supervisors.push(supervisor);

@@ -18,7 +18,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, it } from "node:test";
 import { promisify } from "node:util";
-import { Effect } from "effect";
+import { Effect, Exit, Scope } from "effect";
 import {
   isWithinRoot,
   resolveServingGrant as resolveServingGrantEffect,
@@ -26,7 +26,7 @@ import {
 } from "../src/serving/grant.js";
 import {
   generateSessionHostname,
-  startStaticServer,
+  startStaticServer as startStaticServerEffect,
   type StaticSessionServer,
 } from "../src/serving/http.js";
 
@@ -38,7 +38,11 @@ interface ResponseResult {
 
 let root: string;
 let grant: ServingGrant;
-let server: StaticSessionServer;
+interface ManagedStaticSessionServer extends StaticSessionServer {
+  close(): Promise<void>;
+}
+
+let server: ManagedStaticSessionServer;
 const execute = promisify(execFile);
 
 function resolveServingGrant(
@@ -46,6 +50,32 @@ function resolveServingGrant(
   options?: { readonly root?: string; readonly cwd?: string },
 ): Promise<ServingGrant> {
   return Effect.runPromise(resolveServingGrantEffect(entry, options));
+}
+
+async function startStaticServer(
+  sessionGrant: ServingGrant,
+  options?: {
+    readonly hostname?: string;
+    readonly responseDeadlineMilliseconds?: number;
+  },
+): Promise<ManagedStaticSessionServer> {
+  const scope = await Effect.runPromise(Scope.make());
+  try {
+    const session = await Effect.runPromise(
+      startStaticServerEffect(sessionGrant, options).pipe(
+        Effect.provideService(Scope.Scope, scope),
+      ),
+    );
+    let closePromise: Promise<void> | undefined;
+    return {
+      ...session,
+      close: () =>
+        (closePromise ??= Effect.runPromise(Scope.close(scope, Exit.void))),
+    };
+  } catch (error) {
+    await Effect.runPromise(Scope.close(scope, Exit.void));
+    throw error;
+  }
 }
 
 function rawRequest(

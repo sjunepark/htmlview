@@ -1,5 +1,5 @@
 import { randomBytes } from "node:crypto";
-import { constants as fsConstants } from "node:fs";
+import { constants as fsConstants, type BigIntStats } from "node:fs";
 import { open, realpath, stat } from "node:fs/promises";
 import {
   createServer,
@@ -8,7 +8,9 @@ import {
   type ServerResponse,
 } from "node:http";
 import path from "node:path";
+import { Data, Effect, FiberSet, type Scope } from "effect";
 import { contentType } from "mime-types";
+import { ContentListenerError } from "../errors.js";
 import { isWithinRoot, type ServingGrant } from "./grant.js";
 
 const loopbackAddress = "127.0.0.1";
@@ -24,7 +26,6 @@ export interface StaticSessionServer {
   readonly port: number;
   readonly origin: string;
   readonly url: string;
-  close(): Promise<void>;
 }
 
 export interface StaticHandlerOptions {
@@ -116,157 +117,271 @@ function isNotModified(
   );
 }
 
-async function openAuthorizedFile(root: string, target: string) {
-  let resolved: string;
-  try {
-    resolved = await realpath(target);
-  } catch {
-    return { outcome: "missing" as const };
-  }
-  if (resolved === root) return { outcome: "missing" as const };
-  if (!isWithinRoot(root, resolved)) return { outcome: "forbidden" as const };
+type FileHandle = Awaited<ReturnType<typeof open>>;
 
-  let handle;
-  try {
-    handle = await open(
-      resolved,
-      fsConstants.O_RDONLY | fsConstants.O_NONBLOCK,
+interface OwnedFileHandle {
+  readonly handle: FileHandle;
+  transferredToStream: boolean;
+}
+
+class FileAccessError extends Data.TaggedError("FileAccessError")<{
+  readonly cause: unknown;
+}> {}
+
+type AuthorizedFile =
+  | { readonly outcome: "missing" }
+  | { readonly outcome: "forbidden" }
+  | { readonly outcome: "changed" }
+  | {
+      readonly outcome: "file";
+      readonly owned: OwnedFileHandle;
+      readonly metadata: BigIntStats;
+    };
+
+function reportCleanupFailure(operation: string): Effect.Effect<void> {
+  return Effect.sync(() => {
+    try {
+      process.stderr.write(`htmlview: ${operation} cleanup failed\n`);
+    } catch {
+      // The request's primary outcome remains authoritative.
+    }
+  });
+}
+
+function closeOwnedFile(owned: OwnedFileHandle): Effect.Effect<void> {
+  if (owned.transferredToStream) return Effect.void;
+  return Effect.tryPromise({
+    try: () => owned.handle.close(),
+    catch: (cause) => new FileAccessError({ cause }),
+  }).pipe(
+    Effect.catch(() => reportCleanupFailure("authorized file")),
+    Effect.asVoid,
+  );
+}
+
+function optionalFilePromise<A>(
+  operation: () => Promise<A>,
+): Effect.Effect<A | undefined> {
+  return Effect.tryPromise({
+    try: operation,
+    catch: (cause) => new FileAccessError({ cause }),
+  }).pipe(Effect.catch(() => Effect.sync((): undefined => undefined)));
+}
+
+function openAuthorizedFile(
+  root: string,
+  target: string,
+): Effect.Effect<AuthorizedFile, never, Scope.Scope> {
+  return Effect.gen(function* () {
+    const resolved = yield* optionalFilePromise(() => realpath(target));
+    if (resolved === undefined || resolved === root)
+      return { outcome: "missing" };
+    if (!isWithinRoot(root, resolved)) return { outcome: "forbidden" };
+
+    const owned = yield* Effect.acquireRelease(
+      optionalFilePromise(() =>
+        open(resolved, fsConstants.O_RDONLY | fsConstants.O_NONBLOCK),
+      ).pipe(
+        Effect.flatMap((handle) =>
+          handle === undefined
+            ? Effect.fail(undefined)
+            : Effect.succeed({ handle, transferredToStream: false }),
+        ),
+      ),
+      closeOwnedFile,
+    ).pipe(Effect.catch(() => Effect.void));
+    if (owned === undefined) return { outcome: "missing" };
+
+    const openedMetadata = yield* optionalFilePromise(() =>
+      owned.handle.stat({ bigint: true }),
     );
-    const openedMetadata = await handle.stat({ bigint: true });
-    if (!openedMetadata.isFile()) {
-      await handle.close();
-      return { outcome: "missing" as const };
-    }
+    if (openedMetadata === undefined || !openedMetadata.isFile())
+      return { outcome: "missing" };
 
-    const resolvedAfterOpen = await realpath(resolved);
-    if (!isWithinRoot(root, resolvedAfterOpen)) {
-      await handle.close();
-      return { outcome: "forbidden" as const };
-    }
-    const currentMetadata = await stat(resolvedAfterOpen, { bigint: true });
+    const resolvedAfterOpen = yield* optionalFilePromise(() =>
+      realpath(resolved),
+    );
+    if (resolvedAfterOpen === undefined) return { outcome: "missing" };
+    if (!isWithinRoot(root, resolvedAfterOpen)) return { outcome: "forbidden" };
+
+    const currentMetadata = yield* optionalFilePromise(() =>
+      stat(resolvedAfterOpen, { bigint: true }),
+    );
+    if (currentMetadata === undefined) return { outcome: "missing" };
     if (
       currentMetadata.dev !== openedMetadata.dev ||
       currentMetadata.ino !== openedMetadata.ino
-    ) {
-      await handle.close();
-      return { outcome: "changed" as const };
+    )
+      return { outcome: "changed" };
+    return { outcome: "file", owned, metadata: openedMetadata };
+  });
+}
+
+function streamAuthorizedFile(
+  opened: Extract<AuthorizedFile, { readonly outcome: "file" }>,
+  response: ServerResponse,
+): Effect.Effect<void> {
+  return Effect.callback<void>((resume, signal) => {
+    let stream: ReturnType<FileHandle["createReadStream"]> | undefined;
+    const destroy = (): void => {
+      if (stream !== undefined && !stream.destroyed) stream.destroy();
+      if (!response.destroyed) response.destroy();
+    };
+    try {
+      stream = opened.owned.handle.createReadStream({
+        autoClose: true,
+        end: Number(opened.metadata.size - 1n),
+      });
+      opened.owned.transferredToStream = true;
+      stream.once("error", () => response.destroy());
+      stream.once("close", () => resume(Effect.void));
+      response.once("close", () => {
+        if (stream !== undefined && !stream.destroyed) stream.destroy();
+      });
+      if (signal.aborted) destroy();
+      else stream.pipe(response);
+    } catch (cause) {
+      destroy();
+      resume(Effect.die(cause));
     }
-    return { outcome: "file" as const, handle, metadata: openedMetadata };
-  } catch {
-    if (handle !== undefined) await handle.close().catch(() => undefined);
-    return { outcome: "missing" as const };
-  }
+    return Effect.sync(destroy);
+  });
 }
 
 export function createStaticHandler(
   grant: ServingGrant,
   options: StaticHandlerOptions,
 ) {
-  return async (
+  return (
     request: IncomingMessage,
     response: ServerResponse,
-  ): Promise<void> => {
-    if (!responseDeadlines.has(request.socket)) {
-      const responseDeadline = setTimeout(
-        () => request.socket.destroy(),
-        options.responseDeadlineMilliseconds,
-      );
-      responseDeadline.unref();
-      responseDeadlines.set(request.socket, responseDeadline);
-      request.socket.once("close", () => {
-        clearTimeout(responseDeadline);
-        responseDeadlines.delete(request.socket);
-      });
-    }
+  ): Effect.Effect<void> =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        yield* Effect.sync(() => {
+          if (responseDeadlines.has(request.socket)) return;
+          const responseDeadline = setTimeout(
+            () => request.socket.destroy(),
+            options.responseDeadlineMilliseconds,
+          );
+          responseDeadline.unref();
+          responseDeadlines.set(request.socket, responseDeadline);
+          request.socket.once("close", () => {
+            clearTimeout(responseDeadline);
+            responseDeadlines.delete(request.socket);
+          });
+        });
 
-    if (!isExpectedAuthority(request, options.hostname)) {
-      send(response, 421, "Misdirected Request");
-      return;
-    }
-    if (request.method !== "GET" && request.method !== "HEAD") {
-      send(response, 405, "Method Not Allowed", { allow: "GET, HEAD" });
-      return;
-    }
-    const segments = decodeRequestPath(request.url);
-    if (segments === undefined) {
-      send(response, 400, "Malformed request path");
-      return;
-    }
+        if (!isExpectedAuthority(request, options.hostname))
+          return yield* Effect.sync(() =>
+            send(response, 421, "Misdirected Request"),
+          );
+        if (request.method !== "GET" && request.method !== "HEAD")
+          return yield* Effect.sync(() =>
+            send(response, 405, "Method Not Allowed", { allow: "GET, HEAD" }),
+          );
+        const segments = decodeRequestPath(request.url);
+        if (segments === undefined)
+          return yield* Effect.sync(() =>
+            send(response, 400, "Malformed request path"),
+          );
 
-    const target = path.join(grant.root, ...segments);
-    const opened = await openAuthorizedFile(grant.root, target);
-    if (opened.outcome === "forbidden") {
-      send(response, 403, "Forbidden");
-      return;
-    }
-    if (opened.outcome === "changed") {
-      send(response, 409, "File changed during authorization");
-      return;
-    }
-    if (opened.outcome === "missing") {
-      send(response, 404, "Not Found");
-      return;
-    }
-    if (opened.metadata.size > BigInt(Number.MAX_SAFE_INTEGER) + 1n) {
-      await opened.handle.close();
-      send(response, 413, "File exceeds the supported size");
-      return;
-    }
+        const target = path.join(grant.root, ...segments);
+        const opened = yield* openAuthorizedFile(grant.root, target);
+        if (opened.outcome === "forbidden")
+          return yield* Effect.sync(() => send(response, 403, "Forbidden"));
+        if (opened.outcome === "changed")
+          return yield* Effect.sync(() =>
+            send(response, 409, "File changed during authorization"),
+          );
+        if (opened.outcome === "missing")
+          return yield* Effect.sync(() => send(response, 404, "Not Found"));
+        if (opened.metadata.size > BigInt(Number.MAX_SAFE_INTEGER) + 1n)
+          return yield* Effect.sync(() =>
+            send(response, 413, "File exceeds the supported size"),
+          );
 
-    const modified = new Date(Number(opened.metadata.mtimeNs / 1_000_000n));
-    const tag = etag(
-      opened.metadata.size,
-      opened.metadata.mtimeNs,
-      opened.metadata.ino,
+        const modified = new Date(Number(opened.metadata.mtimeNs / 1_000_000n));
+        const tag = etag(
+          opened.metadata.size,
+          opened.metadata.mtimeNs,
+          opened.metadata.ino,
+        );
+        const headers = {
+          "content-type":
+            contentType(path.extname(target)) || "application/octet-stream",
+          "content-length": opened.metadata.size.toString(),
+          "last-modified": modified.toUTCString(),
+          etag: tag,
+          "x-content-type-options": "nosniff",
+          "cross-origin-resource-policy": "same-origin",
+        };
+
+        if (isNotModified(request, tag, modified))
+          return yield* Effect.sync(() => {
+            response.writeHead(304, {
+              etag: tag,
+              "last-modified": modified.toUTCString(),
+              "x-content-type-options": "nosniff",
+            });
+            response.end();
+          });
+
+        yield* Effect.sync(() => response.writeHead(200, headers));
+        if (request.method === "HEAD" || opened.metadata.size === 0n)
+          return yield* Effect.sync(() => response.end());
+        return yield* streamAuthorizedFile(opened, response);
+      }),
     );
-    const headers = {
-      "content-type":
-        contentType(path.extname(target)) || "application/octet-stream",
-      "content-length": opened.metadata.size.toString(),
-      "last-modified": modified.toUTCString(),
-      etag: tag,
-      "x-content-type-options": "nosniff",
-      "cross-origin-resource-policy": "same-origin",
-    };
-
-    if (isNotModified(request, tag, modified)) {
-      await opened.handle.close();
-      response.writeHead(304, {
-        etag: tag,
-        "last-modified": modified.toUTCString(),
-        "x-content-type-options": "nosniff",
-      });
-      response.end();
-      return;
-    }
-
-    response.writeHead(200, headers);
-    if (request.method === "HEAD") {
-      await opened.handle.close();
-      response.end();
-      return;
-    }
-    if (opened.metadata.size === 0n) {
-      await opened.handle.close();
-      response.end();
-      return;
-    }
-    const stream = opened.handle.createReadStream({
-      autoClose: true,
-      end: Number(opened.metadata.size - 1n),
-    });
-    stream.on("error", () => response.destroy());
-    response.on("close", () => {
-      if (!stream.destroyed) stream.destroy();
-    });
-    stream.pipe(response);
-  };
 }
 
-function closeServer(server: Server): Promise<void> {
-  return new Promise((resolve, reject) => {
-    server.close((error) => (error === undefined ? resolve() : reject(error)));
-    server.closeAllConnections();
+function contentStartFailure(cause: unknown): ContentListenerError {
+  return new ContentListenerError({
+    code: "http.start_failed",
+    message: "The loopback content listener could not start",
+    cause,
+  });
+}
+
+function closeServer(server: Server): Effect.Effect<void> {
+  return Effect.callback<void>((resume) => {
+    try {
+      server.close((error) =>
+        resume(
+          error === undefined
+            ? Effect.void
+            : reportCleanupFailure("content listener"),
+        ),
+      );
+      server.closeAllConnections();
+    } catch {
+      resume(Effect.void);
+    }
+  });
+}
+
+function listen(server: Server): Effect.Effect<void, ContentListenerError> {
+  return Effect.callback<void, ContentListenerError>((resume) => {
+    const onError = (cause: Error): void =>
+      resume(Effect.fail(contentStartFailure(cause)));
+    server.once("error", onError);
+    try {
+      server.listen({ host: loopbackAddress, port: 0 }, () => {
+        server.off("error", onError);
+        resume(Effect.void);
+      });
+    } catch (cause) {
+      server.off("error", onError);
+      resume(Effect.fail(contentStartFailure(cause)));
+    }
+    return Effect.sync(() => {
+      server.off("error", onError);
+      try {
+        server.close();
+      } catch {
+        // The scoped server finalizer remains authoritative.
+      }
+    });
   });
 }
 
@@ -274,47 +389,70 @@ export function generateSessionHostname(): string {
   return `h-${randomBytes(16).toString("hex")}.localhost`;
 }
 
-export async function startStaticServer(
+export function startStaticServer(
   grant: ServingGrant,
   options: {
     readonly hostname?: string;
     readonly responseDeadlineMilliseconds?: number;
   } = {},
-): Promise<StaticSessionServer> {
-  const hostname = options.hostname ?? generateSessionHostname();
-  const responseDeadlineMilliseconds =
-    options.responseDeadlineMilliseconds !== undefined &&
-    Number.isFinite(options.responseDeadlineMilliseconds) &&
-    options.responseDeadlineMilliseconds > 0
-      ? options.responseDeadlineMilliseconds
-      : defaultResponseDeadlineMilliseconds;
-  const server = createServer(
-    createStaticHandler(grant, { hostname, responseDeadlineMilliseconds }),
-  );
-  server.maxConnections = 100;
-  server.maxHeadersCount = 100;
-  server.headersTimeout = 5_000;
-  server.requestTimeout = 30_000;
-  server.keepAliveTimeout = 5_000;
-  server.maxRequestsPerSocket = 100;
-  server.setTimeout(30_000, (socket) => socket.destroy());
-
-  await new Promise<void>((resolve, reject) => {
-    server.once("error", reject);
-    server.listen({ host: loopbackAddress, port: 0 }, resolve);
+): Effect.Effect<StaticSessionServer, ContentListenerError, Scope.Scope> {
+  return Effect.gen(function* () {
+    const hostname = yield* Effect.try({
+      try: () => options.hostname ?? generateSessionHostname(),
+      catch: contentStartFailure,
+    });
+    const responseDeadlineMilliseconds =
+      options.responseDeadlineMilliseconds !== undefined &&
+      Number.isFinite(options.responseDeadlineMilliseconds) &&
+      options.responseDeadlineMilliseconds > 0
+        ? options.responseDeadlineMilliseconds
+        : defaultResponseDeadlineMilliseconds;
+    const requests = yield* FiberSet.make<void, never>();
+    const runRequest = yield* FiberSet.runtime(requests)<never>();
+    const handler = createStaticHandler(grant, {
+      hostname,
+      responseDeadlineMilliseconds,
+    });
+    const server = yield* Effect.acquireRelease(
+      Effect.try({
+        try: () =>
+          createServer((request, response) => {
+            runRequest(
+              handler(request, response).pipe(
+                Effect.catchCause(() =>
+                  Effect.sync(() => {
+                    if (!response.destroyed) response.destroy();
+                  }),
+                ),
+              ),
+            );
+          }),
+        catch: contentStartFailure,
+      }),
+      closeServer,
+    );
+    yield* Effect.sync(() => {
+      server.maxConnections = 100;
+      server.maxHeadersCount = 100;
+      server.headersTimeout = 5_000;
+      server.requestTimeout = 30_000;
+      server.keepAliveTimeout = 5_000;
+      server.maxRequestsPerSocket = 100;
+      server.setTimeout(30_000, (socket) => socket.destroy());
+    });
+    yield* listen(server);
+    const address = server.address();
+    if (address === null || typeof address === "string")
+      return yield* contentStartFailure(
+        new Error("Static server did not receive a TCP address"),
+      );
+    const origin = `http://${hostname}:${address.port}`;
+    return {
+      bindAddress: loopbackAddress,
+      hostname,
+      port: address.port,
+      origin,
+      url: `${origin}${grant.entryUrlPath}`,
+    };
   });
-  const address = server.address();
-  if (address === null || typeof address === "string") {
-    await closeServer(server);
-    throw new Error("Static server did not receive a TCP address");
-  }
-  const origin = `http://${hostname}:${address.port}`;
-  return {
-    bindAddress: loopbackAddress,
-    hostname,
-    port: address.port,
-    origin,
-    url: `${origin}${grant.entryUrlPath}`,
-    close: () => closeServer(server),
-  };
 }

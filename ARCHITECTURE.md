@@ -119,6 +119,12 @@ resolve beside the entry and `/assets/logo.svg` resolve from the chosen root.
 The service handles HTTP method validation, URL decoding, containment checks,
 MIME types, conditional requests, and ordinary byte streaming.
 
+The listener and its request-fiber set share one Effect scope. Each authorized
+file handle belongs to its request scope until a successful `GET` transfers it
+exactly once to the native auto-closing stream. Closing the listener scope
+closes connections, interrupts remaining request work, and releases any handle
+that was not transferred.
+
 The service has no filename or dotfile denylist. Confinement prevents resolved
 targets outside the root; it does not hide one in-root file from another page
 on the same origin.
@@ -158,8 +164,11 @@ document-relative resolution.
    the canonical session root, including through symlinks.
 4. It rejects directory requests rather than inventing index or fallback
    behavior.
-5. It streams the file with the correct content type and without body
-   transformation.
+5. It fences the opened descriptor against path replacement by comparing
+   device and inode metadata after open.
+6. It streams the file with the correct content type and without body
+   transformation. The request fiber remains alive until the native stream
+   closes.
 
 Query strings do not participate in filesystem lookup. URL fragments never
 reach the server and remain available to the page.
@@ -212,7 +221,9 @@ acquisition and transfer are scoped Effect resources: 50 ms observation uses
 uninterruptible transition, and release remains nonce-fenced. Health includes
 protocol, version, instance, and process identity; mismatches are never replaced
 silently. Content-listener host labels and ports belong to session state and are
-never caller-selected.
+never caller-selected. Each content listener owns a scoped request-fiber set;
+listener shutdown closes active connections and interrupts any remaining
+request work before the session scope is released.
 
 The registry permits at most 32 live sessions. Listing selects optional fields
 at the control seam, keeping complete enumeration within the bounded response
