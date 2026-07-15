@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import { once } from "node:events";
 import {
   lstat,
@@ -12,7 +13,7 @@ import {
   utimes,
   writeFile,
 } from "node:fs/promises";
-import { request } from "node:http";
+import { createServer as createHttpServer, request } from "node:http";
 import { createServer as createNetServer } from "node:net";
 import { homedir, tmpdir } from "node:os";
 import path from "node:path";
@@ -35,6 +36,7 @@ import {
   writePrivateJson,
   type StatePaths,
 } from "../src/supervisor/state.js";
+import { htmlviewVersion } from "../src/version.js";
 
 const temporaryDirectories: string[] = [];
 const supervisors: RunningSupervisor[] = [];
@@ -227,6 +229,124 @@ describe("supervisor lifecycle", () => {
     ]);
   });
 
+  it("rejects malformed successful responses at every client seam", async () => {
+    const parent = await temporaryDirectory("hv-malformed-");
+    const paths = statePaths({
+      HTMLVIEW_STATE_DIR: path.join(parent, "s"),
+    });
+    await ensurePrivateStateDirectory(paths);
+    const root = await temporaryDirectory("htmlview-malformed-entry-");
+    const entry = path.join(root, "report.html");
+    await writeFile(entry, "<!doctype html>");
+
+    const fake = createHttpServer((incoming, response) => {
+      const route = new URL(incoming.url ?? "/", `http://${controlHost}`);
+      const value =
+        route.pathname === "/health"
+          ? {
+              protocol: "htmlview-supervisor-v2",
+              instanceId: randomUUID(),
+              pid: process.pid,
+              version: htmlviewVersion,
+            }
+          : incoming.method === "GET" && route.pathname === "/sessions"
+            ? { sessions: [{ id: "invalid" }] }
+            : route.pathname === "/sessions"
+              ? { session: {}, reused: "no" }
+              : route.pathname === "/stop"
+                ? { stopped: "one" }
+                : { stopped: maximumConcurrentSessions + 1 };
+      const body = Buffer.from(JSON.stringify(value));
+      response.writeHead(200, {
+        "content-type": "application/json",
+        "content-length": String(body.length),
+      });
+      response.end(body);
+    });
+    await new Promise<void>((resolve, reject) => {
+      fake.once("error", reject);
+      fake.listen(paths.controlSocket, resolve);
+    });
+
+    const client = new SupervisorClient(paths);
+    const expected = {
+      code: "supervisor.request_failed",
+      message: "The htmlview supervisor returned an invalid response",
+    };
+    try {
+      await assert.rejects(client.list(), expected);
+      await assert.rejects(client.serve(entry, await realpath(root)), expected);
+      await assert.rejects(client.stopSession("missing"), expected);
+      await assert.rejects(client.stopAll(), expected);
+    } finally {
+      await new Promise<void>((resolve, reject) =>
+        fake.close((error) => (error ? reject(error) : resolve())),
+      );
+    }
+  });
+
+  it("rejects valid-shaped responses that violate operation invariants", async () => {
+    const parent = await temporaryDirectory("hv-invariant-");
+    const paths = statePaths({
+      HTMLVIEW_STATE_DIR: path.join(parent, "state"),
+    });
+    await ensurePrivateStateDirectory(paths);
+    const root = await temporaryDirectory("htmlview-invariant-entry-");
+    const entry = path.join(root, "report.html");
+    await writeFile(entry, "<!doctype html>");
+    const session = {
+      id: "aB3_-xYz",
+      status: "ready",
+      url: "http://h-0123456789abcdef0123456789abcdef.localhost:4321/report.html",
+    };
+    let value: unknown = { sessions: [session] };
+
+    const fake = createHttpServer((incoming, response) => {
+      const route = new URL(incoming.url ?? "/", `http://${controlHost}`);
+      const responseValue =
+        route.pathname === "/health"
+          ? {
+              protocol: "htmlview-supervisor-v2",
+              instanceId: randomUUID(),
+              pid: process.pid,
+              version: htmlviewVersion,
+            }
+          : value;
+      const body = Buffer.from(JSON.stringify(responseValue));
+      response.writeHead(200, {
+        "content-type": "application/json",
+        "content-length": String(body.length),
+      });
+      response.end(body);
+    });
+    await new Promise<void>((resolve, reject) => {
+      fake.once("error", reject);
+      fake.listen(paths.controlSocket, resolve);
+    });
+
+    const client = new SupervisorClient(paths);
+    const expected = {
+      code: "supervisor.request_failed",
+      message: "The htmlview supervisor returned an invalid response",
+    };
+    try {
+      await assert.rejects(client.list(["root"]), expected);
+      value = { sessions: [{ ...session, entry }] };
+      await assert.rejects(client.list(), expected);
+      value = {
+        session: { ...session, entry: `${entry}.different`, root },
+        reused: false,
+      };
+      await assert.rejects(client.serve(entry, root), expected);
+      value = { stopped: 2 };
+      await assert.rejects(client.stopSession("missing"), expected);
+    } finally {
+      await new Promise<void>((resolve, reject) =>
+        fake.close((error) => (error ? reject(error) : resolve())),
+      );
+    }
+  });
+
   it("rejects oversized control bodies", async () => {
     const { paths } = await setup();
     const status = await new Promise<number>((resolve, reject) => {
@@ -250,6 +370,40 @@ describe("supervisor lifecycle", () => {
       operation.end(payload);
     });
     assert.equal(status, 413);
+  });
+
+  it("validates exact control request schemas", async () => {
+    const { paths } = await setup();
+    for (const body of [
+      null,
+      [],
+      {},
+      { entry: "/tmp/report.html" },
+      { entry: 1, root: "/tmp" },
+      { entry: "/tmp/report.html", root: "/tmp", extra: true },
+    ]) {
+      const response = await controlRequest(paths, "POST", "/sessions", body);
+      assert.equal(response.status, 400);
+      assert.deepEqual(response.value, {
+        error: {
+          code: "control.invalid_request",
+          message: "Invalid control request",
+        },
+      });
+    }
+
+    assert.deepEqual(
+      await controlRequest(paths, "POST", "/stop", { session: "" }),
+      { status: 200, value: { stopped: 0 } },
+    );
+    assert.equal(
+      (
+        await controlRequest(paths, "POST", "/shutdown", {
+          unexpected: true,
+        })
+      ).status,
+      400,
+    );
   });
 
   it("keeps control state outside an ordinary served root", async () => {
@@ -701,10 +855,36 @@ describe("supervisor lifecycle", () => {
     const client = new SupervisorClient(
       statePaths({ HTMLVIEW_STATE_DIR: stateFile }),
     );
-    await assert.rejects(client.list(), {
-      code: "state.unavailable",
-      message: "The private htmlview runtime state directory is unavailable",
+    await assert.rejects(client.list(), (error: unknown) => {
+      assert.equal((error as { code?: unknown }).code, "state.unavailable");
+      assert.equal(
+        (error as { message?: unknown }).message,
+        "The private htmlview runtime state directory is unavailable",
+      );
+      assert.ok((error as { cause?: unknown }).cause instanceof Error);
+      return true;
     });
+  });
+
+  it("keeps grant-correlation filesystem failures in the path error boundary", async () => {
+    const parent = await temporaryDirectory("htmlview-vanished-root-");
+    const paths = statePaths({
+      HTMLVIEW_STATE_DIR: path.join(parent, "state"),
+    });
+    const missingRoot = path.join(parent, "missing");
+    let starts = 0;
+    const client = new SupervisorClient(paths, async () => {
+      starts += 1;
+    });
+    await assert.rejects(
+      client.serve(path.join(missingRoot, "report.html"), missingRoot),
+      (error: unknown) => {
+        assert.equal((error as { code?: unknown }).code, "path.root_not_found");
+        assert.ok((error as { cause?: unknown }).cause instanceof Error);
+        return true;
+      },
+    );
+    assert.equal(starts, 0);
   });
 
   it("translates detached process spawn failures without raw errors", async () => {
@@ -715,14 +895,23 @@ describe("supervisor lifecycle", () => {
     const root = await temporaryDirectory("htmlview-spawn-entry-");
     const entry = path.join(root, "report.html");
     await writeFile(entry, "<!doctype html>");
-    const client = new SupervisorClient(paths, async () => {
-      throw Object.assign(new Error("spawn resource exhausted"), {
-        code: "EAGAIN",
-      });
+    const cause = Object.assign(new Error("spawn resource exhausted"), {
+      code: "EAGAIN",
     });
-    await assert.rejects(client.serve(entry, root), {
-      code: "supervisor.start_failed",
-      message: "The htmlview supervisor process could not start",
+    const client = new SupervisorClient(paths, async () => {
+      throw cause;
+    });
+    await assert.rejects(client.serve(entry, root), (error: unknown) => {
+      assert.equal(
+        (error as { code?: unknown }).code,
+        "supervisor.start_failed",
+      );
+      assert.equal(
+        (error as { message?: unknown }).message,
+        "The htmlview supervisor process could not start",
+      );
+      assert.equal((error as { cause?: unknown }).cause, cause);
+      return true;
     });
   });
 

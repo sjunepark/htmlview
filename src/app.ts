@@ -1,14 +1,19 @@
 import { homedir } from "node:os";
 import path from "node:path";
-import type {
-  JsonObject,
-  OptionalSessionField,
-  SessionSummary,
-} from "./contracts.js";
+import type { JsonObject } from "./contracts.js";
 import { errorResult } from "./contracts.js";
+import {
+  isOperationalError,
+  toPublicError,
+  type OperationalError,
+} from "./errors.js";
 import { parseCommand, type ParsedCommand } from "./command.js";
 import { serialize } from "./output.js";
-import { OperationError, type CommandService } from "./service.js";
+import { type CommandService } from "./service.js";
+import type {
+  OptionalSessionField,
+  SessionSummary,
+} from "./supervisor/protocol.js";
 import { htmlviewVersion } from "./version.js";
 
 export interface AppContext {
@@ -38,18 +43,17 @@ function homeResult(
   fields: readonly OptionalSessionField[],
   json: boolean,
 ): JsonObject {
-  const selected = sessions.map((session) => {
-    const row: SessionSummary = {
-      id: session.id,
-      status: session.status,
-      url: session.url,
-    };
-    if (fields.includes("entry") && session.entry !== undefined)
-      row.entry = session.entry;
-    if (fields.includes("root") && session.root !== undefined)
-      row.root = session.root;
-    return row;
-  });
+  const selected = sessions.map((session): SessionSummary => ({
+    id: session.id,
+    status: session.status,
+    url: session.url,
+    ...(fields.includes("entry") && session.entry !== undefined
+      ? { entry: session.entry }
+      : {}),
+    ...(fields.includes("root") && session.root !== undefined
+      ? { root: session.root }
+      : {}),
+  }));
   return {
     bin: displayPath(executablePath),
     description: "Serve local HTML through confined loopback HTTP",
@@ -133,39 +137,44 @@ function stopHelp(): JsonObject {
   };
 }
 
-function runtimeHelp(error: OperationError, parsed: ParsedCommand): string[] {
+function runtimeHelp(error: OperationalError, parsed: ParsedCommand): string[] {
   const jsonSuffix = parsed.format === "json" ? " --json" : "";
-  if (error.code.startsWith("path."))
-    return [
-      `Run \`htmlview serve --help${jsonSuffix}\` to review entry and root requirements`,
-    ];
-  if (error.code === "state.unavailable") {
-    const command =
-      parsed.kind === "serve"
-        ? `htmlview serve <entry.html>${parsed.root === undefined ? "" : " --root <directory>"}${jsonSuffix}`
-        : parsed.kind === "stop"
-          ? `htmlview stop${parsed.all ? " --all" : " <session>"}${jsonSuffix}`
-          : `htmlview${parsed.kind === "home" && parsed.fields.length > 0 ? ` --fields ${parsed.fields.join(",")}` : ""}${jsonSuffix}`;
-    return [`Run \`${command}\` after correcting runtime-state permissions`];
+  switch (error._tag) {
+    case "PathError":
+      return [
+        `Run \`htmlview serve --help${jsonSuffix}\` to review entry and root requirements`,
+      ];
+    case "RuntimeStateError": {
+      const command =
+        parsed.kind === "serve"
+          ? `htmlview serve <entry.html>${parsed.root === undefined ? "" : " --root <directory>"}${jsonSuffix}`
+          : parsed.kind === "stop"
+            ? `htmlview stop${parsed.all ? " --all" : " <session>"}${jsonSuffix}`
+            : `htmlview${parsed.kind === "home" && parsed.fields.length > 0 ? ` --fields ${parsed.fields.join(",")}` : ""}${jsonSuffix}`;
+      return [`Run \`${command}\` after correcting runtime-state permissions`];
+    }
+    case "ContentListenerError":
+      if (parsed.kind !== "serve") return [];
+      return [
+        `Run \`htmlview serve <entry.html>${parsed.root === undefined ? "" : " --root <directory>"}${jsonSuffix}\` to retry`,
+      ];
+    case "ControlError":
+      return error.code === "control.session_limit"
+        ? [
+            `Run \`htmlview stop <session>${jsonSuffix}\` before serving another entry`,
+          ]
+        : [];
+    case "SupervisorError":
+      if (error.code === "supervisor.incompatible")
+        return [
+          `Run \`htmlview stop --all${jsonSuffix}\` before retrying this command`,
+        ];
+      if (error.code === "supervisor.start_failed" && parsed.kind === "serve")
+        return [
+          `Run \`htmlview serve <entry.html>${parsed.root === undefined ? "" : " --root <directory>"}${jsonSuffix}\` to retry`,
+        ];
+      return [];
   }
-  if (
-    parsed.kind === "serve" &&
-    (error.code.startsWith("http.") || error.code === "supervisor.start_failed")
-  ) {
-    const rootSuffix = parsed.root === undefined ? "" : " --root <directory>";
-    return [
-      `Run \`htmlview serve <entry.html>${rootSuffix}${jsonSuffix}\` to retry`,
-    ];
-  }
-  if (error.code === "control.session_limit")
-    return [
-      `Run \`htmlview stop <session>${jsonSuffix}\` before serving another entry`,
-    ];
-  if (error.code === "supervisor.incompatible")
-    return [
-      `Run \`htmlview stop --all${jsonSuffix}\` before retrying this command`,
-    ];
-  return [...error.help];
 }
 
 export async function runApp(
@@ -206,24 +215,27 @@ export async function runApp(
       if (parsed.all) result = await context.service.stopAll();
       else if (parsed.session !== undefined)
         result = await context.service.stopSession(parsed.session);
-      else
-        throw new OperationError(
-          "runtime.internal",
-          "htmlview could not resolve the stop target",
-        );
+      else throw new Error("htmlview could not resolve the stop target");
     }
     context.stdout(serialize(result, parsed.format));
     return 0;
   } catch (error) {
-    const format = parsed.format;
-    const failure =
-      error instanceof OperationError
-        ? errorResult(error.code, error.message, {}, runtimeHelp(error, parsed))
-        : errorResult(
-            "runtime.internal",
-            "htmlview could not complete the request",
-          );
-    context.stdout(serialize(failure, format));
+    let failure: JsonObject;
+    if (isOperationalError(error)) {
+      const publicError = toPublicError(error);
+      failure = errorResult(
+        publicError.code,
+        publicError.message,
+        {},
+        runtimeHelp(error, parsed),
+      );
+    } else {
+      failure = errorResult(
+        "runtime.internal",
+        "htmlview could not complete the request",
+      );
+    }
+    context.stdout(serialize(failure, parsed.format));
     return 1;
   }
 }

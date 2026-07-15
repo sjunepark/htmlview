@@ -5,15 +5,6 @@ export interface JsonObject {
 }
 
 export type OutputFormat = "json" | "toon";
-export type OptionalSessionField = "entry" | "root";
-
-export interface SessionSummary extends JsonObject {
-  id: string;
-  status: "ready";
-  url: string;
-  entry?: string;
-  root?: string;
-}
 
 export interface UsageFailure {
   readonly exitCode: 2;

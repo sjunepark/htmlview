@@ -2,17 +2,22 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { runApp } from "../src/app.js";
 import { decodeOutput } from "../src/output.js";
+import type { OutputFormat } from "../src/contracts.js";
+import {
+  ContentListenerError,
+  ControlError,
+  RuntimeStateError,
+  SupervisorError,
+} from "../src/errors.js";
 import type {
   OptionalSessionField,
-  OutputFormat,
   SessionSummary,
-} from "../src/contracts.js";
-import { OperationError } from "../src/service.js";
+} from "../src/supervisor/protocol.js";
 
 async function invoke(
   args: string[],
   sessions: SessionSummary[] = [],
-  serveFailure?: OperationError,
+  serveFailure?: unknown,
 ) {
   let stdout = "";
   let stderr = "";
@@ -193,11 +198,10 @@ describe("CLI application contract", () => {
   });
 
   it("emits equivalent structured runtime errors", async () => {
-    const failure = new OperationError(
-      "state.unavailable",
-      "The private htmlview runtime state directory is unavailable",
-      ["Run `htmlview` after correcting runtime-state permissions"],
-    );
+    const failure = new RuntimeStateError({
+      code: "state.unavailable",
+      message: "The private htmlview runtime state directory is unavailable",
+    });
     const toon = await invoke(["serve", "x.html"], [], failure);
     const json = await invoke(["serve", "x.html", "--json"], [], failure);
     assert.equal(toon.exitCode, 1);
@@ -223,10 +227,10 @@ describe("CLI application contract", () => {
   });
 
   it("preserves format and explicit root choices in retry guidance", async () => {
-    const failure = new OperationError(
-      "http.start_failed",
-      "The loopback content listener could not start",
-    );
+    const failure = new ContentListenerError({
+      code: "http.start_failed",
+      message: "The loopback content listener could not start",
+    });
     const result = await invoke(
       ["serve", "x.html", "--root", "public", "--json"],
       [],
@@ -242,10 +246,10 @@ describe("CLI application contract", () => {
   });
 
   it("suggests freeing capacity when the session limit is reached", async () => {
-    const failure = new OperationError(
-      "control.session_limit",
-      "Concurrent session limit of 32 reached",
-    );
+    const failure = new ControlError({
+      code: "control.session_limit",
+      message: "Concurrent session limit of 32 reached",
+    });
     const result = await invoke(["serve", "x.html", "--json"], [], failure);
     const value = decodeOutput(result.stdout, "json") as Record<
       string,
@@ -257,10 +261,11 @@ describe("CLI application contract", () => {
   });
 
   it("suggests the compatible stop path for a supervisor mismatch", async () => {
-    const failure = new OperationError(
-      "supervisor.incompatible",
-      "The running htmlview supervisor uses an incompatible control protocol",
-    );
+    const failure = new SupervisorError({
+      code: "supervisor.incompatible",
+      message:
+        "The running htmlview supervisor uses an incompatible control protocol",
+    });
     const result = await invoke(["serve", "x.html", "--json"], [], failure);
     const value = decodeOutput(result.stdout, "json") as Record<
       string,
@@ -269,6 +274,23 @@ describe("CLI application contract", () => {
     assert.deepEqual(value.help, [
       "Run `htmlview stop --all --json` before retrying this command",
     ]);
+  });
+
+  it("sanitizes unexpected defects at the outer boundary", async () => {
+    const result = await invoke(
+      ["serve", "x.html", "--json"],
+      [],
+      new Error("private internal detail"),
+    );
+    assert.equal(result.exitCode, 1);
+    assert.equal(result.stderr, "");
+    assert.deepEqual(decodeOutput(result.stdout, "json"), {
+      error: {
+        code: "runtime.internal",
+        message: "htmlview could not complete the request",
+      },
+    });
+    assert.equal(result.stdout.includes("private internal detail"), false);
   });
 
   it("emits no format-breaking trailing newline", async () => {

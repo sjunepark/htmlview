@@ -1,6 +1,7 @@
 import { realpath, stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import path from "node:path";
+import { PathError } from "../errors.js";
 
 export interface ServingGrant {
   readonly entry: string;
@@ -8,16 +9,6 @@ export interface ServingGrant {
   readonly root: string;
   readonly entryRelativePath: string;
   readonly entryUrlPath: string;
-}
-
-export class GrantError extends Error {
-  constructor(
-    readonly code: string,
-    message: string,
-  ) {
-    super(message);
-    this.name = "GrantError";
-  }
 }
 
 export function isWithinRoot(root: string, target: string): boolean {
@@ -48,29 +39,35 @@ async function canonicalDirectory(candidate: string): Promise<string> {
   try {
     canonical = await realpath(candidate);
   } catch (error) {
-    throw new GrantError(
-      permissionDenied(error) ? "path.root_unreadable" : "path.root_not_found",
-      permissionDenied(error)
+    throw new PathError({
+      code: permissionDenied(error)
+        ? "path.root_unreadable"
+        : "path.root_not_found",
+      message: permissionDenied(error)
         ? `Serving root is not accessible: ${candidate}`
         : `Serving root does not exist: ${candidate}`,
-    );
+      cause: error,
+    });
   }
   let metadata;
   try {
     metadata = await stat(canonical);
   } catch (error) {
-    throw new GrantError(
-      permissionDenied(error) ? "path.root_unreadable" : "path.root_not_found",
-      permissionDenied(error)
+    throw new PathError({
+      code: permissionDenied(error)
+        ? "path.root_unreadable"
+        : "path.root_not_found",
+      message: permissionDenied(error)
         ? `Serving root is not accessible: ${candidate}`
         : `Serving root does not exist: ${candidate}`,
-    );
+      cause: error,
+    });
   }
   if (!metadata.isDirectory()) {
-    throw new GrantError(
-      "path.root_not_directory",
-      `Serving root is not a directory: ${candidate}`,
-    );
+    throw new PathError({
+      code: "path.root_not_directory",
+      message: `Serving root is not a directory: ${candidate}`,
+    });
   }
   return canonical;
 }
@@ -83,10 +80,10 @@ export async function resolveServingGrant(
   const suppliedEntry = path.resolve(cwd, entryArgument);
   const extension = path.extname(suppliedEntry).toLowerCase();
   if (extension !== ".html" && extension !== ".htm") {
-    throw new GrantError(
-      "path.entry_not_html",
-      `Entry must have an .html or .htm extension: ${entryArgument}`,
-    );
+    throw new PathError({
+      code: "path.entry_not_html",
+      message: `Entry must have an .html or .htm extension: ${entryArgument}`,
+    });
   }
 
   const candidateRoot =
@@ -98,53 +95,56 @@ export async function resolveServingGrant(
     path.resolve(homedir()),
   );
   if (isBroadServingRoot(canonicalRoot, canonicalHome))
-    throw new GrantError(
-      "path.root_too_broad",
-      "Serving root cannot be the user home directory or one of its ancestors",
-    );
+    throw new PathError({
+      code: "path.root_too_broad",
+      message:
+        "Serving root cannot be the user home directory or one of its ancestors",
+    });
 
   let canonicalEntry: string;
   try {
     canonicalEntry = await realpath(suppliedEntry);
   } catch (error) {
-    throw new GrantError(
-      permissionDenied(error)
+    throw new PathError({
+      code: permissionDenied(error)
         ? "path.entry_unreadable"
         : "path.entry_not_found",
-      permissionDenied(error)
+      message: permissionDenied(error)
         ? `Entry file is not accessible: ${entryArgument}`
         : `Entry file does not exist: ${entryArgument}`,
-    );
+      cause: error,
+    });
   }
 
   let entryMetadata;
   try {
     entryMetadata = await stat(canonicalEntry);
   } catch (error) {
-    throw new GrantError(
-      permissionDenied(error)
+    throw new PathError({
+      code: permissionDenied(error)
         ? "path.entry_unreadable"
         : "path.entry_not_found",
-      permissionDenied(error)
+      message: permissionDenied(error)
         ? `Entry file is not accessible: ${entryArgument}`
         : `Entry file does not exist: ${entryArgument}`,
-    );
+      cause: error,
+    });
   }
   if (!entryMetadata.isFile()) {
-    throw new GrantError(
-      "path.entry_not_file",
-      `Entry is not a regular file: ${entryArgument}`,
-    );
+    throw new PathError({
+      code: "path.entry_not_file",
+      message: `Entry is not a regular file: ${entryArgument}`,
+    });
   }
   if (!isWithinRoot(canonicalRoot, canonicalEntry)) {
     const code =
       options.root === undefined
         ? "path.entry_symlink_escape"
         : "path.entry_outside_root";
-    throw new GrantError(
+    throw new PathError({
       code,
-      `Entry resolves outside the serving root: ${entryArgument}`,
-    );
+      message: `Entry resolves outside the serving root: ${entryArgument}`,
+    });
   }
 
   const entryRelativePath = path.relative(canonicalRoot, canonicalEntry);

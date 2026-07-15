@@ -1,6 +1,6 @@
 # Effect v4 Adoption Plan
 
-- Status: In progress; Phase 1 complete
+- Status: In progress; Phase 2 complete
 - Updated: 2026-07-15
 - Parent plan: [`PLAN.md`](../../PLAN.md)
 - Decision scope: migrate htmlview's fallible asynchronous execution and
@@ -331,7 +331,7 @@ Do not retain two TypeScript unit-test runners after the migration.
 | ------------------------------------ | -------- | ------------------------------------------------------ |
 | 0. Baseline and API verification     | Complete | Green baseline and recorded v4/package decisions       |
 | 1. Decision records and toolchain    | Complete | Exact dependencies, diagnostics, build/test skeleton   |
-| 2. Errors and protocol schemas       | Pending  | Shared runtime-validated control contract              |
+| 2. Errors and protocol schemas       | Complete | Shared runtime-validated control contract              |
 | 3. Runtime-state and lock lifecycle  | Pending  | Typed, interruption-safe private state operations      |
 | 4. Grant and raw-server resources    | Pending  | Scoped serving resources with byte fidelity intact     |
 | 5. Supervisor registry and server    | Pending  | Scoped sessions and deterministic shutdown             |
@@ -723,11 +723,31 @@ Keep this table current; replace `Pending` when a gate is resolved.
 
 ## Next action
 
-Execute Phase 2: introduce the minimal typed operational-error boundaries and
-replace the hand-maintained control protocol interfaces with shared schemas and
-derived types before changing transport behavior.
+Execute Phase 3: convert private runtime-state and ownership-lock operations to
+typed Effects with scoped, interruption-safe acquisition and release.
 
 ## Progress log
+
+### 2026-07-15 — Phase 2 complete
+
+- Added recovery-boundary tagged errors with literal public codes, retained
+  internal causes, exhaustive safe CLI projection, and defect sanitization at
+  the outer boundary. Usage errors and `runtime.internal` remain separate.
+- Replaced the hand-maintained control interfaces with strict Effect schemas
+  and derived types. Client and server now encode requests and decode every
+  health, success, and error response without unchecked protocol casts.
+- Protocol validation covers exact request shapes, transport-sized strings,
+  generated identifiers and URLs, selected list fields, request/response grant
+  correlation, and operation-specific stop bounds while retaining arbitrary
+  idempotent stop selectors.
+- Focused protocol, error, app, and supervisor tests passed (63 tests), as did
+  typecheck with strict Effect diagnostics, lint, formatting, and
+  `git diff --check`. The full `pnpm run check` gate also passed with 100
+  TypeScript tests, the Effect smoke, E2E, seven Playwright checks, docs, build,
+  and package lifecycle validation. Review fixed three valid-shaped response
+  invariants and cause retention; no Bucket II or diet finding remains.
+  Expected-versus-defect narrowing stays at the leaf-adapter conversions in
+  Phases 3–6.
 
 ### 2026-07-15 — Phase 1 complete
 

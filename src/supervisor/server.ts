@@ -7,10 +7,10 @@ import {
   type Server,
   type ServerResponse,
 } from "node:http";
-import type { OptionalSessionField, SessionSummary } from "../contracts.js";
+import { Result } from "effect";
+import { ContentListenerError, ControlError, PathError } from "../errors.js";
 import {
   resolveServingGrant,
-  GrantError,
   isWithinRoot,
   type ServingGrant,
 } from "../serving/grant.js";
@@ -28,17 +28,32 @@ import {
 } from "./state.js";
 import {
   controlHost,
+  decodeCreateSessionRequest,
+  decodeSessionFieldSelection,
+  decodeShutdownRequest,
+  decodeStopSessionRequest,
+  encodeControlError,
+  encodeServeControlResult,
+  encodeSessionListResult,
+  encodeStopControlResult,
+  encodeTargetedStopControlResult,
+  encodeSupervisorIdentity,
+  makeSupervisorInstanceId,
+  maximumControlBodyBytes,
   maximumConcurrentSessions,
   maximumControlResponseBytes,
   supervisorProtocol,
+  type CurrentSupervisorIdentity,
+  type OptionalSessionField,
   type ServeControlResult,
+  type SessionSummary,
   type StopControlResult,
   type SupervisorIdentity,
   type SupervisorSession,
+  type TargetedStopControlResult,
 } from "./protocol.js";
 import { htmlviewVersion } from "../version.js";
 
-const maximumControlBodyBytes = 64 * 1024;
 const defaultIdleMilliseconds = 30_000;
 const defaultShutdownGraceMilliseconds = 2_000;
 
@@ -63,12 +78,14 @@ function json(response: ServerResponse, status: number, value: unknown): void {
   if (body.length > maximumControlResponseBytes) {
     status = 500;
     body = Buffer.from(
-      JSON.stringify({
-        error: {
-          code: "control.response_too_large",
-          message: "Control response exceeded the supported size",
-        },
-      }),
+      JSON.stringify(
+        encodeControlError({
+          error: {
+            code: "control.response_too_large",
+            message: "Control response exceeded the supported size",
+          },
+        }),
+      ),
     );
   }
   response.writeHead(status, {
@@ -84,10 +101,64 @@ function authorized(request: IncomingMessage): boolean {
   return request.headers.host === controlHost;
 }
 
+type ServerControlError = PathError | ControlError | ContentListenerError;
+
+function invalidControlRequest(): ControlError {
+  return new ControlError({
+    code: "control.invalid_request",
+    message: "Invalid control request",
+  });
+}
+
+function isServerControlError(error: unknown): error is ServerControlError {
+  return (
+    error instanceof PathError ||
+    error instanceof ControlError ||
+    error instanceof ContentListenerError
+  );
+}
+
+function controlStatus(error: ServerControlError): number {
+  switch (error._tag) {
+    case "PathError":
+      return 400;
+    case "ContentListenerError":
+      return 500;
+    case "ControlError":
+      switch (error.code) {
+        case "control.unauthorized":
+          return 401;
+        case "control.body_too_large":
+          return 413;
+        case "control.session_limit":
+          return 409;
+        case "control.shutting_down":
+          return 503;
+        case "control.not_found":
+          return 404;
+        case "control.response_too_large":
+        case "control.internal":
+          return 500;
+        case "control.invalid_json":
+        case "control.invalid_request":
+          return 400;
+      }
+  }
+}
+
+function encodedControlError(error: ServerControlError): unknown {
+  return encodeControlError({
+    error: { code: error.code, message: error.message },
+  });
+}
+
 async function readJsonBody(request: IncomingMessage): Promise<unknown> {
   const declared = Number(request.headers["content-length"] ?? 0);
   if (Number.isFinite(declared) && declared > maximumControlBodyBytes)
-    throw new Error("control.body_too_large");
+    throw new ControlError({
+      code: "control.body_too_large",
+      message: "Invalid control request",
+    });
   const chunks: Buffer[] = [];
   let size = 0;
   for await (const chunk of request) {
@@ -96,13 +167,19 @@ async function readJsonBody(request: IncomingMessage): Promise<unknown> {
       : Buffer.from(chunk as Uint8Array);
     size += buffer.length;
     if (size > maximumControlBodyBytes)
-      throw new Error("control.body_too_large");
+      throw new ControlError({
+        code: "control.body_too_large",
+        message: "Invalid control request",
+      });
     chunks.push(buffer);
   }
   try {
     return JSON.parse(Buffer.concat(chunks).toString("utf8"));
   } catch {
-    throw new Error("control.invalid_json");
+    throw new ControlError({
+      code: "control.invalid_json",
+      message: "Invalid control request",
+    });
   }
 }
 
@@ -183,7 +260,11 @@ class SessionRegistry {
 
   async serve(grant: ServingGrant): Promise<ServeControlResult> {
     return this.#mutate(async () => {
-      if (this.#closing) throw new Error("control.shutting_down");
+      if (this.#closing)
+        throw new ControlError({
+          code: "control.shutting_down",
+          message: "Invalid control request",
+        });
       const key = `${grant.routeEntry}\0${grant.root}`;
       const existingId = this.#identity.get(key);
       if (existingId !== undefined) {
@@ -192,7 +273,10 @@ class SessionRegistry {
           return { session: existing.summary, reused: true };
       }
       if (this.#sessions.size >= this.maximumSessions)
-        throw new Error("control.session_limit");
+        throw new ControlError({
+          code: "control.session_limit",
+          message: `Concurrent session limit of ${this.maximumSessions} reached`,
+        });
       const live = await this.#create(grant, key);
       return { session: live.summary, reused: false };
     });
@@ -202,14 +286,22 @@ class SessionRegistry {
     let server: StaticSessionServer;
     try {
       server = await this.startServer(grant);
-    } catch {
-      throw new Error("http.start_failed");
+    } catch (error) {
+      throw new ContentListenerError({
+        code: "http.start_failed",
+        message: "The loopback content listener could not start",
+        cause: error,
+      });
     }
     try {
       await verifyReady(server, grant.entryUrlPath);
     } catch (error) {
       await server.close().catch(() => undefined);
-      throw new Error("http.readiness_failed", { cause: error });
+      throw new ContentListenerError({
+        code: "http.readiness_failed",
+        message: "The content listener did not become ready",
+        cause: error,
+      });
     }
     let id: string;
     do id = randomBytes(6).toString("base64url");
@@ -232,7 +324,7 @@ class SessionRegistry {
     return live;
   }
 
-  async stop(sessionId: string): Promise<StopControlResult> {
+  async stop(sessionId: string): Promise<TargetedStopControlResult> {
     return this.#mutate(async () => {
       const live = this.#sessions.get(sessionId);
       if (live === undefined) return { stopped: 0 };
@@ -304,10 +396,11 @@ export async function startSupervisor(
       grant.root === canonicalStateDirectory ||
       isWithinRoot(grant.root, canonicalStateDirectory)
     )
-      throw new GrantError(
-        "path.root_contains_state",
-        "Serving root cannot contain the htmlview runtime state directory",
-      );
+      throw new PathError({
+        code: "path.root_contains_state",
+        message:
+          "Serving root cannot contain the htmlview runtime state directory",
+      });
     return grant;
   };
   const requestedIdleMilliseconds =
@@ -327,9 +420,9 @@ export async function startSupervisor(
   let activeHandlers = 0;
   let closing = false;
   let closePromise: Promise<void> | undefined;
-  const identity: SupervisorIdentity = {
+  const identity: CurrentSupervisorIdentity = {
     protocol: supervisorProtocol,
-    instanceId,
+    instanceId: makeSupervisorInstanceId(instanceId),
     pid: process.pid,
     version: options.version ?? htmlviewVersion,
   };
@@ -349,21 +442,19 @@ export async function startSupervisor(
 
   const control = createServer(async (request, response) => {
     if (!authorized(request)) {
-      json(response, 401, {
-        error: {
-          code: "control.unauthorized",
-          message: "Control authentication failed",
-        },
+      const error = new ControlError({
+        code: "control.unauthorized",
+        message: "Control authentication failed",
       });
+      json(response, controlStatus(error), encodedControlError(error));
       return;
     }
     if (closing) {
-      json(response, 503, {
-        error: {
-          code: "control.shutting_down",
-          message: "Supervisor is shutting down",
-        },
+      const error = new ControlError({
+        code: "control.shutting_down",
+        message: "Supervisor is shutting down",
       });
+      json(response, controlStatus(error), encodedControlError(error));
       return;
     }
     activeHandlers += 1;
@@ -376,129 +467,84 @@ export async function startSupervisor(
         requestUrl.search === ""
       ) {
         await options.beforeHealth?.();
-        json(response, 200, identity);
+        json(response, 200, encodeSupervisorIdentity(identity));
       } else if (
         request.method === "GET" &&
         requestUrl.pathname === "/sessions"
       ) {
         if ([...requestUrl.searchParams.keys()].some((key) => key !== "fields"))
-          throw new Error("control.invalid_request");
+          throw invalidControlRequest();
         const values = requestUrl.searchParams.getAll("fields");
-        if (values.length > 1) throw new Error("control.invalid_request");
-        const fields =
+        if (values.length > 1) throw invalidControlRequest();
+        const requestedFields =
           values.length === 0 || values[0] === ""
             ? []
             : (values[0]?.split(",") ?? []);
-        if (
-          fields.some((field) => field !== "entry" && field !== "root") ||
-          new Set(fields).size !== fields.length
-        )
-          throw new Error("control.invalid_request");
-        json(response, 200, {
-          sessions: sessions.list(fields as OptionalSessionField[]),
-        });
+        const fields = decodeSessionFieldSelection(requestedFields);
+        if (Result.isFailure(fields)) throw invalidControlRequest();
+        json(
+          response,
+          200,
+          encodeSessionListResult({
+            sessions: sessions.list(fields.success),
+          }),
+        );
       } else if (
         request.method === "POST" &&
         requestUrl.pathname === "/sessions" &&
         requestUrl.search === ""
       ) {
-        const body = await readJsonBody(request);
-        if (
-          typeof body !== "object" ||
-          body === null ||
-          Array.isArray(body) ||
-          Object.keys(body).sort().join(",") !== "entry,root"
-        )
-          throw new Error("control.invalid_request");
-        const candidate = body as Record<string, unknown>;
-        if (
-          typeof candidate.entry !== "string" ||
-          typeof candidate.root !== "string"
-        )
-          throw new Error("control.invalid_request");
-        const grant = await resolveGrant(candidate.entry, {
-          root: candidate.root,
+        const body = decodeCreateSessionRequest(await readJsonBody(request));
+        if (Result.isFailure(body)) throw invalidControlRequest();
+        const grant = await resolveGrant(body.success.entry, {
+          root: body.success.root,
         });
-        json(response, 200, await sessions.serve(grant));
+        json(
+          response,
+          200,
+          encodeServeControlResult(await sessions.serve(grant)),
+        );
       } else if (
         request.method === "POST" &&
         requestUrl.pathname === "/stop" &&
         requestUrl.search === ""
       ) {
-        const body = await readJsonBody(request);
-        if (
-          typeof body !== "object" ||
-          body === null ||
-          Array.isArray(body) ||
-          Object.keys(body).join(",") !== "session"
-        )
-          throw new Error("control.invalid_request");
-        const candidate = body as Record<string, unknown>;
-        if (typeof candidate.session === "string")
-          json(response, 200, await sessions.stop(candidate.session));
-        else throw new Error("control.invalid_request");
+        const body = decodeStopSessionRequest(await readJsonBody(request));
+        if (Result.isFailure(body)) throw invalidControlRequest();
+        json(
+          response,
+          200,
+          encodeTargetedStopControlResult(
+            await sessions.stop(body.success.session),
+          ),
+        );
       } else if (
         request.method === "POST" &&
         requestUrl.pathname === "/shutdown" &&
         requestUrl.search === ""
       ) {
-        const body = await readJsonBody(request);
-        if (
-          typeof body !== "object" ||
-          body === null ||
-          Array.isArray(body) ||
-          Object.keys(body).length !== 0
-        )
-          throw new Error("control.invalid_request");
+        const body = decodeShutdownRequest(await readJsonBody(request));
+        if (Result.isFailure(body)) throw invalidControlRequest();
         closing = true;
         sessions.beginShutdown();
         cancelIdleShutdown();
         response.once("finish", () => setImmediate(() => void close()));
-        json(response, 200, await sessions.stopAll());
+        json(response, 200, encodeStopControlResult(await sessions.stopAll()));
       } else {
-        json(response, 404, {
-          error: {
-            code: "control.not_found",
-            message: "Control route not found",
-          },
+        const error = new ControlError({
+          code: "control.not_found",
+          message: "Control route not found",
         });
+        json(response, controlStatus(error), encodedControlError(error));
       }
     } catch (error) {
-      if (error instanceof GrantError)
-        json(response, 400, {
-          error: { code: error.code, message: error.message },
-        });
-      else {
-        const message =
-          error instanceof Error ? error.message : "control.internal";
-        const status =
-          message === "control.body_too_large"
-            ? 413
-            : message === "control.session_limit"
-              ? 409
-              : message === "control.shutting_down"
-                ? 503
-                : message.startsWith("control.")
-                  ? 400
-                  : 500;
-        const exposed =
-          message.startsWith("control.") || message.startsWith("http.");
-        json(response, status, {
-          error: {
-            code: exposed ? message : "control.internal",
-            message:
-              message === "control.session_limit"
-                ? `Concurrent session limit of ${options.maximumSessions ?? maximumConcurrentSessions} reached`
-                : message.startsWith("control.")
-                  ? "Invalid control request"
-                  : message === "http.start_failed"
-                    ? "The loopback content listener could not start"
-                    : message === "http.readiness_failed"
-                      ? "The content listener did not become ready"
-                      : "Supervisor could not complete the request",
-          },
-        });
-      }
+      const exposed = isServerControlError(error)
+        ? error
+        : new ControlError({
+            code: "control.internal",
+            message: "Supervisor could not complete the request",
+          });
+      json(response, controlStatus(exposed), encodedControlError(exposed));
     } finally {
       activeHandlers -= 1;
       scheduleIdleShutdown();

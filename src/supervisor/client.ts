@@ -3,7 +3,14 @@ import { realpath } from "node:fs/promises";
 import { request as httpRequest } from "node:http";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import type { OptionalSessionField, SessionSummary } from "../contracts.js";
+import { Result } from "effect";
+import {
+  operationalError,
+  PathError,
+  RuntimeStateError,
+  SupervisorError,
+  type OperationalError,
+} from "../errors.js";
 import { isWithinRoot } from "../serving/grant.js";
 import { htmlviewVersion } from "../version.js";
 import {
@@ -16,11 +23,20 @@ import {
 } from "./state.js";
 import {
   controlHost,
+  decodeControlError,
+  decodeServeControlResult,
+  decodeSessionListResult,
+  decodeStopControlResult,
+  decodeTargetedStopControlResult,
+  decodeSupervisorIdentity,
+  encodeCreateSessionRequest,
+  encodeShutdownRequest,
+  encodeStopSessionRequest,
   maximumControlResponseBytes,
   supervisorProtocol,
-  type ControlError,
+  type OptionalSessionField,
   type ServeControlResult,
-  type SessionListResult,
+  type SessionSummary,
   type StopControlResult,
   type SupervisorIdentity,
 } from "./protocol.js";
@@ -33,24 +49,15 @@ const supervisorStartTimeoutMilliseconds = 5_000;
 const supervisorShutdownTimeoutMilliseconds = 5_000;
 const supervisorOwnershipWaitMilliseconds = 10_000;
 
-export class SupervisorClientError extends Error {
-  constructor(
-    readonly code: string,
-    message: string,
-  ) {
-    super(message);
-    this.name = "SupervisorClientError";
-  }
-}
-
 async function prepareState(paths: StatePaths): Promise<void> {
   try {
     await ensurePrivateStateDirectory(paths);
-  } catch {
-    throw new SupervisorClientError(
-      "state.unavailable",
-      "The private htmlview runtime state directory is unavailable",
-    );
+  } catch (cause) {
+    throw new RuntimeStateError({
+      code: "state.unavailable",
+      message: "The private htmlview runtime state directory is unavailable",
+      cause,
+    });
   }
 }
 
@@ -77,17 +84,19 @@ async function assertStateOutsideRoot(
   let stateDirectory: string;
   try {
     stateDirectory = await canonicalPotentialPath(paths.directory);
-  } catch {
-    throw new SupervisorClientError(
-      "state.unavailable",
-      "The private htmlview runtime state directory is unavailable",
-    );
+  } catch (cause) {
+    throw new RuntimeStateError({
+      code: "state.unavailable",
+      message: "The private htmlview runtime state directory is unavailable",
+      cause,
+    });
   }
   if (root === stateDirectory || isWithinRoot(root, stateDirectory))
-    throw new SupervisorClientError(
-      "path.root_contains_state",
-      "Serving root cannot contain the htmlview runtime state directory",
-    );
+    throw new PathError({
+      code: "path.root_contains_state",
+      message:
+        "Serving root cannot contain the htmlview runtime state directory",
+    });
 }
 
 interface ControlResponse {
@@ -164,18 +173,6 @@ type ProbeResult =
   | { readonly status: "absent" | "stale" | "unavailable" }
   | { readonly status: "incompatible" };
 
-function isIdentity(value: unknown): value is SupervisorIdentity {
-  if (typeof value !== "object" || value === null) return false;
-  const candidate = value as Record<string, unknown>;
-  return (
-    typeof candidate.protocol === "string" &&
-    typeof candidate.instanceId === "string" &&
-    typeof candidate.pid === "number" &&
-    Number.isSafeInteger(candidate.pid) &&
-    typeof candidate.version === "string"
-  );
-}
-
 async function probeOnce(paths: StatePaths): Promise<ProbeResult> {
   let response: ControlResponse;
   try {
@@ -192,13 +189,14 @@ async function probeOnce(paths: StatePaths): Promise<ProbeResult> {
     if (code === "ECONNREFUSED") return { status: "stale" };
     return { status: "unavailable" };
   }
-  if (response.status !== 200 || !isIdentity(response.value))
-    return { status: "unavailable" };
-  if (response.value.protocol !== supervisorProtocol)
+  if (response.status !== 200) return { status: "unavailable" };
+  const decoded = decodeSupervisorIdentity(response.value);
+  if (Result.isFailure(decoded)) return { status: "unavailable" };
+  if (decoded.success.protocol !== supervisorProtocol)
     return { status: "incompatible" };
-  if (response.value.version !== htmlviewVersion)
-    return { status: "version_mismatch", identity: response.value };
-  return { status: "healthy", identity: response.value };
+  if (decoded.success.version !== htmlviewVersion)
+    return { status: "version_mismatch", identity: decoded.success };
+  return { status: "healthy", identity: decoded.success };
 }
 
 function delay(milliseconds: number): Promise<void> {
@@ -223,7 +221,7 @@ function incompatible(result: ProbeResult): never {
     result.status === "version_mismatch"
       ? `The running htmlview supervisor uses version ${result.identity.version}; stop it before using ${htmlviewVersion}`
       : "The running htmlview supervisor uses an incompatible control protocol";
-  throw new SupervisorClientError("supervisor.incompatible", message);
+  throw new SupervisorError({ code: "supervisor.incompatible", message });
 }
 
 async function currentSupervisor(
@@ -237,10 +235,10 @@ async function currentSupervisor(
   if (result.status === "version_mismatch" || result.status === "incompatible")
     return incompatible(result);
   if (result.status === "unavailable")
-    throw new SupervisorClientError(
-      "supervisor.unavailable",
-      "The htmlview supervisor is alive but temporarily unavailable",
-    );
+    throw new SupervisorError({
+      code: "supervisor.unavailable",
+      message: "The htmlview supervisor is alive but temporarily unavailable",
+    });
   return undefined;
 }
 
@@ -294,19 +292,20 @@ async function ensureSupervisor(
     )
       return incompatible(afterLock);
     if (afterLock.status === "unavailable")
-      throw new SupervisorClientError(
-        "supervisor.unavailable",
-        "The htmlview supervisor is alive but temporarily unavailable",
-      );
+      throw new SupervisorError({
+        code: "supervisor.unavailable",
+        message: "The htmlview supervisor is alive but temporarily unavailable",
+      });
 
     try {
       await removeStaleControlSocket(paths);
       await startProcess(paths, lock.nonce);
-    } catch {
-      throw new SupervisorClientError(
-        "supervisor.start_failed",
-        "The htmlview supervisor process could not start",
-      );
+    } catch (cause) {
+      throw new SupervisorError({
+        code: "supervisor.start_failed",
+        message: "The htmlview supervisor process could not start",
+        cause,
+      });
     }
 
     const deadline = Date.now() + supervisorStartTimeoutMilliseconds;
@@ -320,24 +319,28 @@ async function ensureSupervisor(
         return incompatible(started);
       await delay(50);
     }
-    throw new SupervisorClientError(
-      "supervisor.start_failed",
-      "The htmlview supervisor did not become ready",
-    );
+    throw new SupervisorError({
+      code: "supervisor.start_failed",
+      message: "The htmlview supervisor did not become ready",
+    });
   } finally {
     await lock.release();
   }
 }
 
-function ownershipLockError(error: unknown): SupervisorClientError {
-  return new SupervisorClientError(
-    error instanceof Error && error.message.startsWith("Timed out")
-      ? "supervisor.unavailable"
-      : "state.unavailable",
-    error instanceof Error && error.message.startsWith("Timed out")
-      ? "The htmlview supervisor is still releasing its control authority"
-      : "The htmlview supervisor ownership lock is unavailable",
-  );
+function ownershipLockError(error: unknown): OperationalError {
+  return error instanceof Error && error.message.startsWith("Timed out")
+    ? new SupervisorError({
+        code: "supervisor.unavailable",
+        message:
+          "The htmlview supervisor is still releasing its control authority",
+        cause: error,
+      })
+    : new RuntimeStateError({
+        code: "state.unavailable",
+        message: "The htmlview supervisor ownership lock is unavailable",
+        cause: error,
+      });
 }
 
 async function acquireOwnershipOrObserve(
@@ -370,10 +373,10 @@ async function acquireOwnershipOrObserve(
     )
       return incompatible(result);
     if (result.status === "unavailable")
-      throw new SupervisorClientError(
-        "supervisor.unavailable",
-        "The htmlview supervisor is alive but temporarily unavailable",
-      );
+      throw new SupervisorError({
+        code: "supervisor.unavailable",
+        message: "The htmlview supervisor is alive but temporarily unavailable",
+      });
     await delay(50);
   }
   throw ownershipLockError(
@@ -405,10 +408,10 @@ async function existingSupervisor(
     )
       return incompatible(afterLock);
     if (afterLock.status === "unavailable")
-      throw new SupervisorClientError(
-        "supervisor.unavailable",
-        "The htmlview supervisor is alive but temporarily unavailable",
-      );
+      throw new SupervisorError({
+        code: "supervisor.unavailable",
+        message: "The htmlview supervisor is alive but temporarily unavailable",
+      });
     if (afterLock.status === "stale") await removeStaleControlSocket(paths);
     return undefined;
   } finally {
@@ -416,42 +419,81 @@ async function existingSupervisor(
   }
 }
 
-function controlError(value: unknown, fallback: string): SupervisorClientError {
-  if (typeof value === "object" && value !== null) {
-    const candidate = value as ControlError;
-    if (
-      typeof candidate.error?.code === "string" &&
-      typeof candidate.error.message === "string"
-    )
-      return new SupervisorClientError(
-        candidate.error.code,
-        candidate.error.message,
-      );
+function controlError(value: unknown, fallback: string): OperationalError {
+  const decoded = decodeControlError(value);
+  if (Result.isSuccess(decoded)) {
+    const error = operationalError(
+      decoded.success.error.code,
+      decoded.success.error.message,
+    );
+    if (error !== undefined) return error;
   }
-  return new SupervisorClientError("supervisor.request_failed", fallback);
+  return new SupervisorError({
+    code: "supervisor.request_failed",
+    message: fallback,
+  });
+}
+
+async function expectedSessionGrant(
+  entry: string,
+  root: string,
+): Promise<{ readonly entry: string; readonly root: string }> {
+  let canonicalRoot: string;
+  try {
+    canonicalRoot = await realpath(root);
+  } catch (cause) {
+    const permissionDenied =
+      (cause as NodeJS.ErrnoException).code === "EACCES" ||
+      (cause as NodeJS.ErrnoException).code === "EPERM";
+    throw new PathError({
+      code: permissionDenied ? "path.root_unreadable" : "path.root_not_found",
+      message: permissionDenied
+        ? `Serving root is not accessible: ${root}`
+        : `Serving root does not exist: ${root}`,
+      cause,
+    });
+  }
+  const relativeEntry = path.relative(root, entry);
+  return {
+    entry:
+      relativeEntry !== "" &&
+      relativeEntry !== ".." &&
+      !relativeEntry.startsWith(`..${path.sep}`) &&
+      !path.isAbsolute(relativeEntry)
+        ? path.join(canonicalRoot, relativeEntry)
+        : entry,
+    root: canonicalRoot,
+  };
 }
 
 async function requiredRequest<T>(
   paths: StatePaths,
   method: "GET" | "POST",
   route: string,
+  decode: (value: unknown) => Result.Result<T, unknown>,
   body?: unknown,
 ): Promise<T> {
   let response: ControlResponse;
   try {
     response = await controlRequest(paths, method, route, body);
-  } catch {
-    throw new SupervisorClientError(
-      "supervisor.unavailable",
-      "The htmlview supervisor became unavailable",
-    );
+  } catch (cause) {
+    throw new SupervisorError({
+      code: "supervisor.unavailable",
+      message: "The htmlview supervisor became unavailable",
+      cause,
+    });
   }
   if (response.status < 200 || response.status >= 300)
     throw controlError(
       response.value,
       `Supervisor request failed with HTTP ${response.status}`,
     );
-  return response.value as T;
+  const decoded = decode(response.value);
+  if (Result.isSuccess(decoded)) return decoded.success;
+  throw new SupervisorError({
+    code: "supervisor.request_failed",
+    message: "The htmlview supervisor returned an invalid response",
+  });
 }
 
 async function waitForShutdown(
@@ -493,10 +535,10 @@ async function waitForShutdown(
     }
     await delay(50);
   }
-  throw new SupervisorClientError(
-    "supervisor.unavailable",
-    "The htmlview supervisor did not finish shutting down",
-  );
+  throw new SupervisorError({
+    code: "supervisor.unavailable",
+    message: "The htmlview supervisor did not finish shutting down",
+  });
 }
 
 export class SupervisorClient {
@@ -513,7 +555,7 @@ export class SupervisorClient {
 
   async list(
     fields: readonly OptionalSessionField[] = [],
-  ): Promise<SessionSummary[]> {
+  ): Promise<readonly SessionSummary[]> {
     await prepareState(this.#paths);
     const identity = await existingSupervisor(this.#paths);
     if (identity === undefined) return [];
@@ -521,22 +563,43 @@ export class SupervisorClient {
       fields.length === 0
         ? ""
         : `?fields=${encodeURIComponent(fields.join(","))}`;
-    const result = await requiredRequest<SessionListResult>(
+    const result = await requiredRequest(
       this.#paths,
       "GET",
       `/sessions${query}`,
+      (value) => {
+        const decoded = decodeSessionListResult(value);
+        if (Result.isFailure(decoded)) return decoded;
+        const expected = new Set(fields);
+        return decoded.success.sessions.every(
+          (session) =>
+            Object.hasOwn(session, "entry") === expected.has("entry") &&
+            Object.hasOwn(session, "root") === expected.has("root"),
+        )
+          ? decoded
+          : Result.fail("Session fields did not match the request");
+      },
     );
     return result.sessions;
   }
 
   async serve(entry: string, root: string): Promise<ServeControlResult> {
     await assertStateOutsideRoot(this.#paths, root);
+    const expectedGrant = await expectedSessionGrant(entry, root);
     await ensureSupervisor(this.#paths, this.#startProcess);
-    return requiredRequest<ServeControlResult>(
+    return requiredRequest(
       this.#paths,
       "POST",
       "/sessions",
-      { entry, root },
+      (value) => {
+        const decoded = decodeServeControlResult(value);
+        if (Result.isFailure(decoded)) return decoded;
+        return decoded.success.session.entry === expectedGrant.entry &&
+          decoded.success.session.root === expectedGrant.root
+          ? decoded
+          : Result.fail("Session grant did not match the request");
+      },
+      encodeCreateSessionRequest({ entry, root }),
     );
   }
 
@@ -544,20 +607,25 @@ export class SupervisorClient {
     await prepareState(this.#paths);
     const identity = await existingSupervisor(this.#paths);
     if (identity === undefined) return { stopped: 0 };
-    return requiredRequest<StopControlResult>(this.#paths, "POST", "/stop", {
-      session,
-    });
+    return requiredRequest(
+      this.#paths,
+      "POST",
+      "/stop",
+      decodeTargetedStopControlResult,
+      encodeStopSessionRequest({ session }),
+    );
   }
 
   async stopAll(): Promise<StopControlResult> {
     await prepareState(this.#paths);
     const identity = await existingSupervisor(this.#paths, true);
     if (identity === undefined) return { stopped: 0 };
-    const result = await requiredRequest<StopControlResult>(
+    const result = await requiredRequest(
       this.#paths,
       "POST",
       "/shutdown",
-      {},
+      decodeStopControlResult,
+      encodeShutdownRequest({}),
     );
     await waitForShutdown(this.#paths, identity.instanceId);
     return result;

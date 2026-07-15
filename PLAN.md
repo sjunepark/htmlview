@@ -44,6 +44,9 @@ caller.
 - Effect v4 adoption Phase 1 is complete: ADR 0007, exact dependency pins,
   language-service diagnostics, the linked-source-map bundle build, and the
   Effect-aware test skeleton pass their package and browser-origin gates.
+- Effect v4 adoption Phase 2 is complete: tagged operational errors preserve
+  internal causes while projecting only stable public fields, and one strict
+  Effect-schema contract now validates both sides of control communication.
 - Final validation passes `pnpm run check`, the Node 22 Linux package workflow,
   `pnpm run validate:browser-use`, and `pnpm audit` with zero vulnerabilities.
 
@@ -279,5 +282,5 @@ annotation transport before a working second use case requires it.
 
 ## Next action
 
-Execute Phase 2 of `docs/plans/effect-v4-adoption.md`; do not publish the
+Execute Phase 3 of `docs/plans/effect-v4-adoption.md`; do not publish the
 pre-migration artifact. Optional annotation work remains deferred.

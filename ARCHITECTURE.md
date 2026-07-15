@@ -230,7 +230,9 @@ origin-keyed state from concurrent services and later port reuse.
 - `src/cli.ts` is the executable entry and process-I/O boundary.
 - `src/app.ts` dispatches parsed commands and builds format-neutral results.
 - `src/command.ts` owns strict syntax, flag, field, and usage validation.
-- `src/contracts.ts` owns JSON-compatible result and error types.
+- `src/contracts.ts` owns JSON-compatible result and usage-error types.
+- `src/errors.ts` owns tagged operational failures and their exhaustive safe
+  public projection; unknown defects remain outside that union.
 - `src/output.ts` is the only TOON/JSON encoding boundary.
 - `src/version.ts` is the release version surfaced by the CLI and supervisor.
 - `src/serving/grant.ts` validates and canonicalizes the entry/root disclosure
@@ -241,6 +243,8 @@ origin-keyed state from concurrent services and later port reuse.
   mutation, idle shutdown, and graceful cleanup.
 - `src/supervisor/client.ts` discovers, verifies, starts, and calls the detached
   supervisor.
+- `src/supervisor/protocol.ts` is the runtime-validated source of truth for
+  control requests, responses, wire errors, identities, and session summaries.
 - `src/supervisor/state.ts` owns private socket paths and the lifetime
   ownership lock that also serializes startup and stale recovery.
 - `src/service.ts` translates CLI intent into grant and supervisor operations.

@@ -4,10 +4,10 @@ import { homedir, tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, it } from "node:test";
 import {
-  GrantError,
   isBroadServingRoot,
   resolveServingGrant,
 } from "../src/serving/grant.js";
+import { PathError } from "../src/errors.js";
 
 const temporaryDirectories: string[] = [];
 
@@ -39,7 +39,7 @@ describe("serving grants", () => {
     await assert.rejects(
       resolveServingGrant(entry, { root: path.parse(home).root }),
       (error: unknown) =>
-        error instanceof GrantError && error.code === "path.root_too_broad",
+        error instanceof PathError && error.code === "path.root_too_broad",
     );
   });
 
@@ -79,7 +79,7 @@ describe("serving grants", () => {
     await assert.rejects(
       resolveServingGrant("entry.html", { cwd: root }),
       (error: unknown) =>
-        error instanceof GrantError &&
+        error instanceof PathError &&
         error.code === "path.entry_symlink_escape",
     );
   });
@@ -113,12 +113,12 @@ describe("serving grants", () => {
     await assert.rejects(
       resolveServingGrant("entry.txt", { cwd: root }),
       (error: unknown) =>
-        error instanceof GrantError && error.code === "path.entry_not_html",
+        error instanceof PathError && error.code === "path.entry_not_html",
     );
     await assert.rejects(
       resolveServingGrant("entry.html", { cwd: root }),
       (error: unknown) =>
-        error instanceof GrantError && error.code === "path.entry_not_file",
+        error instanceof PathError && error.code === "path.entry_not_file",
     );
   });
 });

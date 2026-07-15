@@ -1,10 +1,6 @@
-import type {
-  JsonObject,
-  OptionalSessionField,
-  OutputFormat,
-  UsageFailure,
-} from "./contracts.js";
+import type { JsonObject, OutputFormat, UsageFailure } from "./contracts.js";
 import { errorResult } from "./contracts.js";
+import type { OptionalSessionField } from "./supervisor/protocol.js";
 
 export type ParsedCommand =
   | {
@@ -37,6 +33,10 @@ const validCommands = ["serve", "stop"];
 const homeFlags = ["--fields", "--json", "--help", "--version"];
 const serveFlags = ["--root", "--json", "--help"];
 const stopFlags = ["--all", "--json", "--help"];
+
+function isOptionalSessionField(value: string): value is OptionalSessionField {
+  return value === "entry" || value === "root";
+}
 
 function commandHelp(
   command: string,
@@ -158,7 +158,7 @@ function parseHome(
           commandHelp("htmlview --help", format, "for complete examples"),
         );
       }
-      fields = [...new Set(requested)] as OptionalSessionField[];
+      fields = [...new Set(requested)].filter(isOptionalSessionField);
       index += 1;
       continue;
     }
