@@ -227,7 +227,7 @@ test("detached CLI lifecycle converges, recovers, and remains project-clean", as
   const crashedSupervisor = await supervisorHealth();
   assert.notEqual(crashedSupervisor.instanceId, stopAllOwner.instanceId);
   process.kill(crashedSupervisor.pid, "SIGKILL");
-  await new Promise((resolve) => setTimeout(resolve, 50));
+  await waitForProcessExit(crashedSupervisor.pid);
   const afterCrash = await jsonCli(["serve", "report.html"]);
   assert.equal(afterCrash.code, 0);
   assert.notEqual(afterCrash.value.session.url, beforeCrash.value.session.url);

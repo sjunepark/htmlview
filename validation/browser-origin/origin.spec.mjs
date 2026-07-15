@@ -92,54 +92,60 @@ test("exact origin reuse revives storage, cache, and service worker", async ({
     urlHost: "reused.localhost",
     label: "prior-session",
   });
+  let firstClosed = false;
   const reusedPort = first.port;
-  const context = await browser.newContext();
   try {
-    const page = await context.newPage();
-    await page.goto(`${first.origin}/state.html`);
-    await page.evaluate(() => {
-      document.cookie = "lifetime=prior; SameSite=Lax; Path=/";
-      localStorage.setItem("lifetime", "prior-session");
-    });
-    expect(
-      await page.evaluate(() =>
-        fetch("/cache.txt").then((response) => response.text()),
-      ),
-    ).toBe("prior-session");
-    await page.evaluate(() => navigator.serviceWorker.register("/sw.js"));
-    await page.evaluate(() => navigator.serviceWorker.ready);
-    await first.close();
-
-    const later = await listenFixture({
-      urlHost: "reused.localhost",
-      port: reusedPort,
-      label: "later-session",
-    });
+    const context = await browser.newContext();
     try {
-      await page.goto(`${later.origin}/state.html`);
-      expect(await page.evaluate(() => document.cookie)).toContain(
-        "lifetime=prior",
-      );
-      expect(await page.evaluate(() => localStorage.getItem("lifetime"))).toBe(
-        "prior-session",
-      );
+      const page = await context.newPage();
+      await page.goto(`${first.origin}/state.html`);
+      await page.evaluate(() => {
+        document.cookie = "lifetime=prior; SameSite=Lax; Path=/";
+        localStorage.setItem("lifetime", "prior-session");
+      });
       expect(
         await page.evaluate(() =>
           fetch("/cache.txt").then((response) => response.text()),
         ),
       ).toBe("prior-session");
-      expect(
-        await page.evaluate(() =>
-          fetch("/sw-probe").then((response) => response.text()),
-        ),
-      ).toBe("prior-session");
-      expect(later.hits.get("/cache.txt") ?? 0).toBe(0);
-      expect(later.hits.get("/sw-probe") ?? 0).toBe(0);
+      await page.evaluate(() => navigator.serviceWorker.register("/sw.js"));
+      await page.evaluate(() => navigator.serviceWorker.ready);
+      await first.close();
+      firstClosed = true;
+
+      const later = await listenFixture({
+        urlHost: "reused.localhost",
+        port: reusedPort,
+        label: "later-session",
+      });
+      try {
+        await page.goto(`${later.origin}/state.html`);
+        expect(await page.evaluate(() => document.cookie)).toContain(
+          "lifetime=prior",
+        );
+        expect(
+          await page.evaluate(() => localStorage.getItem("lifetime")),
+        ).toBe("prior-session");
+        expect(
+          await page.evaluate(() =>
+            fetch("/cache.txt").then((response) => response.text()),
+          ),
+        ).toBe("prior-session");
+        expect(
+          await page.evaluate(() =>
+            fetch("/sw-probe").then((response) => response.text()),
+          ),
+        ).toBe("prior-session");
+        expect(later.hits.get("/cache.txt") ?? 0).toBe(0);
+        expect(later.hits.get("/sw-probe") ?? 0).toBe(0);
+      } finally {
+        await later.close();
+      }
     } finally {
-      await later.close();
+      await context.close();
     }
   } finally {
-    await context.close();
+    if (!firstClosed) await first.close();
   }
 });
 

@@ -1,5 +1,7 @@
 import { readdir, stat, readFile } from "node:fs/promises";
 import path from "node:path";
+import { pathToFileURL } from "node:url";
+import { marked } from "marked";
 
 async function markdownFiles(directory) {
   const files = [];
@@ -12,23 +14,41 @@ async function markdownFiles(directory) {
   return files;
 }
 
-const failures = [];
-for (const file of await markdownFiles(".")) {
-  const contents = await readFile(file, "utf8");
-  for (const match of contents.matchAll(/\[[^\]]*\]\(([^)]+)\)/g)) {
-    const reference = match[1] ?? "";
-    let target = reference.split("#", 1)[0] ?? "";
-    if (target === "" || /^[a-z]+:/i.test(target)) continue;
-    target = decodeURI(target.replace(/^<|>$/g, ""));
-    const resolved = path.resolve(path.dirname(file), target);
-    if (!(await stat(resolved).catch(() => undefined)))
-      failures.push(`${file}: ${reference}`);
-  }
+export function markdownReferences(contents) {
+  const references = [];
+  marked.walkTokens(marked.lexer(contents), (token) => {
+    if (token.type === "link" || token.type === "image")
+      references.push(token.href);
+  });
+  return references;
 }
 
-if (failures.length > 0) {
-  process.stderr.write(`${failures.join("\n")}\n`);
-  process.exitCode = 1;
-} else {
-  process.stdout.write("All relative Markdown links resolve\n");
+export async function unresolvedMarkdownLinks(directory) {
+  const failures = [];
+  for (const file of await markdownFiles(directory)) {
+    const contents = await readFile(file, "utf8");
+    for (const reference of markdownReferences(contents)) {
+      let target = reference.split("#", 1)[0] ?? "";
+      if (target === "" || /^[a-z]+:/i.test(target) || target.startsWith("//"))
+        continue;
+      target = decodeURI(target);
+      const resolved = path.resolve(path.dirname(file), target);
+      if (!(await stat(resolved).catch(() => undefined)))
+        failures.push(`${file}: ${reference}`);
+    }
+  }
+  return failures;
+}
+
+if (
+  process.argv[1] !== undefined &&
+  import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href
+) {
+  const failures = await unresolvedMarkdownLinks(".");
+  if (failures.length > 0) {
+    process.stderr.write(`${failures.join("\n")}\n`);
+    process.exitCode = 1;
+  } else {
+    process.stdout.write("All relative Markdown links resolve\n");
+  }
 }

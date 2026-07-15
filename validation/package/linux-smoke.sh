@@ -17,13 +17,15 @@ url="$(node -e 'const v=JSON.parse(process.argv[1]); process.stdout.write(v.sess
 node -e '
 const http=require("http");
 const url=new URL(process.argv[1]);
-http.get({hostname:"127.0.0.1",port:url.port,path:url.pathname,headers:{host:url.host}}, response => {
+const request=http.get({hostname:"127.0.0.1",port:url.port,path:url.pathname,headers:{host:url.host}}, response => {
   const chunks=[];
   response.on("data", chunk => chunks.push(chunk));
   response.on("end", () => {
     if (response.statusCode !== 200 || Buffer.concat(chunks).toString() !== "<!doctype html><p>linux package</p>") process.exit(1);
   });
-}).on("error", error => { console.error(error); process.exit(1); });
+});
+request.setTimeout(5_000, () => request.destroy(new Error("HTTP smoke test timed out")));
+request.on("error", error => { console.error(error); process.exit(1); });
 ' "$url"
 htmlview stop --all --json >/dev/null
 for _ in $(seq 1 100); do

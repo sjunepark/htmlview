@@ -492,7 +492,7 @@ describe("faithful static HTTP", () => {
     await truncate(large, 64 * 1024 * 1024);
     const bounded = await startStaticServer(grant, {
       hostname: "h-deadline.localhost",
-      responseDeadlineMilliseconds: 50,
+      responseDeadlineMilliseconds: 250,
     });
     try {
       await new Promise<void>((resolve, reject) => {
