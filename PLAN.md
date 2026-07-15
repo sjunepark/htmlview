@@ -57,9 +57,9 @@ The release gate is:
 
 Current-platform tests, E2E, seven Playwright checks, strict Effect
 diagnostics, build validation, clean install/reinstall/uninstall, Node 22 Linux
-lifecycle, and dependency audit pass. Browser Use and final review are the
-remaining Phase 9 checks; Browser Use is waiting for Chrome remote-debugging
-consent.
+lifecycle, Browser Use interoperability, dependency audit, and final
+implementation/diet review pass. The artifact is ready for an explicit
+publication request.
 
 ## Later work
 
@@ -71,5 +71,5 @@ the current release.
 
 ## Next action
 
-Finish the remaining Phase 9 release gates and present the artifact for an
-explicit publication decision. Do not publish automatically.
+Present the validated `0.1.0` artifact for an explicit publication decision.
+Do not publish automatically.

@@ -1,7 +1,7 @@
 # Effect v4 Adoption Plan
 
-- Status: In progress; implementation complete, Phase 9 release gates pending
-- Updated: 2026-07-15
+- Status: Complete; artifact ready for an explicit publication request
+- Updated: 2026-07-16
 - Parent plan: [`PLAN.md`](../../PLAN.md)
 - Decision: [ADR 0007](../decisions/0007-adopt-effect-v4.md)
 
@@ -43,18 +43,18 @@ annotation work was introduced.
 
 ## Phase status
 
-| Phase                                | Status      | Result                                                    |
-| ------------------------------------ | ----------- | --------------------------------------------------------- |
-| 0. Baseline and API verification     | Complete    | Green baseline, beta.98 source inspection, package choice |
-| 1. Decision records and toolchain    | Complete    | Exact pins, diagnostics, bundle and test foundation       |
-| 2. Errors and protocol schemas       | Complete    | Tagged failures and one validated wire contract           |
-| 3. Runtime-state and lock lifecycle  | Complete    | Typed, interruption-safe private state ownership          |
-| 4. Grant and raw-server resources    | Complete    | Scoped files/listeners with byte fidelity intact          |
-| 5. Supervisor registry and server    | Complete    | Scoped sessions, control work, idle shutdown              |
-| 6. Supervisor client                 | Complete    | Cancellable transport, schedules, launch handoff          |
-| 7. App services and entry points     | Complete    | One Effect runtime path per executable                    |
-| 8. Test-suite migration              | Complete    | One Effect-aware TypeScript runner                        |
-| 9. Packaging, docs, and release gate | In progress | Artifact/docs complete; Browser Use gate pending          |
+| Phase                                | Status   | Result                                                    |
+| ------------------------------------ | -------- | --------------------------------------------------------- |
+| 0. Baseline and API verification     | Complete | Green baseline, beta.98 source inspection, package choice |
+| 1. Decision records and toolchain    | Complete | Exact pins, diagnostics, bundle and test foundation       |
+| 2. Errors and protocol schemas       | Complete | Tagged failures and one validated wire contract           |
+| 3. Runtime-state and lock lifecycle  | Complete | Typed, interruption-safe private state ownership          |
+| 4. Grant and raw-server resources    | Complete | Scoped files/listeners with byte fidelity intact          |
+| 5. Supervisor registry and server    | Complete | Scoped sessions, control work, idle shutdown              |
+| 6. Supervisor client                 | Complete | Cancellable transport, schedules, launch handoff          |
+| 7. App services and entry points     | Complete | One Effect runtime path per executable                    |
+| 8. Test-suite migration              | Complete | One Effect-aware TypeScript runner                        |
+| 9. Packaging, docs, and release gate | Complete | Full release gate and artifact audit passed               |
 
 ## Version and package decisions
 
@@ -125,15 +125,15 @@ The complete current-platform repository gate passes with 123 Vitest tests,
 two black-box E2E tests, seven Playwright checks, strict Effect diagnostics,
 documentation validation, build validation, and clean package lifecycle. The
 Node 22 Linux lifecycle check passes with complete PID/socket/lock cleanup, and
-`pnpm audit` reports no known vulnerabilities.
+`pnpm audit` reports no known vulnerabilities. Browser Use 0.1.5 consumes the
+installed CLI URL and passes the complete interoperability fixture through the
+user-approved Chrome DevTools endpoint.
 
-## Current blocker
+## Current blockers
 
-- Browser Use requires the user to enable Chrome remote debugging and approve
-  Chrome's consent popup before its release check can run.
+- None.
 
 ## Next action
 
-Run Browser Use after Chrome consent, then run final docs/diff checks and the
-final implementation/diet review. Do not publish; the result is only ready for
-an explicit publication request.
+Present the validated `0.1.0` artifact for an explicit publication decision.
+Do not publish automatically, and keep optional annotation work deferred.
