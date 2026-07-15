@@ -18,9 +18,10 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, it } from "node:test";
 import { promisify } from "node:util";
+import { Effect } from "effect";
 import {
   isWithinRoot,
-  resolveServingGrant,
+  resolveServingGrant as resolveServingGrantEffect,
   type ServingGrant,
 } from "../src/serving/grant.js";
 import {
@@ -39,6 +40,13 @@ let root: string;
 let grant: ServingGrant;
 let server: StaticSessionServer;
 const execute = promisify(execFile);
+
+function resolveServingGrant(
+  entry: string,
+  options?: { readonly root?: string; readonly cwd?: string },
+): Promise<ServingGrant> {
+  return Effect.runPromise(resolveServingGrantEffect(entry, options));
+}
 
 function rawRequest(
   rawPath: string,

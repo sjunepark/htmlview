@@ -846,11 +846,12 @@ describe("supervisor lifecycle", () => {
       paths,
       idleMilliseconds: 10_000,
       shutdownGraceMilliseconds: 50,
-      resolveGrant: async (...arguments_) => {
-        grantStarted();
-        await grantGate;
-        return resolveServingGrant(...arguments_);
-      },
+      resolveGrant: (...arguments_) =>
+        Effect.gen(function* () {
+          yield* Effect.sync(grantStarted);
+          yield* Effect.promise(() => grantGate);
+          return yield* resolveServingGrant(...arguments_);
+        }),
       startSessionServer: async (sessionGrant) => {
         contentStarts += 1;
         return startStaticServer(sessionGrant);

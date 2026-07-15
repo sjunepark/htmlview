@@ -390,19 +390,20 @@ export async function startSupervisor(
   );
   const resolveGrantBase = options.resolveGrant ?? resolveServingGrant;
   const canonicalStateDirectory = await realpath(paths.directory);
-  const resolveGrant: typeof resolveServingGrant = async (...arguments_) => {
-    const grant = await resolveGrantBase(...arguments_);
-    if (
-      grant.root === canonicalStateDirectory ||
-      isWithinRoot(grant.root, canonicalStateDirectory)
-    )
-      throw new PathError({
-        code: "path.root_contains_state",
-        message:
-          "Serving root cannot contain the htmlview runtime state directory",
-      });
-    return grant;
-  };
+  const resolveGrant: typeof resolveServingGrant = (...arguments_) =>
+    Effect.gen(function* () {
+      const grant = yield* resolveGrantBase(...arguments_);
+      if (
+        grant.root === canonicalStateDirectory ||
+        isWithinRoot(grant.root, canonicalStateDirectory)
+      )
+        return yield* new PathError({
+          code: "path.root_contains_state",
+          message:
+            "Serving root cannot contain the htmlview runtime state directory",
+        });
+      return grant;
+    });
   const requestedIdleMilliseconds =
     options.idleMilliseconds ??
     Number(process.env.HTMLVIEW_IDLE_MS ?? defaultIdleMilliseconds);
@@ -496,9 +497,9 @@ export async function startSupervisor(
       ) {
         const body = decodeCreateSessionRequest(await readJsonBody(request));
         if (Result.isFailure(body)) throw invalidControlRequest();
-        const grant = await resolveGrant(body.success.entry, {
-          root: body.success.root,
-        });
+        const grant = await Effect.runPromise(
+          resolveGrant(body.success.entry, { root: body.success.root }),
+        );
         json(
           response,
           200,

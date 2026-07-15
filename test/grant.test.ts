@@ -3,13 +3,22 @@ import { mkdtemp, mkdir, realpath, symlink, writeFile } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, it } from "node:test";
+import { Effect } from "effect";
 import {
   isBroadServingRoot,
-  resolveServingGrant,
+  resolveServingGrant as resolveServingGrantEffect,
+  type ServingGrant,
 } from "../src/serving/grant.js";
 import { PathError } from "../src/errors.js";
 
 const temporaryDirectories: string[] = [];
+
+function resolveServingGrant(
+  entry: string,
+  options?: { readonly root?: string; readonly cwd?: string },
+): Promise<ServingGrant> {
+  return Effect.runPromise(resolveServingGrantEffect(entry, options));
+}
 
 async function fixtureDirectory(): Promise<string> {
   const directory = await mkdtemp(path.join(tmpdir(), "htmlview-grant-"));

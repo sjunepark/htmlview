@@ -1,6 +1,6 @@
 # Effect v4 Adoption Plan
 
-- Status: In progress; Phase 3 complete
+- Status: In progress; Phase 4 grant migration
 - Updated: 2026-07-15
 - Parent plan: [`PLAN.md`](../../PLAN.md)
 - Decision scope: migrate htmlview's fallible asynchronous execution and
@@ -327,18 +327,18 @@ Do not retain two TypeScript unit-test runners after the migration.
 
 ## Phase status
 
-| Phase                                | Status   | Exit summary                                           |
-| ------------------------------------ | -------- | ------------------------------------------------------ |
-| 0. Baseline and API verification     | Complete | Green baseline and recorded v4/package decisions       |
-| 1. Decision records and toolchain    | Complete | Exact dependencies, diagnostics, build/test skeleton   |
-| 2. Errors and protocol schemas       | Complete | Shared runtime-validated control contract              |
-| 3. Runtime-state and lock lifecycle  | Complete | Typed, interruption-safe private state operations      |
-| 4. Grant and raw-server resources    | Pending  | Scoped serving resources with byte fidelity intact     |
-| 5. Supervisor registry and server    | Pending  | Scoped sessions and deterministic shutdown             |
-| 6. Supervisor client                 | Pending  | Schedule-driven, schema-decoded client lifecycle       |
-| 7. App services and entry points     | Pending  | One Effect runtime path for both executables           |
-| 8. Test-suite migration              | Pending  | Effect-aware TypeScript tests and deterministic clocks |
-| 9. Packaging, docs, and release gate | Pending  | Full validation and release-ready artifact             |
+| Phase                                | Status      | Exit summary                                           |
+| ------------------------------------ | ----------- | ------------------------------------------------------ |
+| 0. Baseline and API verification     | Complete    | Green baseline and recorded v4/package decisions       |
+| 1. Decision records and toolchain    | Complete    | Exact dependencies, diagnostics, build/test skeleton   |
+| 2. Errors and protocol schemas       | Complete    | Shared runtime-validated control contract              |
+| 3. Runtime-state and lock lifecycle  | Complete    | Typed, interruption-safe private state operations      |
+| 4. Grant and raw-server resources    | In progress | Scoped serving resources with byte fidelity intact     |
+| 5. Supervisor registry and server    | Pending     | Scoped sessions and deterministic shutdown             |
+| 6. Supervisor client                 | Pending     | Schedule-driven, schema-decoded client lifecycle       |
+| 7. App services and entry points     | Pending     | One Effect runtime path for both executables           |
+| 8. Test-suite migration              | Pending     | Effect-aware TypeScript tests and deterministic clocks |
+| 9. Packaging, docs, and release gate | Pending     | Full validation and release-ready artifact             |
 
 ## Phase 0: Baseline and API verification
 
@@ -723,11 +723,26 @@ Keep this table current; replace `Pending` when a gate is resolved.
 
 ## Next action
 
-Convert disclosure-grant filesystem operations, authorized file handles, and
-the raw session listener to typed, scoped Effects while preserving every byte,
-header, confinement, and loopback-host contract.
+Make authorized file handles, request fibers, native streams, and the loopback
+listener scope-owned while preserving every raw byte, header, confinement,
+deadline, and authority contract.
 
 ## Progress log
+
+### 2026-07-15 — Phase 4 in progress
+
+- Converted disclosure-grant filesystem leaves to typed `PathError` Effects
+  while preserving default-root derivation before entry resolution, canonical
+  containment, symlink route identity, home fallback, and public error codes.
+- Promise-based app and supervisor orchestrators use narrow temporary
+  `runPromise` adapters; no second grant implementation remains. Grant review
+  found no Bucket I, Bucket II, or diet issue.
+- The affected 60 grant, HTTP, supervisor, and state tests passed with clean
+  strict Effect diagnostics. The full `pnpm run check` gate also passed with
+  100 TypeScript tests, six Effect tests, E2E, seven Playwright checks, docs,
+  build, and package lifecycle validation.
+- Next: make authorized file handles, request fibers, native streams, and the
+  loopback listener scope-owned without changing raw behavior.
 
 ### 2026-07-15 — Phase 3 complete
 

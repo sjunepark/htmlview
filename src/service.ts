@@ -1,4 +1,5 @@
 import type { JsonObject } from "./contracts.js";
+import { Effect } from "effect";
 import { resolveServingGrant } from "./serving/grant.js";
 import { SupervisorClient } from "./supervisor/client.js";
 import type {
@@ -25,9 +26,8 @@ export class HtmlviewService implements CommandService {
   }
 
   async serve(entry: string, root?: string): Promise<JsonObject> {
-    const grant = await resolveServingGrant(
-      entry,
-      root === undefined ? {} : { root },
+    const grant = await Effect.runPromise(
+      resolveServingGrant(entry, root === undefined ? {} : { root }),
     );
     const result = await this.supervisor.serve(grant.routeEntry, grant.root);
     return {
