@@ -1,6 +1,6 @@
 # Effect v4 Adoption Plan
 
-- Status: In progress; Phase 5 registry migration
+- Status: In progress; Phase 5 complete
 - Updated: 2026-07-15
 - Parent plan: [`PLAN.md`](../../PLAN.md)
 - Decision scope: migrate htmlview's fallible asynchronous execution and
@@ -327,18 +327,18 @@ Do not retain two TypeScript unit-test runners after the migration.
 
 ## Phase status
 
-| Phase                                | Status      | Exit summary                                           |
-| ------------------------------------ | ----------- | ------------------------------------------------------ |
-| 0. Baseline and API verification     | Complete    | Green baseline and recorded v4/package decisions       |
-| 1. Decision records and toolchain    | Complete    | Exact dependencies, diagnostics, build/test skeleton   |
-| 2. Errors and protocol schemas       | Complete    | Shared runtime-validated control contract              |
-| 3. Runtime-state and lock lifecycle  | Complete    | Typed, interruption-safe private state operations      |
-| 4. Grant and raw-server resources    | Complete    | Scoped serving resources with byte fidelity intact     |
-| 5. Supervisor registry and server    | In progress | Scoped sessions and deterministic shutdown             |
-| 6. Supervisor client                 | Pending     | Schedule-driven, schema-decoded client lifecycle       |
-| 7. App services and entry points     | Pending     | One Effect runtime path for both executables           |
-| 8. Test-suite migration              | Pending     | Effect-aware TypeScript tests and deterministic clocks |
-| 9. Packaging, docs, and release gate | Pending     | Full validation and release-ready artifact             |
+| Phase                                | Status   | Exit summary                                           |
+| ------------------------------------ | -------- | ------------------------------------------------------ |
+| 0. Baseline and API verification     | Complete | Green baseline and recorded v4/package decisions       |
+| 1. Decision records and toolchain    | Complete | Exact dependencies, diagnostics, build/test skeleton   |
+| 2. Errors and protocol schemas       | Complete | Shared runtime-validated control contract              |
+| 3. Runtime-state and lock lifecycle  | Complete | Typed, interruption-safe private state operations      |
+| 4. Grant and raw-server resources    | Complete | Scoped serving resources with byte fidelity intact     |
+| 5. Supervisor registry and server    | Complete | Scoped sessions, control work, and idle shutdown       |
+| 6. Supervisor client                 | Pending  | Schedule-driven, schema-decoded client lifecycle       |
+| 7. App services and entry points     | Pending  | One Effect runtime path for both executables           |
+| 8. Test-suite migration              | Pending  | Effect-aware TypeScript tests and deterministic clocks |
+| 9. Packaging, docs, and release gate | Pending  | Full validation and release-ready artifact             |
 
 ## Phase 0: Baseline and API verification
 
@@ -723,13 +723,13 @@ Keep this table current; replace `Pending` when a gate is resolved.
 
 ## Next action
 
-Scope the control listener and request fibers, replace the idle timer with a
-supervised Clock-driven fiber, and converge explicit, signal, and idle shutdown
-on one idempotent Effect.
+Execute Phase 6: convert supervisor-client requests and lifecycle polling to
+cancellable Effects and named schedules while preserving ownership and retry
+semantics.
 
 ## Progress log
 
-### 2026-07-15 — Phase 5 in progress
+### 2026-07-15 — Phase 5 complete
 
 - Replaced the Promise-tail registry with Effect's FIFO single-permit
   semaphore. Reuse, capacity checks, listener acquisition, readiness, and map
@@ -740,18 +740,25 @@ on one idempotent Effect.
   it before any map commit, and targeted/all-session stop closes the owned
   scope. Session start injection now uses the same scoped Effect contract as
   production.
-- Added direct readiness-failure and finalizer-defect tests. Shutdown continues
-  through session, control, and ownership cleanup before surfacing single or
-  aggregate failures; tests prove the content listener, control socket, and
-  ownership lock are gone. Review found no diet issue; production interruption
-  remains the next control-handler slice.
-- Strict diagnostics, lint, 39 focused supervisor/state tests, and
-  `git diff --check` pass. The full `pnpm run check` gate passed with 102
-  TypeScript tests, eight Effect tests, E2E, seven Playwright checks, docs,
-  build, and package lifecycle validation.
-- Next: scope the control listener and handler fibers, replace the idle timer
-  with a supervised Clock-driven fiber, and converge all shutdown triggers on
-  one idempotent Effect.
+- The control listener and its cancellable request fibers now share a scope;
+  body readers remove native listeners on every exit. A supervised Clock-driven
+  idle fiber replaces the raw timer, with TestClock coverage for expiry and for
+  request activity winning the queued-close race.
+- Shutdown first prevents new registry work, interrupts pending readiness, then
+  closes idle work, sessions, control work, and ownership. Normal and startup
+  cleanup attempt every finalizer and surface single or aggregate failures.
+  Tests cover readiness interruption, finalizer defects, real Unix sockets,
+  bounded stalled-client shutdown, and private state cleanup.
+- Review fixed the queued idle-close race, removed the control listener's
+  startup-only error handler after acquisition, and prevented cleanup failure
+  from skipping ownership release. The bounded recheck found no remaining
+  correctness or diet issue.
+- Strict diagnostics, lint, 40 focused supervisor/state tests, and
+  `git diff --check` pass. The final `pnpm run check` gate passed with 103
+  TypeScript tests, ten Effect tests, E2E, seven Playwright checks, docs, build,
+  and package lifecycle validation.
+- Next: convert supervisor-client transport, polling, discovery, and recovery
+  to cancellable Effects and named schedules.
 
 ### 2026-07-15 — Phase 4 complete
 

@@ -7,7 +7,18 @@ import {
   type Server,
   type ServerResponse,
 } from "node:http";
-import { Clock, Effect, Exit, Result, Scope, Semaphore } from "effect";
+import {
+  Cause,
+  Clock,
+  Data,
+  Effect,
+  Exit,
+  FiberSet,
+  Result,
+  Scope,
+  Semaphore,
+} from "effect";
+import type { Fiber as EffectFiber } from "effect/Fiber";
 import { ContentListenerError, ControlError, PathError } from "../errors.js";
 import {
   resolveServingGrant,
@@ -68,6 +79,12 @@ type StartSessionServer = (
   grant: ServingGrant,
 ) => Effect.Effect<StaticSessionServer, ContentListenerError, Scope.Scope>;
 
+type IdleRuntime = (effect: Effect.Effect<void>) => EffectFiber<void, never>;
+
+class ControlListenError extends Data.TaggedError("ControlListenError")<{
+  readonly cause: unknown;
+}> {}
+
 export interface RunningSupervisor {
   readonly controlAddress: string;
   readonly identity: SupervisorIdentity;
@@ -112,14 +129,6 @@ function invalidControlRequest(): ControlError {
   });
 }
 
-function isServerControlError(error: unknown): error is ServerControlError {
-  return (
-    error instanceof PathError ||
-    error instanceof ControlError ||
-    error instanceof ContentListenerError
-  );
-}
-
 function controlStatus(error: ServerControlError): number {
   switch (error._tag) {
     case "PathError":
@@ -154,35 +163,73 @@ function encodedControlError(error: ServerControlError): unknown {
   });
 }
 
-async function readJsonBody(request: IncomingMessage): Promise<unknown> {
+function readJsonBody(
+  request: IncomingMessage,
+): Effect.Effect<unknown, ControlError> {
   const declared = Number(request.headers["content-length"] ?? 0);
   if (Number.isFinite(declared) && declared > maximumControlBodyBytes)
-    throw new ControlError({
-      code: "control.body_too_large",
-      message: "Invalid control request",
-    });
-  const chunks: Buffer[] = [];
-  let size = 0;
-  for await (const chunk of request) {
-    const buffer = Buffer.isBuffer(chunk)
-      ? chunk
-      : Buffer.from(chunk as Uint8Array);
-    size += buffer.length;
-    if (size > maximumControlBodyBytes)
-      throw new ControlError({
+    return Effect.fail(
+      new ControlError({
         code: "control.body_too_large",
         message: "Invalid control request",
-      });
-    chunks.push(buffer);
-  }
-  try {
-    return JSON.parse(Buffer.concat(chunks).toString("utf8"));
-  } catch {
-    throw new ControlError({
-      code: "control.invalid_json",
-      message: "Invalid control request",
+      }),
+    );
+  return Effect.callback<unknown, ControlError>((resume) => {
+    const chunks: Buffer[] = [];
+    let size = 0;
+    const cleanup = (): void => {
+      request.off("data", onData);
+      request.off("end", onEnd);
+      request.off("error", onError);
+    };
+    const fail = (error: ControlError): void => {
+      cleanup();
+      request.resume();
+      resume(Effect.fail(error));
+    };
+    const onData = (chunk: Buffer | Uint8Array): void => {
+      const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+      size += buffer.length;
+      if (size > maximumControlBodyBytes) {
+        fail(
+          new ControlError({
+            code: "control.body_too_large",
+            message: "Invalid control request",
+          }),
+        );
+        return;
+      }
+      chunks.push(buffer);
+    };
+    const onEnd = (): void => {
+      cleanup();
+      try {
+        resume(
+          Effect.succeed(JSON.parse(Buffer.concat(chunks).toString("utf8"))),
+        );
+      } catch {
+        resume(
+          Effect.fail(
+            new ControlError({
+              code: "control.invalid_json",
+              message: "Invalid control request",
+            }),
+          ),
+        );
+      }
+    };
+    const onError = (cause: Error): void => {
+      cleanup();
+      resume(Effect.die(cause));
+    };
+    request.on("data", onData);
+    request.once("end", onEnd);
+    request.once("error", onError);
+    return Effect.sync(() => {
+      cleanup();
+      request.destroy();
     });
-  }
+  });
 }
 
 function closeServer(
@@ -197,10 +244,35 @@ function closeServer(
     force.unref();
     server.close((error) => {
       clearTimeout(force);
-      if (error === undefined) resolve();
+      if (
+        error === undefined ||
+        (error as NodeJS.ErrnoException).code === "ERR_SERVER_NOT_RUNNING"
+      )
+        resolve();
       else reject(error);
     });
     server.closeIdleConnections();
+  });
+}
+
+function listenControlServer(
+  server: Server,
+  address: string,
+): Effect.Effect<void, ControlListenError> {
+  return Effect.callback<void, ControlListenError>((resume) => {
+    const onError = (cause: Error): void =>
+      resume(Effect.fail(new ControlListenError({ cause })));
+    server.once("error", onError);
+    try {
+      server.listen(address, () => {
+        server.off("error", onError);
+        resume(Effect.void);
+      });
+    } catch (error) {
+      server.off("error", onError);
+      resume(Effect.fail(new ControlListenError({ cause: error })));
+    }
+    return Effect.sync(() => server.off("error", onError));
   });
 }
 
@@ -357,15 +429,18 @@ class SessionRegistry {
   }
 
   stopAll(): Effect.Effect<StopControlResult> {
-    return this.#mutations.withPermit(
-      Effect.gen({ self: this }, function* () {
-        const stopped = this.#sessions.size;
-        this.#sessions.clear();
-        this.#identity.clear();
-        yield* Scope.close(this.#scope, Exit.void);
-        return { stopped };
-      }),
-    );
+    return Effect.gen({ self: this }, function* () {
+      this.#closing = true;
+      yield* Scope.close(this.#scope, Exit.void);
+      return yield* this.#mutations.withPermit(
+        Effect.sync(() => {
+          const stopped = this.#sessions.size;
+          this.#sessions.clear();
+          this.#identity.clear();
+          return { stopped };
+        }),
+      );
+    });
   }
 
   get size(): number {
@@ -388,6 +463,8 @@ export async function startSupervisor(
     readonly maximumSessions?: number;
     readonly beforeHealth?: () => Promise<void>;
     readonly ownershipNonce?: string;
+    readonly idleRuntime?: IdleRuntime;
+    readonly deferIdleClose?: (close: () => void) => void;
   } = {},
 ): Promise<RunningSupervisor> {
   const paths = options.paths ?? statePaths();
@@ -426,7 +503,17 @@ export async function startSupervisor(
     options.shutdownGraceMilliseconds > 0
       ? options.shutdownGraceMilliseconds
       : defaultShutdownGraceMilliseconds;
-  let idleTimer: NodeJS.Timeout | undefined;
+  let idleScope: Scope.Closeable | undefined;
+  let runIdle: IdleRuntime;
+  if (options.idleRuntime !== undefined) runIdle = options.idleRuntime;
+  else {
+    idleScope = await Effect.runPromise(Scope.make());
+    runIdle = await Effect.runPromise(
+      Scope.provide(idleScope)(FiberSet.makeRuntime<never, void, never>()),
+    );
+  }
+  let idleFiber: EffectFiber<void, never> | undefined;
+  let idleGeneration = 0;
   let activeHandlers = 0;
   let closing = false;
   let closePromise: Promise<void> | undefined;
@@ -438,133 +525,204 @@ export async function startSupervisor(
   };
 
   function cancelIdleShutdown(): void {
-    if (idleTimer === undefined) return;
-    clearTimeout(idleTimer);
-    idleTimer = undefined;
+    idleGeneration += 1;
+    idleFiber?.interruptUnsafe();
+    idleFiber = undefined;
+  }
+
+  async function closeIdleScope(): Promise<void> {
+    if (idleScope !== undefined)
+      await Effect.runPromise(Scope.close(idleScope, Exit.void));
   }
 
   function scheduleIdleShutdown(): void {
     cancelIdleShutdown();
     if (closing || activeHandlers !== 0 || sessions.size !== 0) return;
-    idleTimer = setTimeout(() => void close(), idleMilliseconds);
-    idleTimer.unref();
+    const generation = idleGeneration;
+    idleFiber = runIdle(
+      Effect.sleep(idleMilliseconds).pipe(
+        Effect.andThen(
+          Effect.sync(() => {
+            if (
+              generation !== idleGeneration ||
+              closing ||
+              activeHandlers !== 0 ||
+              sessions.size !== 0
+            )
+              return;
+            idleFiber = undefined;
+            (options.deferIdleClose ?? setImmediate)(() => {
+              if (
+                generation === idleGeneration &&
+                !closing &&
+                activeHandlers === 0 &&
+                sessions.size === 0
+              )
+                void close();
+            });
+          }),
+        ),
+      ),
+    );
   }
 
-  const control = createServer(async (request, response) => {
-    if (!authorized(request)) {
-      const error = new ControlError({
-        code: "control.unauthorized",
-        message: "Control authentication failed",
-      });
-      json(response, controlStatus(error), encodedControlError(error));
-      return;
-    }
-    if (closing) {
-      const error = new ControlError({
-        code: "control.shutting_down",
-        message: "Supervisor is shutting down",
-      });
-      json(response, controlStatus(error), encodedControlError(error));
-      return;
-    }
-    activeHandlers += 1;
-    cancelIdleShutdown();
-    try {
+  function routeControlRequest(
+    request: IncomingMessage,
+    response: ServerResponse,
+  ): Effect.Effect<void, ServerControlError> {
+    return Effect.gen(function* () {
       const requestUrl = new URL(request.url ?? "/", `http://${controlHost}`);
       if (
         request.method === "GET" &&
         requestUrl.pathname === "/health" &&
         requestUrl.search === ""
       ) {
-        await options.beforeHealth?.();
-        json(response, 200, encodeSupervisorIdentity(identity));
-      } else if (
-        request.method === "GET" &&
-        requestUrl.pathname === "/sessions"
-      ) {
+        if (options.beforeHealth !== undefined)
+          yield* Effect.tryPromise({
+            try: options.beforeHealth,
+            catch: (cause) =>
+              new ControlError({
+                code: "control.internal",
+                message: "Supervisor could not complete the request",
+                cause,
+              }),
+          });
+        return yield* Effect.sync(() =>
+          json(response, 200, encodeSupervisorIdentity(identity)),
+        );
+      }
+      if (request.method === "GET" && requestUrl.pathname === "/sessions") {
         if ([...requestUrl.searchParams.keys()].some((key) => key !== "fields"))
-          throw invalidControlRequest();
+          return yield* invalidControlRequest();
         const values = requestUrl.searchParams.getAll("fields");
-        if (values.length > 1) throw invalidControlRequest();
+        if (values.length > 1) return yield* invalidControlRequest();
         const requestedFields =
           values.length === 0 || values[0] === ""
             ? []
             : (values[0]?.split(",") ?? []);
         const fields = decodeSessionFieldSelection(requestedFields);
-        if (Result.isFailure(fields)) throw invalidControlRequest();
-        json(
-          response,
-          200,
-          encodeSessionListResult({
-            sessions: sessions.list(fields.success),
-          }),
+        if (Result.isFailure(fields)) return yield* invalidControlRequest();
+        return yield* Effect.sync(() =>
+          json(
+            response,
+            200,
+            encodeSessionListResult({
+              sessions: sessions.list(fields.success),
+            }),
+          ),
         );
-      } else if (
+      }
+      if (
         request.method === "POST" &&
         requestUrl.pathname === "/sessions" &&
         requestUrl.search === ""
       ) {
-        const body = decodeCreateSessionRequest(await readJsonBody(request));
-        if (Result.isFailure(body)) throw invalidControlRequest();
-        const grant = await Effect.runPromise(
-          resolveGrant(body.success.entry, { root: body.success.root }),
+        const body = decodeCreateSessionRequest(yield* readJsonBody(request));
+        if (Result.isFailure(body)) return yield* invalidControlRequest();
+        const grant = yield* resolveGrant(body.success.entry, {
+          root: body.success.root,
+        });
+        const result = yield* sessions.serve(grant);
+        return yield* Effect.sync(() =>
+          json(response, 200, encodeServeControlResult(result)),
         );
-        json(
-          response,
-          200,
-          encodeServeControlResult(
-            await Effect.runPromise(sessions.serve(grant)),
-          ),
-        );
-      } else if (
+      }
+      if (
         request.method === "POST" &&
         requestUrl.pathname === "/stop" &&
         requestUrl.search === ""
       ) {
-        const body = decodeStopSessionRequest(await readJsonBody(request));
-        if (Result.isFailure(body)) throw invalidControlRequest();
-        json(
-          response,
-          200,
-          encodeTargetedStopControlResult(
-            await Effect.runPromise(sessions.stop(body.success.session)),
-          ),
+        const body = decodeStopSessionRequest(yield* readJsonBody(request));
+        if (Result.isFailure(body)) return yield* invalidControlRequest();
+        const result = yield* sessions.stop(body.success.session);
+        return yield* Effect.sync(() =>
+          json(response, 200, encodeTargetedStopControlResult(result)),
         );
-      } else if (
+      }
+      if (
         request.method === "POST" &&
         requestUrl.pathname === "/shutdown" &&
         requestUrl.search === ""
       ) {
-        const body = decodeShutdownRequest(await readJsonBody(request));
-        if (Result.isFailure(body)) throw invalidControlRequest();
+        const body = decodeShutdownRequest(yield* readJsonBody(request));
+        if (Result.isFailure(body)) return yield* invalidControlRequest();
         closing = true;
         sessions.beginShutdown();
         cancelIdleShutdown();
         response.once("finish", () => setImmediate(() => void close()));
-        json(
-          response,
-          200,
-          encodeStopControlResult(await Effect.runPromise(sessions.stopAll())),
+        const result = yield* sessions.stopAll();
+        return yield* Effect.sync(() =>
+          json(response, 200, encodeStopControlResult(result)),
         );
-      } else {
-        const error = new ControlError({
-          code: "control.not_found",
-          message: "Control route not found",
-        });
-        json(response, controlStatus(error), encodedControlError(error));
       }
-    } catch (error) {
-      const exposed = isServerControlError(error)
-        ? error
-        : new ControlError({
-            code: "control.internal",
-            message: "Supervisor could not complete the request",
-          });
-      json(response, controlStatus(exposed), encodedControlError(exposed));
-    } finally {
-      activeHandlers -= 1;
-      scheduleIdleShutdown();
+      return yield* new ControlError({
+        code: "control.not_found",
+        message: "Control route not found",
+      });
+    });
+  }
+
+  function handleControlRequest(
+    request: IncomingMessage,
+    response: ServerResponse,
+  ): Effect.Effect<void> {
+    if (!authorized(request)) {
+      const error = new ControlError({
+        code: "control.unauthorized",
+        message: "Control authentication failed",
+      });
+      return Effect.sync(() =>
+        json(response, controlStatus(error), encodedControlError(error)),
+      );
     }
+    if (closing) {
+      const error = new ControlError({
+        code: "control.shutting_down",
+        message: "Supervisor is shutting down",
+      });
+      return Effect.sync(() =>
+        json(response, controlStatus(error), encodedControlError(error)),
+      );
+    }
+    return Effect.acquireUseRelease(
+      Effect.sync(() => {
+        activeHandlers += 1;
+        cancelIdleShutdown();
+      }),
+      () => routeControlRequest(request, response),
+      () =>
+        Effect.sync(() => {
+          activeHandlers -= 1;
+          scheduleIdleShutdown();
+        }),
+    ).pipe(
+      Effect.catch((error) =>
+        Effect.sync(() =>
+          json(response, controlStatus(error), encodedControlError(error)),
+        ),
+      ),
+      Effect.catchCause((cause) =>
+        Effect.sync(() => {
+          if (response.destroyed) return;
+          if (Cause.hasInterruptsOnly(cause)) response.destroy();
+          else {
+            const error = new ControlError({
+              code: "control.internal",
+              message: "Supervisor could not complete the request",
+            });
+            json(response, controlStatus(error), encodedControlError(error));
+          }
+        }),
+      ),
+    );
+  }
+
+  const controlScope = await Effect.runPromise(Scope.make());
+  const runControlRequest = await Effect.runPromise(
+    Scope.provide(controlScope)(FiberSet.makeRuntime<never, void, never>()),
+  );
+  const control = createServer((request, response) => {
+    runControlRequest(handleControlRequest(request, response));
   });
   control.maxConnections = 25;
   control.maxHeadersCount = 50;
@@ -573,6 +731,47 @@ export async function startSupervisor(
   control.requestTimeout = 10_000;
   control.keepAliveTimeout = 2_000;
   control.setTimeout(10_000, (socket) => socket.destroy());
+  await Effect.runPromise(
+    Scope.provide(controlScope)(
+      Effect.addFinalizer(() =>
+        Effect.promise(() => closeServer(control, shutdownGraceMilliseconds)),
+      ),
+    ),
+  );
+
+  async function cleanupStartupResources(
+    ownership?: Scope.Closeable,
+  ): Promise<unknown[]> {
+    const failures: unknown[] = [];
+    const cleanupOperations: Array<() => Promise<void>> = [
+      closeIdleScope,
+      () => Effect.runPromise(Scope.close(controlScope, Exit.void)),
+    ];
+    if (ownership !== undefined)
+      cleanupOperations.push(() =>
+        Effect.runPromise(Scope.close(ownership, Exit.void)),
+      );
+    for (const cleanup of cleanupOperations) {
+      try {
+        await cleanup();
+      } catch (error) {
+        failures.push(error);
+      }
+    }
+    return failures;
+  }
+
+  function startupFailure(
+    error: unknown,
+    cleanupFailures: readonly unknown[],
+  ): unknown {
+    return cleanupFailures.length === 0
+      ? error
+      : new AggregateError(
+          [error, ...cleanupFailures],
+          "Supervisor startup cleanup failed",
+        );
+  }
 
   let bootstrapScope: Scope.Closeable | undefined;
   let bootstrapLock: SupervisorLock | undefined;
@@ -600,17 +799,17 @@ export async function startSupervisor(
       await Effect.runPromise(Scope.close(candidateScope, Exit.void));
       throw error;
     }
+  } catch (error) {
+    throw startupFailure(error, await cleanupStartupResources());
   } finally {
     if (bootstrapScope !== undefined)
       await Effect.runPromise(Scope.close(bootstrapScope, Exit.void));
   }
 
-  await new Promise<void>((resolve, reject) => {
-    control.once("error", reject);
-    control.listen(paths.controlSocket, resolve);
-  }).catch(async (error: unknown) => {
-    await Effect.runPromise(Scope.close(ownershipScope, Exit.void));
-    throw error;
+  await Effect.runPromise(
+    listenControlServer(control, paths.controlSocket),
+  ).catch(async (error: unknown) => {
+    throw startupFailure(error, await cleanupStartupResources(ownershipScope));
   });
   try {
     await chmod(paths.controlSocket, 0o600);
@@ -621,9 +820,7 @@ export async function startSupervisor(
     )
       throw new Error("The htmlview control socket is not privately owned");
   } catch (error) {
-    await closeServer(control);
-    await Effect.runPromise(Scope.close(ownershipScope, Exit.void));
-    throw error;
+    throw startupFailure(error, await cleanupStartupResources(ownershipScope));
   }
 
   function close(): Promise<void> {
@@ -633,12 +830,17 @@ export async function startSupervisor(
       cancelIdleShutdown();
       const failures: unknown[] = [];
       try {
+        await closeIdleScope();
+      } catch (error) {
+        failures.push(error);
+      }
+      try {
         await Effect.runPromise(sessions.stopAll());
       } catch (error) {
         failures.push(error);
       }
       try {
-        await closeServer(control, shutdownGraceMilliseconds);
+        await Effect.runPromise(Scope.close(controlScope, Exit.void));
       } catch (error) {
         failures.push(error);
       }

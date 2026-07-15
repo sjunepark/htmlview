@@ -873,6 +873,66 @@ describe("supervisor lifecycle", () => {
     assert.equal(contentStarts, 0);
   });
 
+  it("interrupts pending session readiness before shutdown takes the registry permit", async () => {
+    const parent = await temporaryDirectory("htmlview-pending-ready-");
+    const paths = statePaths({
+      HTMLVIEW_STATE_DIR: path.join(parent, "state"),
+    });
+    const root = await temporaryDirectory("htmlview-pending-entry-");
+    const entry = path.join(root, "report.html");
+    await writeFile(entry, "<!doctype html>");
+    let readinessStarted = (): void => undefined;
+    const started = new Promise<void>((resolve) => {
+      readinessStarted = resolve;
+    });
+    let finalized = 0;
+    const stalled = createHttpServer(() => readinessStarted());
+    await new Promise<void>((resolve, reject) => {
+      stalled.once("error", reject);
+      stalled.listen({ host: "127.0.0.1", port: 0 }, resolve);
+    });
+    const address = stalled.address();
+    assert.ok(address !== null && typeof address !== "string");
+    const supervisor = await startSupervisor({
+      paths,
+      idleMilliseconds: 10_000,
+      shutdownGraceMilliseconds: 50,
+      startSessionServer: () =>
+        Effect.gen(function* () {
+          yield* Effect.addFinalizer(() =>
+            Effect.callback<void>((resume) => {
+              stalled.close((error) => {
+                finalized += 1;
+                resume(error === undefined ? Effect.void : Effect.die(error));
+              });
+              stalled.closeAllConnections();
+            }),
+          );
+          return {
+            bindAddress: "127.0.0.1" as const,
+            hostname: "h-stalled.localhost",
+            port: address.port,
+            origin: `http://h-stalled.localhost:${address.port}`,
+            url: `http://h-stalled.localhost:${address.port}/report.html`,
+          };
+        }),
+    });
+    supervisors.push(supervisor);
+    const serve = new SupervisorClient(paths).serve(entry, root).then(
+      () => undefined,
+      (error: unknown) => error,
+    );
+    await started;
+    await supervisor.close();
+    supervisors.pop();
+    assert.equal(
+      ((await serve) as { readonly code?: unknown }).code,
+      "http.readiness_failed",
+    );
+    assert.equal(finalized, 1);
+    assert.equal(await socketExists(paths), false);
+  });
+
   it("translates an unusable state location into a stable client error", async () => {
     const parent = await temporaryDirectory("htmlview-unusable-state-");
     const stateFile = path.join(parent, "not-a-directory");

@@ -232,6 +232,14 @@ targeted stop, or registry shutdown. Listing selects optional fields at the
 control seam, keeping complete enumeration within the bounded response contract
 without pagination.
 
+The control listener and its request-fiber set share one scope. Control body
+reads are cancellable and remove native listeners on completion, failure, or
+interruption. Idle shutdown is a supervised Clock-driven fiber; each request or
+session change invalidates an older expiry before the queued close rechecks the
+current state. Shutdown rejects new mutations and attempts cleanup of idle work,
+session scopes, control work, and lifetime ownership even when an earlier
+finalizer fails.
+
 Session mutations are serialized inside the supervisor. Static file reads do
 not require registry-wide locking after a session snapshot has been validated.
 
