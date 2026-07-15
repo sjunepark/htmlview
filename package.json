@@ -22,17 +22,19 @@
     "lint": "eslint .",
     "test": "tsx --test test/**/*.test.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "validate:browser-origin": "playwright test --config validation/browser-origin/playwright.config.mjs",
+    "validate:browser-origin": "npm run build --silent && playwright test --config validation/browser-origin/playwright.config.mjs",
     "validate:agent-browser": "bash validation/browser-origin/run-agent-browser.sh"
   },
   "dependencies": {
-    "@toon-format/toon": "2.3.0"
+    "@toon-format/toon": "2.3.0",
+    "mime-types": "3.0.2"
   },
   "devDependencies": {
     "@playwright/test": "1.61.1",
     "@eslint/js": "10.0.1",
     "@toon-format/spec": "3.3.0",
     "@types/node": "22.20.1",
+    "@types/mime-types": "3.0.1",
     "eslint": "10.7.0",
     "globals": "17.7.0",
     "prettier": "3.9.5",

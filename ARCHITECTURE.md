@@ -220,13 +220,17 @@ origin-keyed state from concurrent services and later port reuse.
 - `src/command.ts` owns strict syntax, flag, field, and usage validation.
 - `src/contracts.ts` owns JSON-compatible result and error types.
 - `src/output.ts` is the only TOON/JSON encoding boundary.
+- `src/serving/grant.ts` validates and canonicalizes the entry/root disclosure
+  grant.
+- `src/serving/http.ts` owns the byte-faithful confined HTTP handler and
+  per-session content listener.
 - `test/` holds contract and TOON v3.3 conformance tests.
 - `validation/browser-origin/` holds browser behavior evidence and remains
   outside the runtime.
 
-The serving core and supervisor will receive concrete start paths in their
-milestones. Avoid a generic plugin or browser-adapter layer without a current
-second implementation.
+The supervisor will receive concrete start paths in its milestone. Avoid a
+generic plugin or browser-adapter layer without a current second
+implementation.
 
 ## Related decisions
 

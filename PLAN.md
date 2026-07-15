@@ -23,7 +23,10 @@ caller.
 - Milestone 0 is complete: ADR 0005 selects Node.js 22.13+, TypeScript, npm,
   and `@toon-format/toon`; the CLI foundation and pinned v3.3 conformance tests
   are in place.
-- The next action is Milestone 1 faithful static serving.
+- Milestone 1 is complete: canonical disclosure grants, byte-faithful GET/HEAD,
+  MIME and conditional responses, exact Host checks, and adversarial
+  confinement tests are implemented independently of lifecycle.
+- The next action is Milestone 2 supervisor and sessions.
 
 Update this document in place. Keep completed work, current validation,
 blockers, decisions, and the single next action concise; do not append session
@@ -103,6 +106,10 @@ Acceptance:
 - One repository command runs all established checks.
 
 ## Milestone 1: Faithful static serving
+
+Status: Complete. `src/serving/` owns grant validation and the in-process raw
+handler; integration and generic-browser coverage are in `test/http.test.ts`
+and `validation/browser-origin/htmlview-serving.spec.mjs`.
 
 - Validate and canonicalize an HTML entry file and its serving root.
 - Enforce the grant semantics from ADR 0004: the entry parent is the default
@@ -238,5 +245,5 @@ annotation transport before a working second use case requires it.
 
 ## Next action
 
-Complete Milestone 1 faithful static serving with in-process HTTP integration
-and adversarial path-confinement tests.
+Complete Milestone 2 supervisor/session lifecycle, authenticated control,
+private runtime discovery, idempotency, recovery, and CLI integration.

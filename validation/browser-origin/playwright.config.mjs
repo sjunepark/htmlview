@@ -1,6 +1,6 @@
 export default {
   testDir: ".",
-  testMatch: "origin.spec.mjs",
+  testMatch: "*.spec.mjs",
   workers: 1,
   reporter: "line",
   use: {
