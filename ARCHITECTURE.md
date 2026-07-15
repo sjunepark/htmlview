@@ -1,0 +1,228 @@
+# Architecture
+
+## Purpose and boundary
+
+`htmlview` converts a local HTML entry and an explicitly granted directory root
+into a byte-faithful loopback HTTP URL. An agent passes that URL to any
+separately supplied browser controller. Documentation may use
+[`agent-browser`](https://github.com/vercel-labs/agent-browser) as an example,
+but no controller is privileged by the architecture.
+
+The core owns local path validation, static HTTP serving, session lifecycle,
+and an agent-facing CLI. It does not own browser installation, browser
+automation, visual interpretation, or page modification.
+
+“Byte-faithful” means the raw route serves selected files without rewriting or
+injected runtime code. HTTP necessarily gives the content a web origin, so the
+product intentionally does not reproduce `file://` origin semantics.
+
+The selected root is both the HTTP origin root and the read-disclosure grant.
+Every permitted file beneath it is available to same-origin page code; only
+resolved targets outside it are forbidden.
+
+## Target system shape
+
+```text
+agent
+  |
+  | CLI: home / serve / stop
+  v
+htmlview client
+  |  \
+  |   +-- result encoder --> stdout: TOON (default) / JSON
+  |
+  +-- authenticated control channel --+
+                                        |
+                               per-user supervisor
+                                        |
+                             +----------+----------+
+                             |                     |
+                      session registry   per-session raw listeners
+                                                   |
+                                                   v
+                                         loopback raw origins
+                                                   |
+                                                   v
+                                    external browser controller
+
+optional annotation surface (later) ---- consumes raw URL and emits feedback
+```
+
+The annotation surface is deliberately outside the core request path. No
+plugin framework is planned; a concrete annotation workflow must first prove
+that an additional interface is necessary.
+
+## Components
+
+### CLI client
+
+Strictly validates command syntax, talks to the local supervisor, and creates a
+minimal JSON-compatible result value. It encodes that value as TOON by default
+or JSON with `--json`, then exits after the requested state is confirmed. It
+does not need to remain attached to keep content available.
+
+The planned command surface is intentionally small:
+
+- `htmlview` lists active sessions.
+- `htmlview serve <entry.html> [--root <directory>]` creates or reuses a
+  session and returns its raw URL.
+- `htmlview stop <session>` stops one session.
+- `htmlview stop --all` stops all sessions and allows the supervisor to exit.
+
+Names and flags may be refined during the foundation milestone, but the state
+transitions and output contracts should remain this small.
+
+With no command, the client renders a content-first home view containing its
+executable identity, a definitive session count, minimal live session rows,
+and contextual next commands. Structured errors use the selected data format;
+progress and internal diagnostics use stderr. [`docs/CLI.md`](docs/CLI.md)
+owns the complete public contract.
+
+### Per-user supervisor
+
+Owns one authenticated loopback control endpoint and multiple independent
+content sessions. Each content session gets an automatically allocated
+loopback port, so its serving root is also its HTTP origin root. This preserves
+authored root-relative URLs without adding a session prefix to document paths.
+
+The CLI discovers or starts the supervisor, authenticates over the control
+channel, and waits until the requested content listener is ready before
+returning.
+
+The supervisor owns concurrency, idle shutdown, stale-state recovery, and
+graceful termination. It must not require a project-local process manager.
+
+### Session registry
+
+Maps a session identifier to:
+
+- the canonical entry-file path;
+- the canonical serving root;
+- the dedicated content-listener address;
+- lifecycle state; and
+- timestamps needed for cleanup and diagnostics.
+
+Runtime state belongs in the user's platform-appropriate state directory, not
+in a served project. State writes must be atomic and private to the user. A
+session identifier is not an authorization mechanism for control operations.
+The canonical root in each record is the session's complete disclosure grant.
+
+### Static HTTP service
+
+Each session listener maps URL paths directly to files under that session's
+root. The returned entry URL uses the entry's encoded path relative to the
+root. For example, `/workspace/public/report.html` under root `/workspace`
+becomes `http://127.0.0.1:<port>/public/report.html`. This lets `./app.css`
+resolve beside the entry and `/assets/logo.svg` resolve from the chosen root.
+
+The service handles HTTP method validation, URL decoding, containment checks,
+MIME types, conditional requests, and ordinary byte streaming.
+
+The service has no filename or dotfile denylist. Confinement prevents resolved
+targets outside the root; it does not hide one in-root file from another page
+on the same origin.
+
+The raw service does not parse HTML in order to modify it. File changes become
+visible on a later request or reload without requiring a new session.
+
+## Runtime flows
+
+### Serve an entry file
+
+1. The CLI validates that the entry exists and is a regular HTML file.
+2. For `serve <entry>`, it derives the candidate root from the supplied path's
+   parent before resolving the entry. An exact `--root` is the only alternative
+   grant.
+3. It canonicalizes the candidate root and entry independently. An entry
+   symlink whose target falls outside the canonical root is rejected before
+   contacting the supervisor.
+4. It discovers a healthy supervisor or starts one and waits for readiness.
+5. The supervisor atomically creates or reuses the session for the canonical
+   entry/root pair.
+6. The CLI returns the session state, raw URL, resolved root, and grant meaning
+   as TOON or JSON, then exits.
+
+Repeating the same request is a successful no-op that returns the existing
+session. A different root is a different session because it changes
+root-relative resource resolution and the authorized file set.
+
+### Serve a browser request
+
+1. The session listener validates the `Host` and method.
+2. It decodes the requested relative path exactly once.
+3. It resolves the final filesystem target and verifies that it remains under
+   the canonical session root, including through symlinks.
+4. It rejects directory requests rather than inventing index or fallback
+   behavior.
+5. It streams the file with the correct content type and without body
+   transformation.
+
+Query strings do not participate in filesystem lookup. URL fragments never
+reach the server and remain available to the page.
+
+### Stop and recover
+
+Stopping a missing or already stopped session succeeds as an idempotent no-op.
+The supervisor removes inactive sessions, closes after a bounded idle period,
+and treats stale discovery state as recoverable rather than requiring manual
+file deletion.
+
+## Invariants
+
+1. **Raw file bodies are unmodified.** A successful `200 GET` body is
+   byte-for-byte the source file selected after safe path resolution. `HEAD`
+   and conditional responses follow HTTP semantics without transforming it.
+2. **Browser independence.** No core package depends on or assumes a particular
+   browser controller, profile, or debugging protocol.
+3. **Loopback only.** Version one has no LAN or public bind mode.
+4. **The root is the grant.** A session may read permitted files beneath its
+   canonical root and cannot read a resolved target outside it. No broader root
+   is inferred.
+5. **No source mutation.** Serving, listing, stopping, and future annotations
+   never alter the served project.
+6. **Ready before output.** A successful `serve` result means its URL already
+   accepts requests.
+7. **Structured agent contract.** Domain results are format-neutral. Stdout is
+   TOON by default or logically equivalent JSON with `--json`; progress and
+   internal diagnostics stay on stderr.
+8. **Explicit lifecycle.** Sessions are observable and stoppable, and abandoned
+   supervisors clean themselves up.
+9. **Optional layers cannot weaken the core.** A later review or annotation
+   route may transform its own representation but cannot alter raw-route
+   behavior or security checks.
+
+## State and concurrency
+
+At most one healthy supervisor owns the per-user discovery record. Startup must
+use an inter-process lock or an equivalent atomic claim so concurrent agents do
+not create competing supervisors. The discovery record contains only the
+minimum control-endpoint metadata and a control credential; both the directory
+and record use user-only permissions. Content-listener ports belong to session
+state and are never caller-selected.
+
+Session mutations are serialized inside the supervisor. Static file reads do
+not require registry-wide locking after a session snapshot has been validated.
+
+Dedicated ports give simultaneously active sessions distinct web origins for
+origin-keyed state, but cookies are shared across ports on the same host.
+Ephemeral ports can also be reused after a session stops, allowing other
+storage, caches, or service workers to reappear. Release design must address
+concurrent cookie sharing, unrelated loopback services, and cross-lifetime
+state. The implementation plan treats origin identity as a pre-foundation
+decision rather than assuming a new port provides complete isolation.
+
+## Start-here code map
+
+There is no source tree yet. The foundation milestone in `PLAN.md` must add this
+section's concrete entry points after selecting the runtime. Keep the eventual
+boundaries aligned with the components above; avoid creating a generic plugin
+or browser-adapter layer without a current second implementation.
+
+## Related decisions
+
+- [ADR 0001: Separate serving from browser control](docs/decisions/0001-separate-serving-from-browser-control.md)
+- [ADR 0002: Use a per-user loopback supervisor](docs/decisions/0002-per-user-loopback-supervisor.md)
+- [ADR 0003: Adopt an AXI output contract](docs/decisions/0003-adopt-an-axi-output-contract.md)
+- [ADR 0004: Treat the serving root as a disclosure grant](docs/decisions/0004-treat-the-serving-root-as-a-disclosure-grant.md)
+- [Agent-facing CLI contract](docs/CLI.md)
+- [Threat model](docs/THREAT_MODEL.md)
