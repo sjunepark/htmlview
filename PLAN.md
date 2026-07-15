@@ -59,6 +59,9 @@ caller.
 - Effect v4 adoption Phase 6 is complete: control transport, discovery,
   ownership, detached launch, command responses, and shutdown confirmation are
   cancellable typed Effects with scoped resources and deterministic schedules.
+- Effect v4 adoption Phase 7 is complete: command orchestration uses one Effect
+  service Layer, and both executables use one signal-aware Node runtime boundary
+  with structured error-channel separation and scoped supervisor completion.
 - Final validation passes `pnpm run check`, the Node 22 Linux package workflow,
   `pnpm run validate:browser-use`, and `pnpm audit` with zero vulnerabilities.
 
@@ -294,5 +297,5 @@ annotation transport before a working second use case requires it.
 
 ## Next action
 
-Execute Phase 7 of `docs/plans/effect-v4-adoption.md`; do not publish the
+Execute Phase 8 of `docs/plans/effect-v4-adoption.md`; do not publish the
 pre-migration artifact. Optional annotation work remains deferred.

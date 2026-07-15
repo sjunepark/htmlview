@@ -61,6 +61,12 @@ minimal JSON-compatible result value. It encodes that value as TOON by default
 or JSON with `--json`, then exits after the requested state is confirmed. It
 does not need to remain attached to keep content available.
 
+Command orchestration is one Effect program over a single command-service
+Layer. Strict parsing remains synchronous, expected tagged failures become
+stable structured results, and unexpected defects are sanitized on stdout
+while diagnostics stay on stderr. The executable supplies the only Node
+runtime boundary and the only output newline.
+
 The command surface is intentionally small:
 
 - `htmlview` lists active sessions.
@@ -97,6 +103,10 @@ The listener binds only to `127.0.0.1`; the unique hostname isolates cookies,
 storage, caches, and service workers and is never reused after a session stops.
 The supervisor owns concurrency, idle shutdown, stale-socket recovery, and
 graceful termination. It must not require a project-local process manager.
+The supervisor executable also has one Node runtime boundary. Its scoped Layer
+awaits an explicit server-closed signal, so idle and control-request shutdowns
+end the root program while SIGINT or SIGTERM interrupt that same root and run
+the idempotent shutdown finalizer before exit.
 
 ### Session registry
 

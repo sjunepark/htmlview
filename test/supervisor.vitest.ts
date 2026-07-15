@@ -5,7 +5,7 @@ import path from "node:path";
 import { expect, it } from "@effect/vitest";
 import { Effect, Fiber, FiberSet } from "effect";
 import { TestClock } from "effect/testing";
-import { startSupervisor } from "../src/supervisor/server.js";
+import { runSupervisor, startSupervisor } from "../src/supervisor/server.js";
 import { controlHost } from "../src/supervisor/protocol.js";
 import { statePaths } from "../src/supervisor/state.js";
 
@@ -21,6 +21,18 @@ function waitUntilMissing(pathname: string): Effect.Effect<boolean> {
   return Effect.gen(function* () {
     for (let attempt = 0; attempt < 20; attempt += 1) {
       if (!(yield* exists(pathname))) return true;
+      yield* Effect.promise(
+        () => new Promise<void>((resolve) => setImmediate(resolve)),
+      );
+    }
+    return false;
+  });
+}
+
+function waitUntilPresent(pathname: string): Effect.Effect<boolean> {
+  return Effect.gen(function* () {
+    for (let attempt = 0; attempt < 20; attempt += 1) {
+      if (yield* exists(pathname)) return true;
       yield* Effect.promise(
         () => new Promise<void>((resolve) => setImmediate(resolve)),
       );
@@ -69,7 +81,28 @@ it.effect("uses the test clock for idle supervisor shutdown", () =>
         expect(yield* exists(paths.controlSocket)).toBe(true);
         yield* TestClock.adjust(1);
         expect(yield* waitUntilMissing(paths.controlSocket)).toBe(true);
-        yield* Effect.promise(() => supervisor.close());
+        yield* supervisor.closed;
+      }),
+    (parent) =>
+      Effect.promise(() => rm(parent, { recursive: true, force: true })),
+  ),
+);
+
+it.effect("closes the supervisor when its root scope is interrupted", () =>
+  Effect.acquireUseRelease(
+    Effect.promise(() => mkdtemp(path.join(tmpdir(), "htmlview-root-scope-"))),
+    (parent) =>
+      Effect.gen(function* () {
+        const paths = statePaths({
+          HTMLVIEW_STATE_DIR: path.join(parent, "state"),
+        });
+        const fiber = yield* Effect.forkChild(
+          Effect.scoped(runSupervisor({ paths })),
+        );
+        expect(yield* waitUntilPresent(paths.controlSocket)).toBe(true);
+        yield* Fiber.interrupt(fiber);
+        expect(yield* exists(paths.controlSocket)).toBe(false);
+        expect(yield* exists(paths.supervisorLock)).toBe(false);
       }),
     (parent) =>
       Effect.promise(() => rm(parent, { recursive: true, force: true })),

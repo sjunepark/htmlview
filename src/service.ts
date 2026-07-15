@@ -1,5 +1,6 @@
+import { Context, Effect } from "effect";
 import type { JsonObject } from "./contracts.js";
-import { Effect } from "effect";
+import type { OperationalError } from "./errors.js";
 import { resolveServingGrant } from "./serving/grant.js";
 import { SupervisorClient } from "./supervisor/client.js";
 import type {
@@ -7,67 +8,70 @@ import type {
   SessionSummary,
 } from "./supervisor/protocol.js";
 
-export interface CommandService {
-  listSessions(
+export interface CommandServiceShape {
+  readonly listSessions: (
     fields?: readonly OptionalSessionField[],
-  ): Promise<readonly SessionSummary[]>;
-  serve(entry: string, root?: string): Promise<JsonObject>;
-  stopSession(session: string): Promise<JsonObject>;
-  stopAll(): Promise<JsonObject>;
+  ) => Effect.Effect<readonly SessionSummary[], OperationalError>;
+  readonly serve: (
+    entry: string,
+    root?: string,
+  ) => Effect.Effect<JsonObject, OperationalError>;
+  readonly stopSession: (
+    session: string,
+  ) => Effect.Effect<JsonObject, OperationalError>;
+  readonly stopAll: () => Effect.Effect<JsonObject, OperationalError>;
 }
 
-export class HtmlviewService implements CommandService {
-  constructor(private readonly supervisor = new SupervisorClient()) {}
+export class CommandService extends Context.Service<
+  CommandService,
+  CommandServiceShape
+>()("htmlview/CommandService") {}
 
-  async listSessions(
-    fields: readonly OptionalSessionField[] = [],
-  ): Promise<readonly SessionSummary[]> {
-    return Effect.runPromise(this.supervisor.list(fields));
-  }
-
-  async serve(entry: string, root?: string): Promise<JsonObject> {
-    const grant = await Effect.runPromise(
-      resolveServingGrant(entry, root === undefined ? {} : { root }),
-    );
-    const result = await Effect.runPromise(
-      this.supervisor.serve(grant.routeEntry, grant.root),
-    );
-    return {
-      session: {
-        id: result.session.id,
-        status: result.session.status,
-        url: result.session.url,
-        reused: result.reused,
-      },
-      grant: {
-        root: result.session.root,
-        access: "read_all_regular_files_beneath_root",
-      },
-    };
-  }
-
-  async stopSession(session: string): Promise<JsonObject> {
-    const result = await Effect.runPromise(
-      this.supervisor.stopSession(session),
-    );
-    return {
-      stop: {
-        scope: "session",
-        session,
-        stopped: result.stopped,
-        status: result.stopped === 0 ? "already_stopped" : "stopped",
-      },
-    };
-  }
-
-  async stopAll(): Promise<JsonObject> {
-    const result = await Effect.runPromise(this.supervisor.stopAll());
-    return {
-      stop: {
-        scope: "all",
-        stopped: result.stopped,
-        status: result.stopped === 0 ? "already_stopped" : "stopped",
-      },
-    };
-  }
+export function makeCommandService(
+  supervisor = new SupervisorClient(),
+): CommandServiceShape {
+  return {
+    listSessions: (fields = []) => supervisor.list(fields),
+    serve: (entry, root) =>
+      Effect.gen(function* () {
+        const grant = yield* resolveServingGrant(
+          entry,
+          root === undefined ? {} : { root },
+        );
+        const result = yield* supervisor.serve(grant.routeEntry, grant.root);
+        return {
+          session: {
+            id: result.session.id,
+            status: result.session.status,
+            url: result.session.url,
+            reused: result.reused,
+          },
+          grant: {
+            root: result.session.root,
+            access: "read_all_regular_files_beneath_root",
+          },
+        };
+      }),
+    stopSession: (session) =>
+      supervisor.stopSession(session).pipe(
+        Effect.map((result) => ({
+          stop: {
+            scope: "session",
+            session,
+            stopped: result.stopped,
+            status: result.stopped === 0 ? "already_stopped" : "stopped",
+          },
+        })),
+      ),
+    stopAll: () =>
+      supervisor.stopAll().pipe(
+        Effect.map((result) => ({
+          stop: {
+            scope: "all",
+            stopped: result.stopped,
+            status: result.stopped === 0 ? "already_stopped" : "stopped",
+          },
+        })),
+      ),
+  };
 }

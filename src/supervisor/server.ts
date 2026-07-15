@@ -11,6 +11,7 @@ import {
   Cause,
   Clock,
   Data,
+  Deferred,
   Effect,
   Exit,
   FiberSet,
@@ -87,9 +88,31 @@ class ControlListenError extends Data.TaggedError("ControlListenError")<{
 
 export interface RunningSupervisor {
   readonly controlAddress: string;
+  readonly closed: Effect.Effect<void, SupervisorLifecycleError>;
   readonly identity: SupervisorIdentity;
   readonly paths: StatePaths;
   close(): Promise<void>;
+}
+
+export class SupervisorLifecycleError extends Data.TaggedError(
+  "SupervisorLifecycleError",
+)<{
+  readonly phase: "startup" | "shutdown";
+  readonly cause: unknown;
+}> {}
+
+export interface SupervisorOptions {
+  readonly paths?: StatePaths;
+  readonly idleMilliseconds?: number;
+  readonly shutdownGraceMilliseconds?: number;
+  readonly resolveGrant?: typeof resolveServingGrant;
+  readonly startSessionServer?: StartSessionServer;
+  readonly version?: string;
+  readonly maximumSessions?: number;
+  readonly beforeHealth?: () => Promise<void>;
+  readonly ownershipNonce?: string;
+  readonly idleRuntime?: IdleRuntime;
+  readonly deferIdleClose?: (close: () => void) => void;
 }
 
 function json(response: ServerResponse, status: number, value: unknown): void {
@@ -453,19 +476,7 @@ class SessionRegistry {
 }
 
 export async function startSupervisor(
-  options: {
-    readonly paths?: StatePaths;
-    readonly idleMilliseconds?: number;
-    readonly shutdownGraceMilliseconds?: number;
-    readonly resolveGrant?: typeof resolveServingGrant;
-    readonly startSessionServer?: StartSessionServer;
-    readonly version?: string;
-    readonly maximumSessions?: number;
-    readonly beforeHealth?: () => Promise<void>;
-    readonly ownershipNonce?: string;
-    readonly idleRuntime?: IdleRuntime;
-    readonly deferIdleClose?: (close: () => void) => void;
-  } = {},
+  options: SupervisorOptions = {},
 ): Promise<RunningSupervisor> {
   const paths = options.paths ?? statePaths();
   await Effect.runPromise(ensurePrivateStateDirectory(paths));
@@ -517,6 +528,7 @@ export async function startSupervisor(
   let activeHandlers = 0;
   let closing = false;
   let closePromise: Promise<void> | undefined;
+  const closedSignal = Deferred.makeUnsafe<void, SupervisorLifecycleError>();
   const identity: CurrentSupervisorIdentity = {
     protocol: supervisorProtocol,
     instanceId: makeSupervisorInstanceId(instanceId),
@@ -825,38 +837,76 @@ export async function startSupervisor(
 
   function close(): Promise<void> {
     closePromise ??= (async () => {
-      closing = true;
-      sessions.beginShutdown();
-      cancelIdleShutdown();
-      const failures: unknown[] = [];
       try {
-        await closeIdleScope();
-      } catch (error) {
-        failures.push(error);
+        closing = true;
+        sessions.beginShutdown();
+        cancelIdleShutdown();
+        const failures: unknown[] = [];
+        try {
+          await closeIdleScope();
+        } catch (error) {
+          failures.push(error);
+        }
+        try {
+          await Effect.runPromise(sessions.stopAll());
+        } catch (error) {
+          failures.push(error);
+        }
+        try {
+          await Effect.runPromise(Scope.close(controlScope, Exit.void));
+        } catch (error) {
+          failures.push(error);
+        }
+        try {
+          await Effect.runPromise(Scope.close(ownershipScope, Exit.void));
+        } catch (error) {
+          failures.push(error);
+        }
+        if (failures.length === 1) throw failures[0];
+        if (failures.length > 1)
+          throw new AggregateError(failures, "Supervisor shutdown failed");
+        Effect.runSync(Deferred.succeed(closedSignal, undefined));
+      } catch (cause) {
+        Effect.runSync(
+          Deferred.fail(
+            closedSignal,
+            new SupervisorLifecycleError({ phase: "shutdown", cause }),
+          ),
+        );
+        throw cause;
       }
-      try {
-        await Effect.runPromise(sessions.stopAll());
-      } catch (error) {
-        failures.push(error);
-      }
-      try {
-        await Effect.runPromise(Scope.close(controlScope, Exit.void));
-      } catch (error) {
-        failures.push(error);
-      }
-      try {
-        await Effect.runPromise(Scope.close(ownershipScope, Exit.void));
-      } catch (error) {
-        failures.push(error);
-      }
-      if (failures.length === 1) throw failures[0];
-      if (failures.length > 1)
-        throw new AggregateError(failures, "Supervisor shutdown failed");
     })();
     return closePromise;
   }
 
   scheduleIdleShutdown();
 
-  return { controlAddress: paths.controlSocket, identity, paths, close };
+  return {
+    controlAddress: paths.controlSocket,
+    closed: Deferred.await(closedSignal),
+    identity,
+    paths,
+    close,
+  };
+}
+
+export function runSupervisor(
+  options: SupervisorOptions = {},
+): Effect.Effect<void, SupervisorLifecycleError, Scope.Scope> {
+  return Effect.gen(function* () {
+    const supervisor = yield* Effect.acquireRelease(
+      Effect.tryPromise({
+        try: () => startSupervisor(options),
+        catch: (cause) =>
+          new SupervisorLifecycleError({ phase: "startup", cause }),
+      }),
+      (running) =>
+        Effect.tryPromise({
+          try: () => running.close(),
+          catch: (cause) =>
+            new SupervisorLifecycleError({ phase: "shutdown", cause }),
+        }).pipe(Effect.orDie),
+    );
+    yield* supervisor.closed;
+  });
 }

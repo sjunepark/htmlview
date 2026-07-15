@@ -1,15 +1,12 @@
 import { homedir } from "node:os";
 import path from "node:path";
+import { Effect } from "effect";
 import type { JsonObject } from "./contracts.js";
 import { errorResult } from "./contracts.js";
-import {
-  isOperationalError,
-  toPublicError,
-  type OperationalError,
-} from "./errors.js";
+import { toPublicError, type OperationalError } from "./errors.js";
 import { parseCommand, type ParsedCommand } from "./command.js";
 import { serialize } from "./output.js";
-import { type CommandService } from "./service.js";
+import { CommandService } from "./service.js";
 import type {
   OptionalSessionField,
   SessionSummary,
@@ -18,7 +15,6 @@ import { htmlviewVersion } from "./version.js";
 
 export interface AppContext {
   readonly executablePath: string;
-  readonly service: CommandService;
   readonly stdout: (value: string) => void;
   readonly stderr: (value: string) => void;
 }
@@ -177,65 +173,97 @@ function runtimeHelp(error: OperationalError, parsed: ParsedCommand): string[] {
   }
 }
 
-export async function runApp(
+function defectDiagnostic(defect: unknown): string {
+  const detail =
+    defect instanceof Error ? (defect.stack ?? defect.message) : String(defect);
+  return `htmlview internal defect: ${detail}\n`;
+}
+
+export function runApp(
   argv: readonly string[],
   context: AppContext,
-): Promise<number> {
-  const parsed = parseCommand(argv);
-  if ("exitCode" in parsed) {
-    const format = argv.includes("--json") ? "json" : "toon";
-    context.stdout(serialize(parsed.result, format));
-    return parsed.exitCode;
-  }
+): Effect.Effect<number, never, CommandService> {
+  return Effect.suspend(() => {
+    const parsed = parseCommand(argv);
+    if ("exitCode" in parsed) {
+      const format = argv.includes("--json") ? "json" : "toon";
+      return Effect.sync(() => {
+        context.stdout(serialize(parsed.result, format));
+        return parsed.exitCode;
+      });
+    }
 
-  try {
-    let result: JsonObject;
-    if (parsed.help) {
-      result =
-        parsed.kind === "home"
-          ? topLevelHelp()
-          : parsed.kind === "serve"
-            ? serveHelp()
-            : stopHelp();
-    } else if (parsed.kind === "version") {
-      result = { command: "htmlview", version: htmlviewVersion };
-    } else if (parsed.kind === "home") {
-      result = homeResult(
-        context.executablePath,
-        await context.service.listSessions(parsed.fields),
-        parsed.fields,
-        parsed.format === "json",
-      );
-    } else if (parsed.kind === "serve") {
-      result = await context.service.serve(parsed.entry ?? "", parsed.root);
-      result.help = [
-        `Run \`htmlview stop <session>${parsed.format === "json" ? " --json" : ""}\` to stop this session`,
-      ];
-    } else {
-      if (parsed.all) result = await context.service.stopAll();
-      else if (parsed.session !== undefined)
-        result = await context.service.stopSession(parsed.session);
-      else throw new Error("htmlview could not resolve the stop target");
-    }
-    context.stdout(serialize(result, parsed.format));
-    return 0;
-  } catch (error) {
-    let failure: JsonObject;
-    if (isOperationalError(error)) {
-      const publicError = toPublicError(error);
-      failure = errorResult(
-        publicError.code,
-        publicError.message,
-        {},
-        runtimeHelp(error, parsed),
-      );
-    } else {
-      failure = errorResult(
-        "runtime.internal",
-        "htmlview could not complete the request",
-      );
-    }
-    context.stdout(serialize(failure, parsed.format));
-    return 1;
-  }
+    const execute = Effect.gen(function* () {
+      let result: JsonObject;
+      if (parsed.help) {
+        result =
+          parsed.kind === "home"
+            ? topLevelHelp()
+            : parsed.kind === "serve"
+              ? serveHelp()
+              : stopHelp();
+      } else if (parsed.kind === "version") {
+        result = { command: "htmlview", version: htmlviewVersion };
+      } else {
+        const service = yield* CommandService;
+        if (parsed.kind === "home") {
+          result = homeResult(
+            context.executablePath,
+            yield* service.listSessions(parsed.fields),
+            parsed.fields,
+            parsed.format === "json",
+          );
+        } else if (parsed.kind === "serve") {
+          result = yield* service.serve(parsed.entry ?? "", parsed.root);
+          result.help = [
+            `Run \`htmlview stop <session>${parsed.format === "json" ? " --json" : ""}\` to stop this session`,
+          ];
+        } else if (parsed.all) result = yield* service.stopAll();
+        else if (parsed.session !== undefined)
+          result = yield* service.stopSession(parsed.session);
+        else
+          return yield* Effect.die(
+            new Error("htmlview could not resolve the stop target"),
+          );
+      }
+      context.stdout(serialize(result, parsed.format));
+      return 0;
+    });
+
+    return execute.pipe(
+      Effect.catch((error: OperationalError) => {
+        const publicError = toPublicError(error);
+        return Effect.sync(() => {
+          context.stdout(
+            serialize(
+              errorResult(
+                publicError.code,
+                publicError.message,
+                {},
+                runtimeHelp(error, parsed),
+              ),
+              parsed.format,
+            ),
+          );
+          return 1;
+        });
+      }),
+    );
+  }).pipe(
+    Effect.catchDefect((defect) =>
+      Effect.sync(() => {
+        context.stderr(defectDiagnostic(defect));
+        context.stdout(
+          serialize(
+            errorResult(
+              "runtime.internal",
+              "htmlview could not complete the request",
+            ),
+            argv.includes("--json") ? "json" : "toon",
+          ),
+        );
+        return 1;
+      }),
+    ),
+  );
 }

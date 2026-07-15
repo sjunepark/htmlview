@@ -1,6 +1,6 @@
 # Effect v4 Adoption Plan
 
-- Status: In progress; Phase 6 complete
+- Status: In progress; Phase 7 complete
 - Updated: 2026-07-15
 - Parent plan: [`PLAN.md`](../../PLAN.md)
 - Decision scope: migrate htmlview's fallible asynchronous execution and
@@ -336,7 +336,7 @@ Do not retain two TypeScript unit-test runners after the migration.
 | 4. Grant and raw-server resources    | Complete | Scoped serving resources with byte fidelity intact     |
 | 5. Supervisor registry and server    | Complete | Scoped sessions, control work, and idle shutdown       |
 | 6. Supervisor client                 | Complete | Cancellable, scheduled, scope-safe client lifecycle    |
-| 7. App services and entry points     | Pending  | One Effect runtime path for both executables           |
+| 7. App services and entry points     | Complete | One Effect runtime path for both executables           |
 | 8. Test-suite migration              | Pending  | Effect-aware TypeScript tests and deterministic clocks |
 | 9. Packaging, docs, and release gate | Pending  | Full validation and release-ready artifact             |
 
@@ -723,11 +723,37 @@ Keep this table current; replace `Pending` when a gate is resolved.
 
 ## Next action
 
-Execute Phase 7: convert command services, application orchestration, and both
-executable entry points to one provided Effect runtime path with exhaustive
-error rendering and scoped signal cleanup.
+Execute Phase 8: migrate the remaining TypeScript Node tests to the existing
+Effect-aware Vitest runner, replace service callbacks with focused Layers, and
+remove the temporary Promise test adapters and second TypeScript runner.
 
 ## Progress log
+
+### 2026-07-15 — Phase 7 complete
+
+- Replaced the Promise command-service interface and per-method `runPromise`
+  adapters with one Effect service. The CLI defines its production Layer while
+  app tests supply focused Layers directly.
+- Converted `runApp` to an Effect program without changing strict synchronous
+  parsing or structured result shapes. Expected operational errors remain on
+  the typed channel; defects render only `runtime.internal` on stdout and send
+  diagnostic detail only to stderr; interruption is preserved.
+- Replaced both top-level-await/manual-signal entry points with the narrow
+  `NodeRuntime.runMain` adapter. The CLI retains its exact exit codes and one
+  executable-boundary newline without bundling the platform HTTP stack.
+- Added an explicit supervisor-closed Effect and a scoped production runner.
+  Idle and `/shutdown` completion now end the root program, while SIGINT and
+  SIGTERM interrupt it and run the same idempotent cleanup finalizer before the
+  Node runtime exits with code 130.
+- Deterministic tests cover app interruption, idle completion, and root-scope
+  cleanup. Black-box E2E tests cover logical CLI compatibility, exact stdout
+  newline/stderr separation, complete stop-all exit, and both signal cleanup
+  paths.
+- Final `pnpm run check` passes with 105 TypeScript tests, 17 Effect tests, two
+  E2E tests, seven Playwright checks, docs, build, and package lifecycle
+  validation.
+- Next: consolidate the remaining TypeScript tests on Vitest and delete the
+  temporary Promise-facing test seams in Phase 8.
 
 ### 2026-07-15 — Phase 6 complete
 

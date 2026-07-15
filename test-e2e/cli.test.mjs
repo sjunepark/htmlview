@@ -109,6 +109,20 @@ async function waitForProcessExit(pid, timeoutMilliseconds = 2_000) {
   assert.equal(processExists(pid), false, `process ${pid} did not exit`);
 }
 
+async function waitForPath(pathname, timeoutMilliseconds = 2_000) {
+  const deadline = Date.now() + timeoutMilliseconds;
+  while (Date.now() < deadline) {
+    if (
+      await lstat(pathname)
+        .then(() => true)
+        .catch(() => false)
+    )
+      return;
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+  await lstat(pathname);
+}
+
 before(async () => {
   base = await realpath(await mkdtemp(path.join(tmpdir(), "htmlview-e2e-")));
   stateDirectory = path.join(base, "state");
@@ -242,4 +256,45 @@ test("detached CLI lifecycle converges, recovers, and remains project-clean", as
   assert.equal((await stat(stateDirectory)).mode & 0o777, 0o700);
   assert.deepEqual(await readdir(firstRoot), ["report.html"]);
   assert.deepEqual(await readdir(secondRoot), ["report.html"]);
+});
+
+test("supervisor runtime signals close owned state before exit", async () => {
+  const { rm } = await import("node:fs/promises");
+  for (const signal of ["SIGINT", "SIGTERM"]) {
+    const parent = await realpath(
+      await mkdtemp(path.join(tmpdir(), "hv-sig-")),
+    );
+    const signalState = path.join(parent, "state");
+    const childEnvironment = {
+      ...process.env,
+      HTMLVIEW_STATE_DIR: signalState,
+      HTMLVIEW_IDLE_MS: "30000",
+    };
+    delete childEnvironment.HTMLVIEW_SUPERVISOR_LOCK_NONCE;
+    const child = spawn(
+      process.execPath,
+      [path.resolve("dist/supervisor-main.js")],
+      {
+        env: childEnvironment,
+        stdio: "ignore",
+      },
+    );
+    const exited = new Promise((resolve, reject) => {
+      child.once("error", reject);
+      child.once("exit", (code, exitSignal) =>
+        resolve({ code, signal: exitSignal }),
+      );
+    });
+    try {
+      await waitForPath(path.join(signalState, "control.sock"));
+      child.kill(signal);
+      assert.deepEqual(await exited, { code: 130, signal: null });
+      await assert.rejects(lstat(path.join(signalState, "control.sock")));
+      await assert.rejects(lstat(path.join(signalState, "supervisor.lock")));
+    } finally {
+      if (child.pid !== undefined && processExists(child.pid))
+        child.kill("SIGKILL");
+      await rm(parent, { recursive: true, force: true });
+    }
+  }
 });

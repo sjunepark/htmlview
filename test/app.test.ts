@@ -1,14 +1,17 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
+import { Effect, Exit, Fiber, Layer } from "effect";
 import { runApp } from "../src/app.js";
 import { decodeOutput } from "../src/output.js";
 import type { OutputFormat } from "../src/contracts.js";
 import {
   ContentListenerError,
   ControlError,
+  isOperationalError,
   RuntimeStateError,
   SupervisorError,
 } from "../src/errors.js";
+import { CommandService } from "../src/service.js";
 import type {
   OptionalSessionField,
   SessionSummary,
@@ -23,29 +26,32 @@ async function invoke(
   let stderr = "";
   let listedFields: readonly OptionalSessionField[] | undefined;
   const stopCalls: string[] = [];
-  const exitCode = await runApp(args, {
-    executablePath: "/Users/example/.local/bin/htmlview",
-    service: {
-      listSessions: async (fields) => {
+  const service = Layer.succeed(CommandService, {
+    listSessions: (fields) =>
+      Effect.sync(() => {
         listedFields = fields;
         return sessions;
-      },
-      serve: async () => {
-        if (serveFailure !== undefined) throw serveFailure;
-        return {
-          session: {
-            id: "served1",
-            status: "ready",
-            url: "http://h-served.localhost:4000/report.html",
-            reused: false,
-          },
-          grant: {
-            root: "/tmp",
-            access: "read_all_regular_files_beneath_root",
-          },
-        };
-      },
-      stopSession: async (session) => {
+      }),
+    serve: () => {
+      if (serveFailure !== undefined)
+        return isOperationalError(serveFailure)
+          ? Effect.fail(serveFailure)
+          : Effect.die(serveFailure);
+      return Effect.succeed({
+        session: {
+          id: "served1",
+          status: "ready",
+          url: "http://h-served.localhost:4000/report.html",
+          reused: false,
+        },
+        grant: {
+          root: "/tmp",
+          access: "read_all_regular_files_beneath_root",
+        },
+      });
+    },
+    stopSession: (session) =>
+      Effect.sync(() => {
         stopCalls.push(`session:${session}`);
         return {
           stop: {
@@ -55,8 +61,9 @@ async function invoke(
             status: "already_stopped",
           },
         };
-      },
-      stopAll: async () => {
+      }),
+    stopAll: () =>
+      Effect.sync(() => {
         stopCalls.push("all");
         return {
           stop: {
@@ -65,15 +72,19 @@ async function invoke(
             status: "already_stopped",
           },
         };
-      },
-    },
-    stdout: (value) => {
-      stdout += value;
-    },
-    stderr: (value) => {
-      stderr += value;
-    },
+      }),
   });
+  const exitCode = await Effect.runPromise(
+    runApp(args, {
+      executablePath: "/Users/example/.local/bin/htmlview",
+      stdout: (value) => {
+        stdout += value;
+      },
+      stderr: (value) => {
+        stderr += value;
+      },
+    }).pipe(Effect.provide(service)),
+  );
   return { exitCode, stdout, stderr, listedFields, stopCalls };
 }
 
@@ -283,7 +294,7 @@ describe("CLI application contract", () => {
       new Error("private internal detail"),
     );
     assert.equal(result.exitCode, 1);
-    assert.equal(result.stderr, "");
+    assert.match(result.stderr, /private internal detail/);
     assert.deepEqual(decodeOutput(result.stdout, "json"), {
       error: {
         code: "runtime.internal",
@@ -291,6 +302,38 @@ describe("CLI application contract", () => {
       },
     });
     assert.equal(result.stdout.includes("private internal detail"), false);
+  });
+
+  it("preserves interruption without rendering an internal error", async () => {
+    let stdout = "";
+    let stderr = "";
+    const pending = Layer.succeed(CommandService, {
+      listSessions: () => Effect.never,
+      serve: () => Effect.never,
+      stopSession: () => Effect.never,
+      stopAll: () => Effect.never,
+    });
+    const exit = await Effect.runPromise(
+      Effect.gen(function* () {
+        const fiber = yield* Effect.forkChild(
+          runApp([], {
+            executablePath: "htmlview",
+            stdout: (value) => {
+              stdout += value;
+            },
+            stderr: (value) => {
+              stderr += value;
+            },
+          }).pipe(Effect.provide(pending)),
+        );
+        yield* Effect.yieldNow;
+        yield* Fiber.interrupt(fiber);
+        return yield* Fiber.await(fiber);
+      }),
+    );
+    assert.equal(Exit.isFailure(exit), true);
+    assert.equal(stdout, "");
+    assert.equal(stderr, "");
   });
 
   it("emits no format-breaking trailing newline", async () => {
