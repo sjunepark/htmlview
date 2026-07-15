@@ -1,15 +1,47 @@
 import { test, expect } from "@playwright/test";
-import { resolveServingGrant } from "../../dist/serving/grant.js";
-import { startStaticServer } from "../../dist/serving/http.js";
+import { execFile } from "node:child_process";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
+import { promisify } from "node:util";
 import { entryPath, fixtureRoot, listenFixture } from "./fixture.mjs";
+
+const execute = promisify(execFile);
+const cli = path.resolve("dist/cli.js");
+const state = await mkdtemp(path.join(tmpdir(), "htmlview-browser-origin-"));
+const environment = {
+  ...process.env,
+  HTMLVIEW_IDLE_MS: "500",
+  HTMLVIEW_STATE_DIR: state,
+};
+
+async function startStaticServer() {
+  const { stdout } = await execute(
+    process.execPath,
+    [cli, "serve", entryPath, "--root", fixtureRoot, "--json"],
+    { env: environment },
+  );
+  const result = JSON.parse(stdout);
+  return {
+    url: result.session.url,
+    close: () =>
+      execute(process.execPath, [cli, "stop", result.session.id, "--json"], {
+        env: environment,
+      }),
+  };
+}
+
+test.afterAll(async () => {
+  await execute(process.execPath, [cli, "stop", "--all", "--json"], {
+    env: environment,
+  }).catch(() => undefined);
+  await rm(state, { recursive: true, force: true });
+});
 
 test("the htmlview raw handler loads the complete fixture in a generic browser", async ({
   page,
 }) => {
-  const grant = await resolveServingGrant(entryPath, { root: fixtureRoot });
-  const server = await startStaticServer(grant, {
-    hostname: "h-htmlview-playwright.localhost",
-  });
+  const server = await startStaticServer();
   try {
     await page.goto(server.url);
     await page.waitForFunction(() => window.fixtureResults !== undefined);
@@ -28,10 +60,7 @@ test("the htmlview raw handler loads the complete fixture in a generic browser",
 test("a foreign page cannot read the raw origin through CORS", async ({
   page,
 }) => {
-  const grant = await resolveServingGrant(entryPath, { root: fixtureRoot });
-  const server = await startStaticServer(grant, {
-    hostname: "h-htmlview-cors.localhost",
-  });
+  const server = await startStaticServer();
   const foreign = await listenFixture({
     urlHost: "foreign-htmlview.localhost",
   });

@@ -1,2 +1,10 @@
+overrides:
+  "@effect/platform-node": 4.0.0-beta.98
+  "@effect/platform-node-shared": 4.0.0-beta.98
+  "@effect/vitest": 4.0.0-beta.98
+  effect: 4.0.0-beta.98
+
 allowBuilds:
   esbuild@0.25.12: true
+  esbuild@0.28.1: true
+  msgpackr-extract: false

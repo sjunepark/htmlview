@@ -22,15 +22,16 @@
     "node": ">=22.13"
   },
   "scripts": {
-    "build": "tsc -p tsconfig.json",
+    "build": "node scripts/build.mjs",
     "check": "pnpm run format:check && pnpm run lint && pnpm run typecheck && pnpm test && pnpm run validate:docs && pnpm run build && pnpm run test:e2e && pnpm run validate:browser-origin && pnpm run validate:interoperability && pnpm run validate:package",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "lint": "eslint .",
     "prepack": "pnpm run build",
-    "test": "tsx --test test/**/*.test.ts",
+    "test": "tsx --test test/**/*.test.ts && pnpm run test:effect",
+    "test:effect": "vitest run --config vitest.config.ts",
     "test:e2e": "node --test --test-concurrency=1 test-e2e/**/*.test.mjs",
-    "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.test.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.test.json && effect-language-service diagnostics --project tsconfig.test.json --strict",
     "validate:browser-origin": "pnpm --silent run build && playwright test --config validation/browser-origin/playwright.config.mjs",
     "validate:docs": "node validation/docs/check-links.mjs",
     "validate:interoperability": "pnpm --silent run build && playwright test --config validation/interoperability/playwright.config.mjs",
@@ -43,16 +44,22 @@
     "mime-types": "3.0.2"
   },
   "devDependencies": {
-    "@playwright/test": "1.61.1",
+    "@effect/language-service": "0.87.0",
+    "@effect/platform-node": "4.0.0-beta.98",
+    "@effect/vitest": "4.0.0-beta.98",
     "@eslint/js": "10.0.1",
+    "@playwright/test": "1.61.1",
     "@toon-format/spec": "3.3.0",
-    "@types/node": "22.20.1",
     "@types/mime-types": "3.0.1",
+    "@types/node": "22.20.1",
+    "effect": "4.0.0-beta.98",
+    "esbuild": "0.28.1",
     "eslint": "10.7.0",
     "globals": "17.7.0",
     "prettier": "3.9.5",
     "tsx": "4.20.6",
+    "typescript": "6.0.3",
     "typescript-eslint": "8.64.0",
-    "typescript": "6.0.3"
+    "vitest": "4.1.10"
   }
 }

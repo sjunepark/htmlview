@@ -38,6 +38,12 @@ caller.
   macOS/Linux package lifecycle checks pass for `@sejunpark/htmlview`.
 - The `0.1.0` artifact is ready for release review but has not been published.
   Optional annotation work has not started.
+- Effect v4 adoption Phase 0 is complete. The executable migration plan now
+  records the green baseline, exact beta.98 source/API verification, and the
+  accepted two-bundle package form in `docs/plans/effect-v4-adoption.md`.
+- Effect v4 adoption Phase 1 is complete: ADR 0007, exact dependency pins,
+  language-service diagnostics, the linked-source-map bundle build, and the
+  Effect-aware test skeleton pass their package and browser-origin gates.
 - Final validation passes `pnpm run check`, the Node 22 Linux package workflow,
   `pnpm run validate:browser-use`, and `pnpm audit` with zero vulnerabilities.
 
@@ -273,6 +279,5 @@ annotation transport before a working second use case requires it.
 
 ## Next action
 
-Review the release diff, then publish `@sejunpark/htmlview@0.1.0` only after an
-explicit release request. Do not begin optional annotation work as part of the
-raw-serving release.
+Execute Phase 2 of `docs/plans/effect-v4-adoption.md`; do not publish the
+pre-migration artifact. Optional annotation work remains deferred.

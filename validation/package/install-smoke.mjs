@@ -117,7 +117,11 @@ try {
   const paths = new Set(packResult.files.map(({ path: file }) => file));
   for (const required of [
     "dist/cli.js",
-    "dist/version.js",
+    "dist/cli.js.map",
+    "dist/cli.d.ts",
+    "dist/supervisor-main.js",
+    "dist/supervisor-main.js.map",
+    "dist/supervisor/supervisor-main.d.ts",
     "docs/INSTALL.md",
     "LICENSE",
     "README.md",

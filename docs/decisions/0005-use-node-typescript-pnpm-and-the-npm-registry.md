@@ -2,6 +2,7 @@
 
 - Status: Accepted
 - Date: 2026-07-15
+- Amended by: [ADR 0007](0007-adopt-effect-v4.md)
 
 ## Context
 
@@ -30,8 +31,11 @@ encoder and decoder fixture, rather than assuming the implementation package's
 release number proves specification conformance. Keep Playwright and other
 browser controllers development-only or externally installed.
 
-Use the Node test runner through `tsx`, TypeScript checking, ESLint, and
-Prettier. `pnpm run check` is the single local validation entry point.
+Use TypeScript checking, ESLint, and Prettier. `pnpm run check` is the single
+local validation entry point. ADR 0007 supersedes the TypeScript test-runner
+and emitted-package details: Effect-aware TypeScript tests use Vitest, and the
+published executables are bundled while black-box `.mjs` tests remain on the
+Node test runner.
 
 ## Consequences
 
@@ -43,8 +47,9 @@ Prettier. `pnpm run check` is the single local validation entry point.
   installs and removes that exact artifact with npm on macOS and Linux.
 - The supervisor remains a detached invocation of the same installed Node
   artifact, so CLI and daemon versions cannot drift within one package.
-- The runtime dependency surface begins with only the reference TOON encoder;
-  browser automation stays outside the package.
+- The runtime dependency surface begins with the reference TOON encoder and
+  MIME lookup. Effect is bundled into the executables under ADR 0007; browser
+  automation stays outside the package.
 - Users need a supported Node.js runtime. Release checks exercise both macOS
   and Linux installation and background-process behavior.
 
