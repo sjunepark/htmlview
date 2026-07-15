@@ -53,9 +53,10 @@ contract.
 - Accept `--root <directory>` only as an explicit alternative grant containing
   the entry; never infer a broader project root.
 - Return the resolved root and grant meaning in a successful `serve` result.
-- Return an HTTP URL on numeric loopback after the server is ready.
-- Give each session its own automatically allocated origin and retain the
-  entry's path relative to the chosen root in the returned URL.
+- Return an HTTP URL using a unique special-use `.localhost` name after the
+  numeric-loopback listener is ready.
+- Give each session a fresh, never-reused automatically allocated origin and
+  retain the entry's path relative to the chosen root in the returned URL.
 - Serve the entry and permitted subresources without body transformation.
 - Select correct content types, including JavaScript modules, CSS, JSON, SVG,
   images, media, and fonts.
@@ -134,7 +135,7 @@ grant:
 session:
   id: 7sp4k2
   status: ready
-  url: "http://127.0.0.1:49152/public/report.html"
+  url: "http://h-k7w4m2.localhost:49152/public/report.html"
 grant:
   root: /workspace
   access: read_all_regular_files_beneath_root
@@ -163,6 +164,4 @@ authorization credential.
 - Implementation language and package channel
 - Supported operating-system versions beyond initial macOS and Linux targets
 - Whether optional annotations eventually live here or in a companion project
-- How to isolate browser state across concurrent sessions, unrelated loopback
-  services, and later reuse of a numeric loopback port
 - Whether usage evidence justifies an opt-in ambient agent-session integration

@@ -45,8 +45,9 @@ static HTTP service. It does not claim that rendered HTML is safe.
 
 - **LAN or public exposure.** Bind numeric loopback only. Version one has no
   wildcard or interface-selection flag.
-- **DNS rebinding or forged `Host`.** Accept only the exact loopback host and
-  port forms issued by the service. Do not trust the bind address alone.
+- **DNS rebinding or forged `Host`.** Bind only to `127.0.0.1`. Issue a fresh
+  random special-use `.localhost` hostname per session and accept only its
+  exact host and port. Do not trust the bind address alone.
 - **Session discovery.** Expose no HTTP session-list endpoint and never encode
   canonical filesystem paths into content URLs. Treat content ports as
   discoverable, not as secrets.
@@ -81,11 +82,10 @@ static HTTP service. It does not claim that rendered HTML is safe.
 - **Stale or hijacked supervisor.** Verify service identity through the
   authenticated health contract; recover stale records without killing an
   unrelated process.
-- **Browser-state collision.** Cookies are shared across ports on the same host,
-  so concurrent sessions and unrelated loopback services can exchange or
-  overwrite them. Ephemeral-port reuse can also revive origin-keyed storage,
-  caches, and service workers from a stopped session. Resolve both cases before
-  release rather than treating a new port as complete isolation.
+- **Browser-state collision.** Cookies are shared across ports and exact origin
+  reuse revives storage, caches, and service workers. Give every new session a
+  never-reused random `.localhost` label with at least 128 bits of entropy.
+  Accept a reused label only for an idempotent request to the same live session.
 
 ## Malicious-content risk
 
@@ -152,8 +152,9 @@ content because it would change what the page can execute.
 - Fully eliminating symlink check/use races depends on filesystem primitives
   available in the selected runtime and operating system. The implementation
   must document any remaining gap.
-- Numeric loopback ports do not isolate same-host cookies and may be reused over
-  time. The release cannot claim session-state isolation until the planned
-  browser validation has produced and enforced a mitigation.
+- Browser isolation relies on user agents and HTTP clients honoring the
+  special-use `.localhost` resolution contract. Supported clients are covered
+  by release interoperability checks; unusual clients may require explicit
+  hostname-to-loopback resolution.
 - Browser execution of untrusted authored code remains dangerous by design and
   is mitigated operationally with an isolated browser environment.

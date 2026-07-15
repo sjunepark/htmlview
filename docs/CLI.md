@@ -81,8 +81,8 @@ The default non-empty session table contains only decision-relevant fields:
 ```toon
 count: 2
 sessions[2]{id,status,url}:
-  7sp4k2,ready,"http://127.0.0.1:49152/report.html"
-  c2m9qa,ready,"http://127.0.0.1:49153/public/index.html"
+  7sp4k2,ready,"http://h-k7w4m2.localhost:49152/report.html"
+  c2m9qa,ready,"http://h-p9c3qa.localhost:49153/public/index.html"
 help[1]: "Run `htmlview stop <session>` to stop a session"
 ```
 
@@ -102,7 +102,7 @@ is a security grant, not merely routing configuration:
 session:
   id: 7sp4k2
   status: ready
-  url: "http://127.0.0.1:49152/public/report.html"
+  url: "http://h-k7w4m2.localhost:49152/public/report.html"
 grant:
   root: /workspace
   access: read_all_regular_files_beneath_root
@@ -115,7 +115,7 @@ The equivalent JSON is available without changing the operation:
   "session": {
     "id": "7sp4k2",
     "status": "ready",
-    "url": "http://127.0.0.1:49152/public/report.html"
+    "url": "http://h-k7w4m2.localhost:49152/public/report.html"
   },
   "grant": {
     "root": "/workspace",

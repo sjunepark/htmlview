@@ -82,13 +82,16 @@ owns the complete public contract.
 
 Owns one authenticated loopback control endpoint and multiple independent
 content sessions. Each content session gets an automatically allocated
-loopback port, so its serving root is also its HTTP origin root. This preserves
-authored root-relative URLs without adding a session prefix to document paths.
+loopback port and a fresh random name beneath `.localhost`, so its serving root
+is also its HTTP origin root. This preserves authored root-relative URLs
+without adding a session prefix to document paths.
 
 The CLI discovers or starts the supervisor, authenticates over the control
 channel, and waits until the requested content listener is ready before
 returning.
 
+The listener binds only to `127.0.0.1`; the unique hostname isolates cookies,
+storage, caches, and service workers and is never reused after a session stops.
 The supervisor owns concurrency, idle shutdown, stale-state recovery, and
 graceful termination. It must not require a project-local process manager.
 
@@ -112,7 +115,7 @@ The canonical root in each record is the session's complete disclosure grant.
 Each session listener maps URL paths directly to files under that session's
 root. The returned entry URL uses the entry's encoded path relative to the
 root. For example, `/workspace/public/report.html` under root `/workspace`
-becomes `http://127.0.0.1:<port>/public/report.html`. This lets `./app.css`
+becomes `http://h-<random>.localhost:<port>/public/report.html`. This lets `./app.css`
 resolve beside the entry and `/assets/logo.svg` resolve from the chosen root.
 
 The service handles HTTP method validation, URL decoding, containment checks,
@@ -197,19 +200,18 @@ At most one healthy supervisor owns the per-user discovery record. Startup must
 use an inter-process lock or an equivalent atomic claim so concurrent agents do
 not create competing supervisors. The discovery record contains only the
 minimum control-endpoint metadata and a control credential; both the directory
-and record use user-only permissions. Content-listener ports belong to session
-state and are never caller-selected.
+and record use user-only permissions. Content-listener host labels and ports
+belong to session state and are never caller-selected.
 
 Session mutations are serialized inside the supervisor. Static file reads do
 not require registry-wide locking after a session snapshot has been validated.
 
-Dedicated ports give simultaneously active sessions distinct web origins for
-origin-keyed state, but cookies are shared across ports on the same host.
-Ephemeral ports can also be reused after a session stops, allowing other
-storage, caches, or service workers to reappear. Release design must address
-concurrent cookie sharing, unrelated loopback services, and cross-lifetime
-state. The implementation plan treats origin identity as a pre-foundation
-decision rather than assuming a new port provides complete isolation.
+Every session listener binds to `127.0.0.1` and issues a cryptographically
+random `h-<random>.localhost` hostname. Exact host-and-port validation prevents
+other localhost authorities from reaching content. Session labels are never
+reused after stop; at least 128 random bits make accidental reuse negligible
+without an unbounded tombstone registry. This isolates same-host cookies and
+origin-keyed state from concurrent services and later port reuse.
 
 ## Start-here code map
 

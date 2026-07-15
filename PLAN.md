@@ -9,22 +9,27 @@ caller.
 
 ## Current state
 
-- Product boundary, target architecture, security model, and initial decisions
-  are documented.
+- The pre-foundation browser gate is complete and recorded in
+  `docs/validation/browser-origin.md`.
+- ADR 0002 now assigns every new session a never-reused random `.localhost`
+  name bound to `127.0.0.1`; evidence covers cookie sharing, exact-origin
+  storage/cache/service-worker revival, and fresh-host isolation.
 - Browser neutrality, serving-root disclosure semantics, and the AXI output
   contract are accepted product decisions.
 - TOON is the compact default output; `--json` returns the same logical result
   for existing automation.
-- `agent-browser` supports direct local-file navigation in some configurations,
-  so the browser-neutral HTTP value must be validated rather than assumed.
-- The repository contains no runtime, package manifest, source, or tests.
-- The next action is the pre-foundation validation gate below.
+- Browser validation uses Playwright and independently installed
+  `agent-browser`; neither is a runtime dependency.
+- The next action is Milestone 0 foundation using Node.js/TypeScript and the
+  maintained reference TOON encoder, pending the recorded packaging checks.
 
 Update this document in place. Keep completed work, current validation,
 blockers, decisions, and the single next action concise; do not append session
 logs.
 
 ## Pre-foundation validation gate
+
+Status: Complete. See `docs/validation/browser-origin.md` and ADR 0002.
 
 - Compare direct `file://` navigation with a minimal loopback HTTP fixture for
   root-relative assets, JavaScript modules, fetches, MIME behavior, spaces, and
@@ -228,6 +233,5 @@ annotation transport before a working second use case requires it.
 
 ## Next action
 
-Complete the pre-foundation fixture matrix and browser-state isolation tests,
-then record the origin strategy before choosing the runtime and package
-channel.
+Complete Milestone 0 foundation and record the Node.js/npm runtime and package
+channel decision with pinned TOON v3.3 conformance coverage.

@@ -1,0 +1,42 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8">
+    <title>htmlview origin fixture</title>
+    <link rel="stylesheet" href="/assets/root.css">
+  </head>
+  <body>
+    <h1 id="title">fixture</h1>
+    <output id="result">pending</output>
+    <script>
+      (async () => {
+      const within = (promise) => Promise.race([
+        promise,
+        new Promise((_, reject) => setTimeout(() => reject(new Error("timeout")), 1000)),
+      ]);
+      const results = {
+        protocol: location.protocol,
+        rootStyle: getComputedStyle(document.documentElement).getPropertyValue("--root-asset").trim(),
+      };
+      try {
+        const module = await within(import("./module ü.js"));
+        results.module = module.value;
+      } catch (error) {
+        results.module = `error:${error.name}`;
+      }
+      try {
+        results.fetch = (await within(fetch("./data space.json"))).status;
+      } catch (error) {
+        results.fetch = `error:${error.name}`;
+      }
+      try {
+        results.unreferenced = await (await within(fetch("/.hidden.txt"))).text();
+      } catch (error) {
+        results.unreferenced = `error:${error.name}`;
+      }
+      document.querySelector("#result").textContent = JSON.stringify(results);
+      window.fixtureResults = results;
+      })();
+    </script>
+  </body>
+</html>

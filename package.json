@@ -1,0 +1,13 @@
+{
+  "name": "htmlview",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "validate:browser-origin": "playwright test --config validation/browser-origin/playwright.config.mjs",
+    "validate:agent-browser": "bash validation/browser-origin/run-agent-browser.sh"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.61.1"
+  }
+}
