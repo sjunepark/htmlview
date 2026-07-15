@@ -56,9 +56,9 @@ caller.
 - Effect v4 adoption Phase 5 is complete: registry mutation, pending and live
   sessions, control handlers, idle work, and shutdown cleanup now have explicit
   Effect synchronization and scoped ownership with deterministic race coverage.
-- Effect v4 adoption Phase 6 is in progress: control transport is cancellable
-  and typed, and exact health retries use an Effect schedule; discovery,
-  ownership, launch, and shutdown policy remain in the active slice.
+- Effect v4 adoption Phase 6 is complete: control transport, discovery,
+  ownership, detached launch, command responses, and shutdown confirmation are
+  cancellable typed Effects with scoped resources and deterministic schedules.
 - Final validation passes `pnpm run check`, the Node 22 Linux package workflow,
   `pnpm run validate:browser-use`, and `pnpm audit` with zero vulnerabilities.
 
@@ -294,5 +294,5 @@ annotation transport before a working second use case requires it.
 
 ## Next action
 
-Execute Phase 6 of `docs/plans/effect-v4-adoption.md`; do not publish the
+Execute Phase 7 of `docs/plans/effect-v4-adoption.md`; do not publish the
 pre-migration artifact. Optional annotation work remains deferred.

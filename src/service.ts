@@ -22,14 +22,16 @@ export class HtmlviewService implements CommandService {
   async listSessions(
     fields: readonly OptionalSessionField[] = [],
   ): Promise<readonly SessionSummary[]> {
-    return this.supervisor.list(fields);
+    return Effect.runPromise(this.supervisor.list(fields));
   }
 
   async serve(entry: string, root?: string): Promise<JsonObject> {
     const grant = await Effect.runPromise(
       resolveServingGrant(entry, root === undefined ? {} : { root }),
     );
-    const result = await this.supervisor.serve(grant.routeEntry, grant.root);
+    const result = await Effect.runPromise(
+      this.supervisor.serve(grant.routeEntry, grant.root),
+    );
     return {
       session: {
         id: result.session.id,
@@ -45,7 +47,9 @@ export class HtmlviewService implements CommandService {
   }
 
   async stopSession(session: string): Promise<JsonObject> {
-    const result = await this.supervisor.stopSession(session);
+    const result = await Effect.runPromise(
+      this.supervisor.stopSession(session),
+    );
     return {
       stop: {
         scope: "session",
@@ -57,7 +61,7 @@ export class HtmlviewService implements CommandService {
   }
 
   async stopAll(): Promise<JsonObject> {
-    const result = await this.supervisor.stopAll();
+    const result = await Effect.runPromise(this.supervisor.stopAll());
     return {
       stop: {
         scope: "all",

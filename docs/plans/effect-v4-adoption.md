@@ -1,6 +1,6 @@
 # Effect v4 Adoption Plan
 
-- Status: In progress; Phase 6 transport migration
+- Status: In progress; Phase 6 complete
 - Updated: 2026-07-15
 - Parent plan: [`PLAN.md`](../../PLAN.md)
 - Decision scope: migrate htmlview's fallible asynchronous execution and
@@ -327,18 +327,18 @@ Do not retain two TypeScript unit-test runners after the migration.
 
 ## Phase status
 
-| Phase                                | Status      | Exit summary                                           |
-| ------------------------------------ | ----------- | ------------------------------------------------------ |
-| 0. Baseline and API verification     | Complete    | Green baseline and recorded v4/package decisions       |
-| 1. Decision records and toolchain    | Complete    | Exact dependencies, diagnostics, build/test skeleton   |
-| 2. Errors and protocol schemas       | Complete    | Shared runtime-validated control contract              |
-| 3. Runtime-state and lock lifecycle  | Complete    | Typed, interruption-safe private state operations      |
-| 4. Grant and raw-server resources    | Complete    | Scoped serving resources with byte fidelity intact     |
-| 5. Supervisor registry and server    | Complete    | Scoped sessions, control work, and idle shutdown       |
-| 6. Supervisor client                 | In progress | Cancellable transport and scheduled client lifecycle   |
-| 7. App services and entry points     | Pending     | One Effect runtime path for both executables           |
-| 8. Test-suite migration              | Pending     | Effect-aware TypeScript tests and deterministic clocks |
-| 9. Packaging, docs, and release gate | Pending     | Full validation and release-ready artifact             |
+| Phase                                | Status   | Exit summary                                           |
+| ------------------------------------ | -------- | ------------------------------------------------------ |
+| 0. Baseline and API verification     | Complete | Green baseline and recorded v4/package decisions       |
+| 1. Decision records and toolchain    | Complete | Exact dependencies, diagnostics, build/test skeleton   |
+| 2. Errors and protocol schemas       | Complete | Shared runtime-validated control contract              |
+| 3. Runtime-state and lock lifecycle  | Complete | Typed, interruption-safe private state operations      |
+| 4. Grant and raw-server resources    | Complete | Scoped serving resources with byte fidelity intact     |
+| 5. Supervisor registry and server    | Complete | Scoped sessions, control work, and idle shutdown       |
+| 6. Supervisor client                 | Complete | Cancellable, scheduled, scope-safe client lifecycle    |
+| 7. App services and entry points     | Pending  | One Effect runtime path for both executables           |
+| 8. Test-suite migration              | Pending  | Effect-aware TypeScript tests and deterministic clocks |
+| 9. Packaging, docs, and release gate | Pending  | Full validation and release-ready artifact             |
 
 ## Phase 0: Baseline and API verification
 
@@ -723,13 +723,13 @@ Keep this table current; replace `Pending` when a gate is resolved.
 
 ## Next action
 
-Complete Phase 6 by typing HTTP/schema failures, migrating discovery, startup,
-ownership observation, and shutdown confirmation to scoped Effects with named
-soft-deadline schedules, and making detached launch interruption-safe.
+Execute Phase 7: convert command services, application orchestration, and both
+executable entry points to one provided Effect runtime path with exhaustive
+error rendering and scoped signal cleanup.
 
 ## Progress log
 
-### 2026-07-15 — Phase 6 in progress
+### 2026-07-15 — Phase 6 complete
 
 - Replaced the Promise-based Unix-socket request with one cancellable
   `Effect.callback`. Timeout, transport, response-size, and JSON failures are
@@ -740,15 +740,26 @@ soft-deadline schedules, and making detached launch interruption-safe.
   absence, stale-socket, protocol, version, and public error semantics remain
   unchanged.
 - Added client response-bound/parsing coverage and an exact six-probe assertion
-  across two stalled operations. The focused 41-test supervisor/state suite and
-  final `pnpm run check` pass with 104 TypeScript tests, ten Effect tests, E2E,
-  seven Playwright checks, docs, build, and package lifecycle validation.
-- Review fixed a cancellation race that could attach response listeners after
-  interruption. Typed HTTP-status/schema failures and direct cancellation and
-  TestClock policy tests remain in the next client slice; no diet issue was
-  found in the raw Node adapter or health schedule.
-- Next: migrate required response handling and discovery/ownership to scoped
-  Effects, preserving soft attempt-start deadlines exactly.
+  across two stalled operations. Required responses now retain typed transport,
+  HTTP-status, JSON, response-size, and schema-decode failures before mapping
+  once to the existing public operational errors.
+- Discovery, startup, stale recovery, and shutdown confirmation are Effect
+  programs. Bootstrap ownership stays inside the complete operation scope;
+  separate Clock-driven schedules preserve the 5 s startup/shutdown and 10 s
+  ownership soft attempt-start deadlines without retrying mutations.
+- Detached launch scopes setup listeners only. A private abort signal kills an
+  interrupted pre-handoff child, terminal listeners consume late spawn/error,
+  and a successful handoff removes listeners and unrefs the intentionally
+  long-lived supervisor.
+- Review fixed the late-response listener race and a late detached-spawn race,
+  then confirmed the raw Unix-socket and process seams earn their complexity.
+  Deterministic tests cover interruption, exact health spacing, all three soft
+  deadlines, lock release, and late child terminal events.
+- The focused 41-test supervisor/state suite passes. Final `pnpm run check`
+  passes with 104 TypeScript tests, 16 Effect tests, E2E, seven Playwright
+  checks, docs, build, and package lifecycle validation.
+- Next: replace the service and executable Promise boundaries with one provided
+  Effect runtime path in Phase 7.
 
 ### 2026-07-15 — Phase 5 complete
 

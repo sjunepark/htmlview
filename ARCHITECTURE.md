@@ -88,7 +88,10 @@ waits until the requested content listener is ready before returning. Bounded
 health retries preserve ownership when a live supervisor is temporarily
 unavailable. Control requests use cancellable Effect adapters around the native
 Unix-socket HTTP client; response bytes and JSON are bounded before shared
-protocol schemas see a value.
+protocol schemas see a value. Discovery, startup, ownership observation, and
+shutdown confirmation use named Clock-driven schedules. The bootstrap lock is
+scoped across discovery and readiness, while detached process setup is scoped
+only until a successful unref handoff.
 
 The listener binds only to `127.0.0.1`; the unique hostname isolates cookies,
 storage, caches, and service workers and is never reused after a session stops.

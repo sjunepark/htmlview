@@ -1,4 +1,4 @@
-import { spawn } from "node:child_process";
+import { spawn, type SpawnOptions } from "node:child_process";
 import { realpath } from "node:fs/promises";
 import {
   request as httpRequest,
@@ -7,7 +7,7 @@ import {
 } from "node:http";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { Data, Effect, Exit, Result, Schedule, Scope } from "effect";
+import { Clock, Data, Effect, Result, Schedule, Scope } from "effect";
 import {
   operationalError,
   PathError,
@@ -53,46 +53,71 @@ const supervisorStartTimeoutMilliseconds = 5_000;
 const supervisorShutdownTimeoutMilliseconds = 5_000;
 const supervisorOwnershipWaitMilliseconds = 10_000;
 
-async function prepareState(paths: StatePaths): Promise<void> {
-  await Effect.runPromise(ensurePrivateStateDirectory(paths));
+type AcquireSupervisorLock = (
+  paths: StatePaths,
+  timeoutMilliseconds?: number,
+) => Effect.Effect<SupervisorLock, RuntimeStateError, Scope.Scope>;
+
+function prepareState(
+  paths: StatePaths,
+): Effect.Effect<void, RuntimeStateError> {
+  return ensurePrivateStateDirectory(paths);
 }
 
-async function canonicalPotentialPath(candidate: string): Promise<string> {
-  const suffix: string[] = [];
-  let current = candidate;
-  while (true) {
-    try {
-      return path.join(await realpath(current), ...suffix);
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-      const parent = path.dirname(current);
-      if (parent === current) throw error;
-      suffix.unshift(path.basename(current));
-      current = parent;
-    }
-  }
+class CanonicalPathError extends Data.TaggedError("CanonicalPathError")<{
+  readonly cause: unknown;
+}> {}
+
+function canonicalPotentialPath(
+  candidate: string,
+): Effect.Effect<string, CanonicalPathError> {
+  const loop = (
+    current: string,
+    suffix: readonly string[],
+  ): Effect.Effect<string, CanonicalPathError> =>
+    Effect.tryPromise({
+      try: () => realpath(current),
+      catch: (cause) => new CanonicalPathError({ cause }),
+    }).pipe(
+      Effect.map((canonical) => path.join(canonical, ...suffix)),
+      Effect.catchTag("CanonicalPathError", (error) => {
+        if (
+          error.cause instanceof Error &&
+          (error.cause as NodeJS.ErrnoException).code === "ENOENT"
+        ) {
+          const parent = path.dirname(current);
+          if (parent !== current)
+            return loop(parent, [path.basename(current), ...suffix]);
+        }
+        return Effect.fail(error);
+      }),
+    );
+  return loop(candidate, []);
 }
 
-async function assertStateOutsideRoot(
+function assertStateOutsideRoot(
   paths: StatePaths,
   root: string,
-): Promise<void> {
-  let stateDirectory: string;
-  try {
-    stateDirectory = await canonicalPotentialPath(paths.directory);
-  } catch (cause) {
-    throw new RuntimeStateError({
-      code: "state.unavailable",
-      message: "The private htmlview runtime state directory is unavailable",
-      cause,
-    });
-  }
-  if (root === stateDirectory || isWithinRoot(root, stateDirectory))
-    throw new PathError({
-      code: "path.root_contains_state",
-      message:
-        "Serving root cannot contain the htmlview runtime state directory",
-    });
+): Effect.Effect<void, RuntimeStateError | PathError> {
+  return Effect.gen(function* () {
+    const stateDirectory = yield* canonicalPotentialPath(paths.directory).pipe(
+      Effect.mapError(
+        (error) =>
+          new RuntimeStateError({
+            code: "state.unavailable",
+            message:
+              "The private htmlview runtime state directory is unavailable",
+            cause: error.cause,
+          }),
+      ),
+    );
+    if (root === stateDirectory || isWithinRoot(root, stateDirectory))
+      return yield* new PathError({
+        code: "path.root_contains_state",
+        message:
+          "Serving root cannot contain the htmlview runtime state directory",
+      });
+  });
 }
 
 interface ControlResponse {
@@ -306,144 +331,231 @@ function probeWithRetries(paths: StatePaths): Effect.Effect<ProbeResult> {
   );
 }
 
-function incompatible(result: ProbeResult): never {
+function incompatibleError(result: ProbeResult): SupervisorError {
   const message =
     result.status === "version_mismatch"
       ? `The running htmlview supervisor uses version ${result.identity.version}; stop it before using ${htmlviewVersion}`
       : "The running htmlview supervisor uses an incompatible control protocol";
-  throw new SupervisorError({ code: "supervisor.incompatible", message });
+  return new SupervisorError({ code: "supervisor.incompatible", message });
 }
 
-async function currentSupervisor(
+function currentSupervisor(
   paths: StatePaths,
   allowVersionMismatch = false,
-): Promise<SupervisorIdentity | undefined> {
-  const result = await Effect.runPromise(probeWithRetries(paths));
-  if (result.status === "healthy") return result.identity;
-  if (result.status === "version_mismatch" && allowVersionMismatch)
-    return result.identity;
-  if (result.status === "version_mismatch" || result.status === "incompatible")
-    return incompatible(result);
-  if (result.status === "unavailable")
-    throw new SupervisorError({
-      code: "supervisor.unavailable",
-      message: "The htmlview supervisor is alive but temporarily unavailable",
-    });
-  return undefined;
+): Effect.Effect<SupervisorIdentity | undefined, SupervisorError> {
+  return Effect.gen(function* () {
+    const result = yield* probeWithRetries(paths);
+    if (result.status === "healthy") return result.identity;
+    if (result.status === "version_mismatch" && allowVersionMismatch)
+      return result.identity;
+    if (
+      result.status === "version_mismatch" ||
+      result.status === "incompatible"
+    )
+      return yield* incompatibleError(result);
+    if (result.status === "unavailable")
+      return yield* new SupervisorError({
+        code: "supervisor.unavailable",
+        message: "The htmlview supervisor is alive but temporarily unavailable",
+      });
+    return undefined;
+  });
 }
 
 function supervisorEntry(): string {
   return fileURLToPath(new URL("./supervisor-main.js", import.meta.url));
 }
 
+export class ProcessStartError extends Data.TaggedError("ProcessStartError")<{
+  readonly cause: unknown;
+}> {}
+
 export type StartSupervisorProcess = (
   paths: StatePaths,
   ownershipNonce: string,
-) => Promise<void>;
+) => Effect.Effect<void, ProcessStartError>;
 
-const startDetachedSupervisor: StartSupervisorProcess = (
-  paths,
-  ownershipNonce,
-) =>
-  new Promise((resolve, reject) => {
-    const child = spawn(process.execPath, [supervisorEntry()], {
-      detached: true,
-      stdio: "ignore",
-      env: {
-        ...process.env,
-        HTMLVIEW_STATE_DIR: paths.directory,
-        HTMLVIEW_SUPERVISOR_LOCK_NONCE: ownershipNonce,
-      },
-    });
-    child.once("error", reject);
-    child.once("spawn", () => {
-      child.unref();
-      resolve();
-    });
-  });
-
-interface ScopedSupervisorLock extends SupervisorLock {
-  release(): Promise<void>;
+export interface DetachedSupervisorChild {
+  readonly exitCode: number | null;
+  once(event: "error", listener: (cause: Error) => void): this;
+  once(event: "spawn", listener: () => void): this;
+  once(event: "exit", listener: () => void): this;
+  off(event: "error", listener: (cause: Error) => void): this;
+  off(event: "spawn", listener: () => void): this;
+  off(event: "exit", listener: () => void): this;
+  kill(): boolean;
+  unref(): void;
 }
 
-async function acquireScopedSupervisorLock(
-  paths: StatePaths,
-  timeoutMilliseconds?: number,
-): Promise<ScopedSupervisorLock> {
-  const scope = await Effect.runPromise(Scope.make());
-  try {
-    const lock = await Effect.runPromise(
-      Scope.provide(scope)(acquireSupervisorLock(paths, timeoutMilliseconds)),
-    );
-    let released = false;
-    return {
-      ...lock,
-      release: async () => {
-        if (released) return;
-        released = true;
-        await Effect.runPromise(Scope.close(scope, Exit.void));
-      },
-    };
-  } catch (error) {
-    await Effect.runPromise(Scope.close(scope, Exit.void));
-    throw error;
-  }
+export type SpawnDetachedSupervisor = (
+  command: string,
+  arguments_: readonly string[],
+  options: SpawnOptions,
+) => DetachedSupervisorChild;
+
+export function makeDetachedSupervisorStarter(
+  spawnProcess: SpawnDetachedSupervisor,
+): StartSupervisorProcess {
+  return (paths, ownershipNonce) =>
+    Effect.callback<void, ProcessStartError>((resume) => {
+      const controller = new AbortController();
+      let child: DetachedSupervisorChild | undefined;
+      let settled = false;
+      let interrupted = false;
+      let handedOff = false;
+      const cleanup = (): void => {
+        child?.off("error", onError);
+        child?.off("spawn", onSpawn);
+        child?.off("exit", onExit);
+      };
+      const onError = (cause: Error): void => {
+        if (settled) return;
+        settled = true;
+        cleanup();
+        if (!interrupted) resume(Effect.fail(new ProcessStartError({ cause })));
+      };
+      const onExit = (): void => {
+        if (interrupted) cleanup();
+      };
+      const onSpawn = (): void => {
+        if (settled) return;
+        if (interrupted) {
+          try {
+            child?.kill();
+          } catch {
+            // The abort signal may have already ended the child.
+          }
+          return;
+        }
+        settled = true;
+        handedOff = true;
+        cleanup();
+        child?.unref();
+        resume(Effect.void);
+      };
+      try {
+        child = spawnProcess(process.execPath, [supervisorEntry()], {
+          detached: true,
+          stdio: "ignore",
+          signal: controller.signal,
+          env: {
+            ...process.env,
+            HTMLVIEW_STATE_DIR: paths.directory,
+            HTMLVIEW_SUPERVISOR_LOCK_NONCE: ownershipNonce,
+          },
+        });
+      } catch (cause) {
+        settled = true;
+        resume(Effect.fail(new ProcessStartError({ cause })));
+        return;
+      }
+      child.once("error", onError);
+      child.once("spawn", onSpawn);
+      child.once("exit", onExit);
+      return Effect.sync(() => {
+        if (handedOff || settled) return;
+        interrupted = true;
+        controller.abort();
+        try {
+          child?.kill();
+        } catch {
+          // A late spawn/error event retains listeners and settles cleanup.
+        }
+      });
+    });
 }
 
-async function ensureSupervisor(
+const startDetachedSupervisor = makeDetachedSupervisorStarter(
+  (command, arguments_, options) => spawn(command, arguments_, options),
+);
+
+class StartupPending extends Data.TaggedError("StartupPending") {}
+
+const startupReadinessSchedule = Schedule.spaced(50);
+
+function waitForStartup(
   paths: StatePaths,
-  startProcess: StartSupervisorProcess,
-): Promise<SupervisorIdentity> {
-  await prepareState(paths);
-  const current = await currentSupervisor(paths);
-  if (current !== undefined) return current;
-
-  const ownership = await acquireOwnershipOrObserve(paths);
-  if (ownership.kind === "identity") return ownership.identity;
-  const { lock } = ownership;
-  try {
-    const afterLock = await Effect.runPromise(probeWithRetries(paths));
-    if (afterLock.status === "healthy") return afterLock.identity;
-    if (
-      afterLock.status === "version_mismatch" ||
-      afterLock.status === "incompatible"
-    )
-      return incompatible(afterLock);
-    if (afterLock.status === "unavailable")
-      throw new SupervisorError({
-        code: "supervisor.unavailable",
-        message: "The htmlview supervisor is alive but temporarily unavailable",
-      });
-
-    try {
-      await Effect.runPromise(removeStaleControlSocket(paths));
-      await startProcess(paths, lock.nonce);
-    } catch (cause) {
-      throw new SupervisorError({
-        code: "supervisor.start_failed",
-        message: "The htmlview supervisor process could not start",
-        cause,
-      });
-    }
-
-    const deadline = Date.now() + supervisorStartTimeoutMilliseconds;
-    while (Date.now() < deadline) {
-      const started = await Effect.runPromise(probeOnce(paths));
+): Effect.Effect<SupervisorIdentity, SupervisorError> {
+  return Effect.gen(function* () {
+    const deadline =
+      (yield* Clock.currentTimeMillis) + supervisorStartTimeoutMilliseconds;
+    const attempt = Effect.gen(function* () {
+      if ((yield* Clock.currentTimeMillis) >= deadline)
+        return yield* new SupervisorError({
+          code: "supervisor.start_failed",
+          message: "The htmlview supervisor did not become ready",
+        });
+      const started = yield* probeOnce(paths);
       if (started.status === "healthy") return started.identity;
       if (
         started.status === "version_mismatch" ||
         started.status === "incompatible"
       )
-        return incompatible(started);
-      await Effect.runPromise(Effect.sleep(50));
-    }
-    throw new SupervisorError({
-      code: "supervisor.start_failed",
-      message: "The htmlview supervisor did not become ready",
+        return yield* incompatibleError(started);
+      return yield* new StartupPending();
     });
-  } finally {
-    await lock.release();
-  }
+    return yield* attempt.pipe(
+      Effect.retry({
+        schedule: startupReadinessSchedule,
+        while: (error) => error instanceof StartupPending,
+      }),
+      Effect.catchTag(
+        "StartupPending",
+        () =>
+          new SupervisorError({
+            code: "supervisor.start_failed",
+            message: "The htmlview supervisor did not become ready",
+          }),
+      ),
+    );
+  });
+}
+
+function ensureSupervisor(
+  paths: StatePaths,
+  startProcess: StartSupervisorProcess,
+  acquireLock: AcquireSupervisorLock,
+): Effect.Effect<SupervisorIdentity, OperationalError> {
+  return Effect.scoped(
+    Effect.gen(function* () {
+      yield* prepareState(paths);
+      const current = yield* currentSupervisor(paths);
+      if (current !== undefined) return current;
+
+      const ownership = yield* acquireOwnershipOrObserve(
+        paths,
+        false,
+        acquireLock,
+      );
+      if (ownership.kind === "identity") return ownership.identity;
+      const afterLock = yield* probeWithRetries(paths);
+      if (afterLock.status === "healthy") return afterLock.identity;
+      if (
+        afterLock.status === "version_mismatch" ||
+        afterLock.status === "incompatible"
+      )
+        return yield* incompatibleError(afterLock);
+      if (afterLock.status === "unavailable")
+        return yield* new SupervisorError({
+          code: "supervisor.unavailable",
+          message:
+            "The htmlview supervisor is alive but temporarily unavailable",
+        });
+
+      yield* removeStaleControlSocket(paths).pipe(
+        Effect.andThen(startProcess(paths, ownership.lock.nonce)),
+        Effect.mapError(
+          (error) =>
+            new SupervisorError({
+              code: "supervisor.start_failed",
+              message: "The htmlview supervisor process could not start",
+              cause: error instanceof ProcessStartError ? error.cause : error,
+            }),
+        ),
+      );
+      return yield* waitForStartup(paths);
+    }),
+  );
 }
 
 function ownershipLockError(error: unknown): OperationalError {
@@ -471,82 +583,100 @@ function ownershipTimeoutError(): RuntimeStateError {
   });
 }
 
-async function acquireOwnershipOrObserve(
-  paths: StatePaths,
-  allowVersionMismatch = false,
-): Promise<
-  | { readonly kind: "lock"; readonly lock: ScopedSupervisorLock }
-  | { readonly kind: "identity"; readonly identity: SupervisorIdentity }
-> {
-  const deadline = Date.now() + supervisorOwnershipWaitMilliseconds;
-  while (Date.now() < deadline) {
-    try {
-      return {
-        kind: "lock",
-        lock: await acquireScopedSupervisorLock(paths, 100),
-      };
-    } catch (error) {
-      if (
-        !(error instanceof RuntimeStateError) ||
-        error.reason !== "ownership_timeout"
-      )
-        throw ownershipLockError(error);
-    }
+class OwnershipPending extends Data.TaggedError("OwnershipPending") {}
 
-    const result = await Effect.runPromise(probeOnce(paths));
-    if (result.status === "healthy")
-      return { kind: "identity", identity: result.identity };
-    if (result.status === "version_mismatch" && allowVersionMismatch)
-      return { kind: "identity", identity: result.identity };
-    if (
-      result.status === "version_mismatch" ||
-      result.status === "incompatible"
-    )
-      return incompatible(result);
-    if (result.status === "unavailable")
-      throw new SupervisorError({
-        code: "supervisor.unavailable",
-        message: "The htmlview supervisor is alive but temporarily unavailable",
-      });
-    await Effect.runPromise(Effect.sleep(50));
-  }
-  throw ownershipLockError(ownershipTimeoutError());
+const ownershipObservationSchedule = Schedule.spaced(50);
+
+function acquireOwnershipOrObserve(
+  paths: StatePaths,
+  allowVersionMismatch: boolean,
+  acquireLock: AcquireSupervisorLock,
+): Effect.Effect<
+  | { readonly kind: "lock"; readonly lock: SupervisorLock }
+  | { readonly kind: "identity"; readonly identity: SupervisorIdentity },
+  OperationalError,
+  Scope.Scope
+> {
+  return Effect.gen(function* () {
+    const deadline =
+      (yield* Clock.currentTimeMillis) + supervisorOwnershipWaitMilliseconds;
+    const attempt = Effect.gen(function* () {
+      if ((yield* Clock.currentTimeMillis) >= deadline)
+        return yield* ownershipLockError(ownershipTimeoutError());
+      const acquired = yield* Effect.result(acquireLock(paths, 100));
+      if (Result.isSuccess(acquired))
+        return { kind: "lock" as const, lock: acquired.success };
+      if (
+        !(acquired.failure instanceof RuntimeStateError) ||
+        acquired.failure.reason !== "ownership_timeout"
+      )
+        return yield* ownershipLockError(acquired.failure);
+
+      const result = yield* probeOnce(paths);
+      if (result.status === "healthy")
+        return { kind: "identity" as const, identity: result.identity };
+      if (result.status === "version_mismatch" && allowVersionMismatch)
+        return { kind: "identity" as const, identity: result.identity };
+      if (
+        result.status === "version_mismatch" ||
+        result.status === "incompatible"
+      )
+        return yield* incompatibleError(result);
+      if (result.status === "unavailable")
+        return yield* new SupervisorError({
+          code: "supervisor.unavailable",
+          message:
+            "The htmlview supervisor is alive but temporarily unavailable",
+        });
+      return yield* new OwnershipPending();
+    });
+    return yield* attempt.pipe(
+      Effect.retry({
+        schedule: ownershipObservationSchedule,
+        while: (error) => error instanceof OwnershipPending,
+      }),
+      Effect.catchTag("OwnershipPending", () =>
+        Effect.fail(ownershipLockError(ownershipTimeoutError())),
+      ),
+    );
+  });
 }
 
-async function existingSupervisor(
+function existingSupervisor(
   paths: StatePaths,
-  allowVersionMismatch = false,
-): Promise<SupervisorIdentity | undefined> {
-  const current = await currentSupervisor(paths, allowVersionMismatch);
-  if (current !== undefined) return current;
+  allowVersionMismatch: boolean,
+  acquireLock: AcquireSupervisorLock,
+): Effect.Effect<SupervisorIdentity | undefined, OperationalError> {
+  return Effect.scoped(
+    Effect.gen(function* () {
+      const current = yield* currentSupervisor(paths, allowVersionMismatch);
+      if (current !== undefined) return current;
 
-  const ownership = await acquireOwnershipOrObserve(
-    paths,
-    allowVersionMismatch,
+      const ownership = yield* acquireOwnershipOrObserve(
+        paths,
+        allowVersionMismatch,
+        acquireLock,
+      );
+      if (ownership.kind === "identity") return ownership.identity;
+      const afterLock = yield* probeWithRetries(paths);
+      if (afterLock.status === "healthy") return afterLock.identity;
+      if (afterLock.status === "version_mismatch" && allowVersionMismatch)
+        return afterLock.identity;
+      if (
+        afterLock.status === "version_mismatch" ||
+        afterLock.status === "incompatible"
+      )
+        return yield* incompatibleError(afterLock);
+      if (afterLock.status === "unavailable")
+        return yield* new SupervisorError({
+          code: "supervisor.unavailable",
+          message:
+            "The htmlview supervisor is alive but temporarily unavailable",
+        });
+      if (afterLock.status === "stale") yield* removeStaleControlSocket(paths);
+      return undefined;
+    }),
   );
-  if (ownership.kind === "identity") return ownership.identity;
-  const { lock } = ownership;
-  try {
-    const afterLock = await Effect.runPromise(probeWithRetries(paths));
-    if (afterLock.status === "healthy") return afterLock.identity;
-    if (afterLock.status === "version_mismatch" && allowVersionMismatch)
-      return afterLock.identity;
-    if (
-      afterLock.status === "version_mismatch" ||
-      afterLock.status === "incompatible"
-    )
-      return incompatible(afterLock);
-    if (afterLock.status === "unavailable")
-      throw new SupervisorError({
-        code: "supervisor.unavailable",
-        message: "The htmlview supervisor is alive but temporarily unavailable",
-      });
-    if (afterLock.status === "stale")
-      await Effect.runPromise(removeStaleControlSocket(paths));
-    return undefined;
-  } finally {
-    await lock.release();
-  }
 }
 
 function controlError(value: unknown, fallback: string): OperationalError {
@@ -564,202 +694,274 @@ function controlError(value: unknown, fallback: string): OperationalError {
   });
 }
 
-async function expectedSessionGrant(
+function expectedSessionGrant(
   entry: string,
   root: string,
-): Promise<{ readonly entry: string; readonly root: string }> {
-  let canonicalRoot: string;
-  try {
-    canonicalRoot = await realpath(root);
-  } catch (cause) {
-    const permissionDenied =
-      (cause as NodeJS.ErrnoException).code === "EACCES" ||
-      (cause as NodeJS.ErrnoException).code === "EPERM";
-    throw new PathError({
-      code: permissionDenied ? "path.root_unreadable" : "path.root_not_found",
-      message: permissionDenied
-        ? `Serving root is not accessible: ${root}`
-        : `Serving root does not exist: ${root}`,
-      cause,
+): Effect.Effect<{ readonly entry: string; readonly root: string }, PathError> {
+  return Effect.gen(function* () {
+    const canonicalRoot = yield* Effect.tryPromise({
+      try: () => realpath(root),
+      catch: (cause) => {
+        const permissionDenied =
+          cause instanceof Error &&
+          ((cause as NodeJS.ErrnoException).code === "EACCES" ||
+            (cause as NodeJS.ErrnoException).code === "EPERM");
+        return new PathError({
+          code: permissionDenied
+            ? "path.root_unreadable"
+            : "path.root_not_found",
+          message: permissionDenied
+            ? `Serving root is not accessible: ${root}`
+            : `Serving root does not exist: ${root}`,
+          cause,
+        });
+      },
     });
-  }
-  const relativeEntry = path.relative(root, entry);
-  return {
-    entry:
-      relativeEntry !== "" &&
-      relativeEntry !== ".." &&
-      !relativeEntry.startsWith(`..${path.sep}`) &&
-      !path.isAbsolute(relativeEntry)
-        ? path.join(canonicalRoot, relativeEntry)
-        : entry,
-    root: canonicalRoot,
-  };
+    const relativeEntry = path.relative(root, entry);
+    return {
+      entry:
+        relativeEntry !== "" &&
+        relativeEntry !== ".." &&
+        !relativeEntry.startsWith(`..${path.sep}`) &&
+        !path.isAbsolute(relativeEntry)
+          ? path.join(canonicalRoot, relativeEntry)
+          : entry,
+      root: canonicalRoot,
+    };
+  });
 }
 
-async function requiredRequest<T>(
+class ControlResponseStatusError extends Data.TaggedError(
+  "ControlResponseStatusError",
+)<{
+  readonly status: number;
+  readonly value: unknown;
+}> {}
+
+class ControlResponseSchemaError extends Data.TaggedError(
+  "ControlResponseSchemaError",
+)<{
+  readonly cause: unknown;
+}> {}
+
+function requiredRequest<T>(
   paths: StatePaths,
   method: "GET" | "POST",
   route: string,
   decode: (value: unknown) => Result.Result<T, unknown>,
   body?: unknown,
-): Promise<T> {
-  let response: ControlResponse;
-  try {
-    response = await Effect.runPromise(
-      controlRequest(paths, method, route, body),
-    );
-  } catch (cause) {
-    throw new SupervisorError({
-      code: "supervisor.unavailable",
-      message: "The htmlview supervisor became unavailable",
-      cause,
-    });
-  }
-  if (response.status < 200 || response.status >= 300)
-    throw controlError(
-      response.value,
-      `Supervisor request failed with HTTP ${response.status}`,
-    );
-  const decoded = decode(response.value);
-  if (Result.isSuccess(decoded)) return decoded.success;
-  throw new SupervisorError({
-    code: "supervisor.request_failed",
-    message: "The htmlview supervisor returned an invalid response",
+): Effect.Effect<T, OperationalError> {
+  const request = Effect.gen(function* () {
+    const response = yield* controlRequest(paths, method, route, body);
+    if (response.status < 200 || response.status >= 300)
+      return yield* new ControlResponseStatusError({
+        status: response.status,
+        value: response.value,
+      });
+    const decoded = decode(response.value);
+    if (Result.isSuccess(decoded)) return decoded.success;
+    return yield* new ControlResponseSchemaError({ cause: decoded.failure });
   });
+  return request.pipe(
+    Effect.mapError((error): OperationalError => {
+      switch (error._tag) {
+        case "ControlRequestError":
+          return new SupervisorError({
+            code: "supervisor.unavailable",
+            message: "The htmlview supervisor became unavailable",
+            cause: error,
+          });
+        case "ControlResponseStatusError":
+          return controlError(
+            error.value,
+            `Supervisor request failed with HTTP ${error.status}`,
+          );
+        case "ControlResponseSchemaError":
+          return new SupervisorError({
+            code: "supervisor.request_failed",
+            message: "The htmlview supervisor returned an invalid response",
+            cause: error,
+          });
+      }
+    }),
+  );
 }
 
-async function waitForShutdown(
+class ShutdownPending extends Data.TaggedError("ShutdownPending") {}
+
+const shutdownConfirmationSchedule = Schedule.spaced(50);
+
+function waitForShutdown(
   paths: StatePaths,
   instanceId: string,
-): Promise<void> {
-  const deadline = Date.now() + supervisorShutdownTimeoutMilliseconds;
-  while (Date.now() < deadline) {
-    const result = await Effect.runPromise(probeOnce(paths));
-    if (
-      (result.status === "healthy" || result.status === "version_mismatch") &&
-      result.identity.instanceId !== instanceId
-    )
-      return;
-    if (result.status === "absent" || result.status === "stale") {
-      let lock;
-      try {
-        lock = await acquireScopedSupervisorLock(paths, 100);
-      } catch {
-        await Effect.runPromise(Effect.sleep(50));
-        continue;
-      }
-      try {
-        const settled = await Effect.runPromise(probeOnce(paths));
-        if (settled.status === "stale") {
-          await Effect.runPromise(removeStaleControlSocket(paths));
-          return;
-        }
-        if (settled.status === "absent") return;
+): Effect.Effect<void, OperationalError> {
+  return Effect.gen(function* () {
+    const deadline =
+      (yield* Clock.currentTimeMillis) + supervisorShutdownTimeoutMilliseconds;
+    const attempt = Effect.scoped(
+      Effect.gen(function* () {
+        if ((yield* Clock.currentTimeMillis) >= deadline)
+          return yield* new SupervisorError({
+            code: "supervisor.unavailable",
+            message: "The htmlview supervisor did not finish shutting down",
+          });
+        const result = yield* probeOnce(paths);
         if (
-          (settled.status === "healthy" ||
-            settled.status === "version_mismatch") &&
-          settled.identity.instanceId !== instanceId
+          (result.status === "healthy" ||
+            result.status === "version_mismatch") &&
+          result.identity.instanceId !== instanceId
         )
           return;
-      } finally {
-        await lock.release();
-      }
-    }
-    await Effect.runPromise(Effect.sleep(50));
-  }
-  throw new SupervisorError({
-    code: "supervisor.unavailable",
-    message: "The htmlview supervisor did not finish shutting down",
+        if (result.status === "absent" || result.status === "stale") {
+          const acquired = yield* Effect.result(
+            acquireSupervisorLock(paths, 100),
+          );
+          if (Result.isFailure(acquired)) return yield* new ShutdownPending();
+          const settled = yield* probeOnce(paths);
+          if (settled.status === "stale") {
+            yield* removeStaleControlSocket(paths);
+            return;
+          }
+          if (settled.status === "absent") return;
+          if (
+            (settled.status === "healthy" ||
+              settled.status === "version_mismatch") &&
+            settled.identity.instanceId !== instanceId
+          )
+            return;
+        }
+        return yield* new ShutdownPending();
+      }),
+    );
+    return yield* attempt.pipe(
+      Effect.retry({
+        schedule: shutdownConfirmationSchedule,
+        while: (error) => error instanceof ShutdownPending,
+      }),
+      Effect.catchTag(
+        "ShutdownPending",
+        () =>
+          new SupervisorError({
+            code: "supervisor.unavailable",
+            message: "The htmlview supervisor did not finish shutting down",
+          }),
+      ),
+    );
   });
 }
 
 export class SupervisorClient {
   readonly #paths: StatePaths;
   readonly #startProcess: StartSupervisorProcess;
+  readonly #acquireLock: AcquireSupervisorLock;
 
   constructor(
     paths: StatePaths = statePaths(),
     startProcess: StartSupervisorProcess = startDetachedSupervisor,
+    acquireLock: AcquireSupervisorLock = acquireSupervisorLock,
   ) {
     this.#paths = paths;
     this.#startProcess = startProcess;
+    this.#acquireLock = acquireLock;
   }
 
-  async list(
+  list(
     fields: readonly OptionalSessionField[] = [],
-  ): Promise<readonly SessionSummary[]> {
-    await prepareState(this.#paths);
-    const identity = await existingSupervisor(this.#paths);
-    if (identity === undefined) return [];
-    const query =
-      fields.length === 0
-        ? ""
-        : `?fields=${encodeURIComponent(fields.join(","))}`;
-    const result = await requiredRequest(
-      this.#paths,
-      "GET",
-      `/sessions${query}`,
-      (value) => {
-        const decoded = decodeSessionListResult(value);
-        if (Result.isFailure(decoded)) return decoded;
-        const expected = new Set(fields);
-        return decoded.success.sessions.every(
-          (session) =>
-            Object.hasOwn(session, "entry") === expected.has("entry") &&
-            Object.hasOwn(session, "root") === expected.has("root"),
-        )
-          ? decoded
-          : Result.fail("Session fields did not match the request");
-      },
-    );
-    return result.sessions;
+  ): Effect.Effect<readonly SessionSummary[], OperationalError> {
+    const paths = this.#paths;
+    const acquireLock = this.#acquireLock;
+    return Effect.gen(function* () {
+      yield* prepareState(paths);
+      const identity = yield* existingSupervisor(paths, false, acquireLock);
+      if (identity === undefined) return [];
+      const query =
+        fields.length === 0
+          ? ""
+          : `?fields=${encodeURIComponent(fields.join(","))}`;
+      const result = yield* requiredRequest(
+        paths,
+        "GET",
+        `/sessions${query}`,
+        (value) => {
+          const decoded = decodeSessionListResult(value);
+          if (Result.isFailure(decoded)) return decoded;
+          const expected = new Set(fields);
+          return decoded.success.sessions.every(
+            (session) =>
+              Object.hasOwn(session, "entry") === expected.has("entry") &&
+              Object.hasOwn(session, "root") === expected.has("root"),
+          )
+            ? decoded
+            : Result.fail("Session fields did not match the request");
+        },
+      );
+      return result.sessions;
+    });
   }
 
-  async serve(entry: string, root: string): Promise<ServeControlResult> {
-    await assertStateOutsideRoot(this.#paths, root);
-    const expectedGrant = await expectedSessionGrant(entry, root);
-    await ensureSupervisor(this.#paths, this.#startProcess);
-    return requiredRequest(
-      this.#paths,
-      "POST",
-      "/sessions",
-      (value) => {
-        const decoded = decodeServeControlResult(value);
-        if (Result.isFailure(decoded)) return decoded;
-        return decoded.success.session.entry === expectedGrant.entry &&
-          decoded.success.session.root === expectedGrant.root
-          ? decoded
-          : Result.fail("Session grant did not match the request");
-      },
-      encodeCreateSessionRequest({ entry, root }),
-    );
+  serve(
+    entry: string,
+    root: string,
+  ): Effect.Effect<ServeControlResult, OperationalError> {
+    const paths = this.#paths;
+    const startProcess = this.#startProcess;
+    const acquireLock = this.#acquireLock;
+    return Effect.gen(function* () {
+      yield* assertStateOutsideRoot(paths, root);
+      const expectedGrant = yield* expectedSessionGrant(entry, root);
+      yield* ensureSupervisor(paths, startProcess, acquireLock);
+      return yield* requiredRequest(
+        paths,
+        "POST",
+        "/sessions",
+        (value) => {
+          const decoded = decodeServeControlResult(value);
+          if (Result.isFailure(decoded)) return decoded;
+          return decoded.success.session.entry === expectedGrant.entry &&
+            decoded.success.session.root === expectedGrant.root
+            ? decoded
+            : Result.fail("Session grant did not match the request");
+        },
+        encodeCreateSessionRequest({ entry, root }),
+      );
+    });
   }
 
-  async stopSession(session: string): Promise<StopControlResult> {
-    await prepareState(this.#paths);
-    const identity = await existingSupervisor(this.#paths);
-    if (identity === undefined) return { stopped: 0 };
-    return requiredRequest(
-      this.#paths,
-      "POST",
-      "/stop",
-      decodeTargetedStopControlResult,
-      encodeStopSessionRequest({ session }),
-    );
+  stopSession(
+    session: string,
+  ): Effect.Effect<StopControlResult, OperationalError> {
+    const paths = this.#paths;
+    const acquireLock = this.#acquireLock;
+    return Effect.gen(function* () {
+      yield* prepareState(paths);
+      const identity = yield* existingSupervisor(paths, false, acquireLock);
+      if (identity === undefined) return { stopped: 0 };
+      return yield* requiredRequest(
+        paths,
+        "POST",
+        "/stop",
+        decodeTargetedStopControlResult,
+        encodeStopSessionRequest({ session }),
+      );
+    });
   }
 
-  async stopAll(): Promise<StopControlResult> {
-    await prepareState(this.#paths);
-    const identity = await existingSupervisor(this.#paths, true);
-    if (identity === undefined) return { stopped: 0 };
-    const result = await requiredRequest(
-      this.#paths,
-      "POST",
-      "/shutdown",
-      decodeStopControlResult,
-      encodeShutdownRequest({}),
-    );
-    await waitForShutdown(this.#paths, identity.instanceId);
-    return result;
+  stopAll(): Effect.Effect<StopControlResult, OperationalError> {
+    const paths = this.#paths;
+    const acquireLock = this.#acquireLock;
+    return Effect.gen(function* () {
+      yield* prepareState(paths);
+      const identity = yield* existingSupervisor(paths, true, acquireLock);
+      if (identity === undefined) return { stopped: 0 };
+      const result = yield* requiredRequest(
+        paths,
+        "POST",
+        "/shutdown",
+        decodeStopControlResult,
+        encodeShutdownRequest({}),
+      );
+      yield* waitForShutdown(paths, identity.instanceId);
+      return result;
+    });
   }
 }
