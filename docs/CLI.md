@@ -107,6 +107,7 @@ session:
   id: 7sp4k2
   status: ready
   url: "http://h-k7w4m2.localhost:49152/public/report.html"
+  reused: false
 grant:
   root: /workspace
   access: read_all_regular_files_beneath_root
@@ -119,7 +120,8 @@ The equivalent JSON is available without changing the operation:
   "session": {
     "id": "7sp4k2",
     "status": "ready",
-    "url": "http://h-k7w4m2.localhost:49152/public/report.html"
+    "url": "http://h-k7w4m2.localhost:49152/public/report.html",
+    "reused": false
   },
   "grant": {
     "root": "/workspace",
@@ -134,6 +136,21 @@ canonical parent is rejected rather than silently broadening the grant.
 `--root` explicitly broadens or otherwise changes the grant. The raw service
 does not use a filename denylist; callers must choose a root containing only
 files they are prepared to expose to the page and other same-origin code.
+`session.reused` is `true` when the identical canonical entry/root session was
+already live, making the successful no-op explicit.
+
+## Stop result
+
+Stopping one or all sessions reports the affected count and treats an already
+stopped target as a successful no-op:
+
+```toon
+stop:
+  scope: session
+  session: 7sp4k2
+  stopped: 0
+  status: already_stopped
+```
 
 ## Errors and help
 

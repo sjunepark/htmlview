@@ -26,7 +26,10 @@ caller.
 - Milestone 1 is complete: canonical disclosure grants, byte-faithful GET/HEAD,
   MIME and conditional responses, exact Host checks, and adversarial
   confinement tests are implemented independently of lifecycle.
-- The next action is Milestone 2 supervisor and sessions.
+- Milestone 2 is complete: authenticated private discovery, concurrency-safe
+  detached startup, serialized idempotent sessions, readiness, stop/recovery,
+  bounded idle shutdown, and graceful signals are wired through the CLI.
+- The next action is Milestone 3 agent interoperability.
 
 Update this document in place. Keep completed work, current validation,
 blockers, decisions, and the single next action concise; do not append session
@@ -143,6 +146,10 @@ Acceptance:
 
 ## Milestone 2: Supervisor and sessions
 
+Status: Complete. Unit and detached-process coverage includes concurrent first
+startup, simultaneous roots, idempotent serve/stop, private permissions,
+SIGKILL recovery with a fresh origin, and graceful shutdown.
+
 - Implement one discoverable per-user supervisor with an authenticated
   loopback control endpoint.
 - Implement the content-origin strategy accepted by the pre-foundation gate so
@@ -245,5 +252,6 @@ annotation transport before a working second use case requires it.
 
 ## Next action
 
-Complete Milestone 2 supervisor/session lifecycle, authenticated control,
-private runtime discovery, idempotency, recovery, and CLI integration.
+Complete Milestone 3 interoperability against the returned CLI URL, document
+browser-neutral copy-paste workflows, and finish dual-format runtime contract
+coverage.

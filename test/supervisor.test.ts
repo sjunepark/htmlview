@@ -1,0 +1,289 @@
+import assert from "node:assert/strict";
+import {
+  mkdir,
+  mkdtemp,
+  readFile,
+  readdir,
+  rm,
+  stat,
+  writeFile,
+} from "node:fs/promises";
+import { request } from "node:http";
+import { homedir, tmpdir } from "node:os";
+import path from "node:path";
+import { afterEach, describe, it } from "node:test";
+import { SupervisorClient } from "../src/supervisor/client.js";
+import { supervisorProtocol } from "../src/supervisor/protocol.js";
+import {
+  startSupervisor,
+  type RunningSupervisor,
+} from "../src/supervisor/server.js";
+import {
+  acquireStartupLock,
+  ensurePrivateStateDirectory,
+  readDiscovery,
+  statePaths,
+  writePrivateJson,
+  type StatePaths,
+} from "../src/supervisor/state.js";
+
+const temporaryDirectories: string[] = [];
+const supervisors: RunningSupervisor[] = [];
+
+async function temporaryDirectory(prefix: string): Promise<string> {
+  const directory = await mkdtemp(path.join(tmpdir(), prefix));
+  temporaryDirectories.push(directory);
+  return directory;
+}
+
+async function setup(idleMilliseconds = 10_000): Promise<{
+  paths: StatePaths;
+  supervisor: RunningSupervisor;
+  client: SupervisorClient;
+  root: string;
+  entry: string;
+}> {
+  const state = await temporaryDirectory("htmlview-state-parent-");
+  const paths = statePaths({ HTMLVIEW_STATE_DIR: path.join(state, "state") });
+  await ensurePrivateStateDirectory(paths);
+  const supervisor = await startSupervisor({ paths, idleMilliseconds });
+  supervisors.push(supervisor);
+  const root = await temporaryDirectory("htmlview-session-");
+  const entry = path.join(root, "report.html");
+  await writeFile(entry, "<!doctype html><p>session</p>");
+  return {
+    paths,
+    supervisor,
+    client: new SupervisorClient(paths),
+    root,
+    entry,
+  };
+}
+
+afterEach(async () => {
+  await Promise.all(
+    supervisors.splice(0).map((supervisor) => supervisor.close()),
+  );
+  const { rm } = await import("node:fs/promises");
+  await Promise.all(
+    temporaryDirectories
+      .splice(0)
+      .map((directory) => rm(directory, { recursive: true, force: true })),
+  );
+});
+
+describe("supervisor lifecycle", () => {
+  it("creates and reuses one ready session for concurrent matching requests", async () => {
+    const { client, root, entry } = await setup();
+    const results = await Promise.all([
+      client.serve(entry, root),
+      client.serve(entry, root),
+      client.serve(entry, root),
+    ]);
+    assert.equal(new Set(results.map((result) => result.session.id)).size, 1);
+    assert.equal(new Set(results.map((result) => result.session.url)).size, 1);
+    assert.equal(results.filter((result) => result.reused).length, 2);
+    assert.equal((await client.list()).length, 1);
+
+    const response = await fetch(results[0]?.session.url ?? "");
+    assert.equal(response.status, 200);
+    assert.equal(await response.text(), "<!doctype html><p>session</p>");
+  });
+
+  it("keeps independent roots in simultaneous sessions and stops idempotently", async () => {
+    const { client, root, entry } = await setup();
+    const otherRoot = await temporaryDirectory("htmlview-session-other-");
+    const otherEntry = path.join(otherRoot, "other.html");
+    await writeFile(otherEntry, "other");
+    const [first, second] = await Promise.all([
+      client.serve(entry, root),
+      client.serve(otherEntry, otherRoot),
+    ]);
+    assert.notEqual(first.session.id, second.session.id);
+    assert.notEqual(
+      new URL(first.session.url).hostname,
+      new URL(second.session.url).hostname,
+    );
+    assert.equal((await client.stop(first.session.id)).stopped, 1);
+    assert.equal((await client.stop(first.session.id)).stopped, 0);
+    assert.equal((await client.stop(undefined, true)).stopped, 1);
+    assert.equal((await client.stop(undefined, true)).stopped, 0);
+  });
+
+  it("requires the private credential on control operations", async () => {
+    const { supervisor } = await setup();
+    const status = await new Promise<number>((resolve, reject) => {
+      const operation = request(
+        {
+          hostname: "127.0.0.1",
+          port: supervisor.discovery.port,
+          path: "/sessions",
+          headers: { host: `127.0.0.1:${supervisor.discovery.port}` },
+        },
+        (response) => {
+          response.resume();
+          response.on("end", () => resolve(response.statusCode ?? 0));
+        },
+      );
+      operation.once("error", reject);
+      operation.end();
+    });
+    assert.equal(status, 401);
+  });
+
+  it("stores private state outside the served root", async () => {
+    const { paths, client, root, entry } = await setup();
+    await client.serve(entry, root);
+    assert.equal((await stat(paths.directory)).mode & 0o777, 0o700);
+    assert.equal((await stat(paths.discovery)).mode & 0o777, 0o600);
+    assert.deepEqual((await readdir(root)).sort(), ["report.html"]);
+  });
+
+  it("removes its discovery record after bounded idle shutdown", async () => {
+    const { paths } = await setup(30);
+    const deadline = Date.now() + 2_000;
+    while (
+      (await readDiscovery(paths)) !== undefined &&
+      Date.now() < deadline
+    ) {
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+    assert.equal(await readDiscovery(paths), undefined);
+  });
+
+  it("does not shut down while an authenticated request body is in flight", async () => {
+    const { paths, supervisor, root, entry } = await setup(100);
+    const response = new Promise<{ status: number; body: unknown }>(
+      (resolve, reject) => {
+        const operation = request(
+          {
+            hostname: "127.0.0.1",
+            port: supervisor.discovery.port,
+            method: "POST",
+            path: "/sessions",
+            headers: {
+              host: `127.0.0.1:${supervisor.discovery.port}`,
+              authorization: `Bearer ${supervisor.discovery.token}`,
+              "content-type": "application/json",
+            },
+          },
+          (incoming) => {
+            const chunks: Buffer[] = [];
+            incoming.on("data", (chunk: Buffer) => chunks.push(chunk));
+            incoming.on("end", () =>
+              resolve({
+                status: incoming.statusCode ?? 0,
+                body: JSON.parse(Buffer.concat(chunks).toString("utf8")),
+              }),
+            );
+          },
+        );
+        operation.once("error", reject);
+        operation.write(`{"entry":${JSON.stringify(entry)},`);
+        setTimeout(() => operation.end(`"root":${JSON.stringify(root)}}`), 250);
+      },
+    );
+
+    const result = await response;
+    assert.equal(result.status, 200);
+    assert.notEqual(await readDiscovery(paths), undefined);
+    const session = (result.body as { session: { url: string } }).session;
+    assert.equal(await fetch(session.url).then((value) => value.status), 200);
+  });
+
+  it("rejects stale or unauthenticated discovery instead of trusting its PID", async () => {
+    const parent = await temporaryDirectory("htmlview-stale-");
+    const paths = statePaths({
+      HTMLVIEW_STATE_DIR: path.join(parent, "state"),
+    });
+    await ensurePrivateStateDirectory(paths);
+    await writePrivateJson(paths.discovery, {
+      protocol: supervisorProtocol,
+      instanceId: "stale",
+      pid: process.pid,
+      port: 9,
+      token: "x".repeat(43),
+      version: "0.1.0",
+    });
+    assert.deepEqual(await new SupervisorClient(paths).list(), []);
+    await assert.rejects(readFile(paths.discovery));
+  });
+});
+
+describe("supervisor state", () => {
+  it("ignores a relative XDG state home instead of writing below cwd", () => {
+    assert.equal(
+      statePaths({ XDG_STATE_HOME: ".repository-state" }, "linux").directory,
+      path.join(homedir(), ".local", "state", "htmlview"),
+    );
+    assert.equal(
+      statePaths({ XDG_STATE_HOME: "/var/tmp/user-state" }, "linux").directory,
+      "/var/tmp/user-state/htmlview",
+    );
+  });
+
+  it("does not expire a startup lock while its owning process is alive", async () => {
+    const parent = await temporaryDirectory("htmlview-live-lock-");
+    const paths = statePaths({
+      HTMLVIEW_STATE_DIR: path.join(parent, "state"),
+    });
+    await ensurePrivateStateDirectory(paths);
+    await mkdir(paths.startupLock, { mode: 0o700 });
+    await writePrivateJson(path.join(paths.startupLock, "owner.json"), {
+      pid: process.pid,
+      createdAt: 0,
+      nonce: "a".repeat(32),
+    });
+
+    await assert.rejects(
+      acquireStartupLock(paths, 80),
+      /Timed out waiting for the supervisor startup lock/,
+    );
+  });
+
+  it("does not let an old owner release a replacement startup lock", async () => {
+    const parent = await temporaryDirectory("htmlview-fenced-lock-");
+    const paths = statePaths({
+      HTMLVIEW_STATE_DIR: path.join(parent, "state"),
+    });
+    await ensurePrivateStateDirectory(paths);
+    const oldOwner = await acquireStartupLock(paths);
+    await rm(paths.startupLock, { recursive: true, force: true });
+    const replacement = await acquireStartupLock(paths);
+
+    await oldOwner.release();
+    assert.equal((await stat(paths.startupLock)).isDirectory(), true);
+    await replacement.release();
+    await assert.rejects(stat(paths.startupLock));
+  });
+
+  it("serializes simultaneous recovery of one stale startup lock", async () => {
+    const parent = await temporaryDirectory("htmlview-stale-lock-");
+    const paths = statePaths({
+      HTMLVIEW_STATE_DIR: path.join(parent, "state"),
+    });
+    await ensurePrivateStateDirectory(paths);
+    await mkdir(paths.startupLock, { mode: 0o700 });
+    await writePrivateJson(path.join(paths.startupLock, "owner.json"), {
+      pid: 2_147_483_647,
+      createdAt: 0,
+      nonce: "s".repeat(32),
+    });
+
+    const resolved: number[] = [];
+    const contenders = [0, 1].map(async (index) => {
+      const lock = await acquireStartupLock(paths, 2_000);
+      resolved.push(index);
+      return { index, lock };
+    });
+    const winner = await Promise.race(contenders);
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    assert.deepEqual(resolved, [winner.index]);
+
+    await winner.lock.release();
+    const owners = await Promise.all(contenders);
+    const successor = owners.find(({ index }) => index !== winner.index);
+    assert.notEqual(successor, undefined);
+    await successor?.lock.release();
+  });
+});

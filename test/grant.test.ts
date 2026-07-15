@@ -64,6 +64,28 @@ describe("serving grants", () => {
     );
   });
 
+  it("preserves an authorized in-root symlink as the public entry path", async () => {
+    const root = await fixtureDirectory();
+    await mkdir(path.join(root, "actual"));
+    await writeFile(path.join(root, "actual", "target.html"), "fixture");
+    await symlink(
+      path.join(root, "actual", "target.html"),
+      path.join(root, "report.html"),
+    );
+    const grant = await resolveServingGrant("report.html", { cwd: root });
+    assert.equal(
+      grant.entry,
+      await realpath(path.join(root, "actual", "target.html")),
+    );
+    assert.equal(
+      grant.routeEntry,
+      await realpath(root).then((canonicalRoot) =>
+        path.join(canonicalRoot, "report.html"),
+      ),
+    );
+    assert.equal(grant.entryUrlPath, "/report.html");
+  });
+
   it("rejects non-HTML and non-file entries", async () => {
     const root = await fixtureDirectory();
     await writeFile(path.join(root, "entry.txt"), "text");

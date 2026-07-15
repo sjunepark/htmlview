@@ -224,12 +224,18 @@ origin-keyed state from concurrent services and later port reuse.
   grant.
 - `src/serving/http.ts` owns the byte-faithful confined HTTP handler and
   per-session content listener.
+- `src/supervisor/server.ts` owns authenticated control, serialized session
+  mutation, idle shutdown, and graceful cleanup.
+- `src/supervisor/client.ts` discovers, verifies, starts, and calls the detached
+  supervisor.
+- `src/supervisor/state.ts` owns private atomic discovery state and concurrent
+  startup locking.
+- `src/service.ts` translates CLI intent into grant and supervisor operations.
 - `test/` holds contract and TOON v3.3 conformance tests.
 - `validation/browser-origin/` holds browser behavior evidence and remains
   outside the runtime.
 
-The supervisor will receive concrete start paths in its milestone. Avoid a
-generic plugin or browser-adapter layer without a current second
+Avoid a generic plugin or browser-adapter layer without a current second
 implementation.
 
 ## Related decisions

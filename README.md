@@ -13,9 +13,9 @@ browser itself.
 
 ## Status
 
-Implementation in progress. The Node.js/TypeScript CLI foundation and browser
-origin-isolation gate are complete; raw serving and lifecycle milestones are
-next.
+Implementation in progress. The Node.js/TypeScript CLI, confined raw serving,
+and detached supervisor lifecycle are complete; interoperability and release
+hardening remain.
 
 ## Product boundary
 

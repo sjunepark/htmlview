@@ -3,6 +3,7 @@ import path from "node:path";
 
 export interface ServingGrant {
   readonly entry: string;
+  readonly routeEntry: string;
   readonly root: string;
   readonly entryRelativePath: string;
   readonly entryUrlPath: string;
@@ -109,10 +110,26 @@ export async function resolveServingGrant(
   }
 
   const entryRelativePath = path.relative(canonicalRoot, canonicalEntry);
+  let routeRelativePath = entryRelativePath;
+  const suppliedRelativePath = path.relative(candidateRoot, suppliedEntry);
+  if (
+    suppliedRelativePath !== "" &&
+    suppliedRelativePath !== ".." &&
+    !suppliedRelativePath.startsWith(`..${path.sep}`) &&
+    !path.isAbsolute(suppliedRelativePath)
+  ) {
+    const suppliedRoute = path.join(canonicalRoot, suppliedRelativePath);
+    const suppliedRouteTarget = await realpath(suppliedRoute).catch(
+      () => undefined,
+    );
+    if (suppliedRouteTarget === canonicalEntry)
+      routeRelativePath = suppliedRelativePath;
+  }
   return {
     entry: canonicalEntry,
+    routeEntry: path.join(canonicalRoot, routeRelativePath),
     root: canonicalRoot,
-    entryRelativePath,
-    entryUrlPath: encodeRelativePath(entryRelativePath),
+    entryRelativePath: routeRelativePath,
+    entryUrlPath: encodeRelativePath(routeRelativePath),
   };
 }

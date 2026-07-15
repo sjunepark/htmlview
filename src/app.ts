@@ -8,10 +8,11 @@ import type {
 import { errorResult } from "./contracts.js";
 import { parseCommand } from "./command.js";
 import { serialize } from "./output.js";
+import { OperationError, type CommandService } from "./service.js";
 
 export interface AppContext {
   readonly executablePath: string;
-  readonly listSessions: () => Promise<readonly SessionSummary[]>;
+  readonly service: CommandService;
   readonly stdout: (value: string) => void;
   readonly stderr: (value: string) => void;
 }
@@ -148,31 +149,30 @@ export async function runApp(
     } else if (parsed.kind === "home") {
       result = homeResult(
         context.executablePath,
-        await context.listSessions(),
+        await context.service.listSessions(),
         parsed.fields,
         parsed.format === "json",
       );
+    } else if (parsed.kind === "serve") {
+      result = await context.service.serve(parsed.entry ?? "", parsed.root);
+      result.help = [
+        `Run \`htmlview stop <session>${parsed.format === "json" ? " --json" : ""}\` to stop this session`,
+      ];
     } else {
-      result = errorResult(
-        "runtime.not_implemented",
-        `Command htmlview ${parsed.kind} is not implemented yet`,
-        {},
-        ["Run `htmlview` to list active sessions"],
-      );
+      result = await context.service.stop(parsed.session, parsed.all);
     }
     context.stdout(serialize(result, parsed.format));
-    return parsed.kind !== "home" && !parsed.help ? 1 : 0;
-  } catch {
+    return 0;
+  } catch (error) {
     const format = parsed.format;
-    context.stdout(
-      serialize(
-        errorResult(
-          "runtime.internal",
-          "htmlview could not complete the request",
-        ),
-        format,
-      ),
-    );
+    const failure =
+      error instanceof OperationError
+        ? errorResult(error.code, error.message, {}, [...error.help])
+        : errorResult(
+            "runtime.internal",
+            "htmlview could not complete the request",
+          );
+    context.stdout(serialize(failure, format));
     return 1;
   }
 }

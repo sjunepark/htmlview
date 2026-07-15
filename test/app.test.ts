@@ -9,7 +9,29 @@ async function invoke(args: string[], sessions: SessionSummary[] = []) {
   let stderr = "";
   const exitCode = await runApp(args, {
     executablePath: "/Users/example/.local/bin/htmlview",
-    listSessions: async () => sessions,
+    service: {
+      listSessions: async () => sessions,
+      serve: async () => ({
+        session: {
+          id: "served1",
+          status: "ready",
+          url: "http://h-served.localhost:4000/report.html",
+          reused: false,
+        },
+        grant: {
+          root: "/tmp",
+          access: "read_all_regular_files_beneath_root",
+        },
+      }),
+      stop: async (session, all) => ({
+        stop: {
+          scope: all === true ? "all" : "session",
+          ...(session === undefined ? {} : { session }),
+          stopped: 0,
+          status: "already_stopped",
+        },
+      }),
+    },
     stdout: (value) => {
       stdout += value;
     },
