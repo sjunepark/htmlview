@@ -32,7 +32,13 @@ caller.
 - Milestone 3 is complete: real CLI URLs pass Playwright and `agent-browser`,
   browser-neutral handoff guidance is documented, and success/error contracts
   are equivalent across TOON and JSON.
-- The next action is Milestone 4 security and release hardening.
+- Milestone 4 is complete: generated path/output adversarial checks, explicit
+  resource bounds, a threat-control evidence matrix, structured versioning,
+  reproducible npm artifacts, and clean macOS/Linux package lifecycles are in
+  place.
+- The next action is publishing the validated `0.1.0` npm artifact when release
+  credentials and change control are available. Optional annotation work has
+  not started.
 
 Update this document in place. Keep completed work, current validation,
 blockers, decisions, and the single next action concise; do not append session
@@ -210,6 +216,10 @@ Acceptance:
 
 ## Milestone 4: Security and release hardening
 
+Status: Complete. `docs/SECURITY_VALIDATION.md` maps every threat-model check to
+automation or an explicit residual note. Package validation covers the current
+macOS environment and Node 22 Debian Linux without adding a browser runtime.
+
 - Complete the checks in `docs/THREAT_MODEL.md`.
 - Fuzz or property-test URL decoding and root containment.
 - Fuzz structured-output values against TOON and JSON encoders so source paths,
@@ -260,5 +270,6 @@ annotation transport before a working second use case requires it.
 
 ## Next action
 
-Complete Milestone 4 threat-model automation, bounded-resource checks,
-package/version verification, and install/upgrade/removal documentation.
+Publish the validated `0.1.0` npm artifact when release credentials and change
+control are available. Do not begin optional annotation work as part of the
+raw-serving release.

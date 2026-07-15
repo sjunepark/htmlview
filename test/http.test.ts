@@ -4,6 +4,7 @@ import {
   mkdir,
   rename,
   symlink,
+  truncate,
   unlink,
   writeFile,
 } from "node:fs/promises";
@@ -12,10 +13,12 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, it } from "node:test";
 import {
+  isWithinRoot,
   resolveServingGrant,
   type ServingGrant,
 } from "../src/serving/grant.js";
 import {
+  generateSessionHostname,
   startStaticServer,
   type StaticSessionServer,
 } from "../src/serving/http.js";
@@ -96,6 +99,27 @@ afterEach(async () => {
 });
 
 describe("faithful static HTTP", () => {
+  it("uses only numeric loopback and generates unique 128-bit host labels", () => {
+    assert.equal(server.bindAddress, "127.0.0.1");
+    const names = new Set(
+      Array.from({ length: 1_000 }, () => generateSessionHostname()),
+    );
+    assert.equal(names.size, 1_000);
+    for (const name of names) assert.match(name, /^h-[0-9a-f]{32}\.localhost$/);
+  });
+
+  it("preserves root-containment properties for generated path shapes", () => {
+    for (let index = 0; index < 500; index += 1) {
+      const nested = path.join(root, `segment-${index}`, "asset.txt");
+      const sibling = path.join(`${root}-sibling-${index}`, "asset.txt");
+      const parent = path.resolve(root, "..", `outside-${index}.txt`);
+      assert.equal(isWithinRoot(root, nested), true);
+      assert.equal(isWithinRoot(root, sibling), false);
+      assert.equal(isWithinRoot(root, parent), false);
+      assert.equal(isWithinRoot(root, root), false);
+    }
+  });
+
   it("serves entry bytes, MIME, and security headers at the encoded relative path", async () => {
     const response = await rawRequest(
       "/pages/report%20space%20%C3%BC.html?mode=inspect",
@@ -118,6 +142,7 @@ describe("faithful static HTTP", () => {
       "same-origin",
     );
     assert.equal(response.headers["access-control-allow-origin"], undefined);
+    assert.equal(response.headers.server, undefined);
   });
 
   it("supports HEAD and conditional requests", async () => {
@@ -209,6 +234,40 @@ describe("faithful static HTTP", () => {
     assert.equal((await rawRequest("/%252e%252e/outside.txt")).status, 404);
   });
 
+  it("rejects generated single-decode traversal and malformed encodings", async () => {
+    const dot = [".", "%2e", "%2E"];
+    const separators = ["/", "%2f", "%2F", "%5c", "%5C", "\\"];
+    const candidates = new Set<string>();
+    for (const left of dot) {
+      for (const right of dot) {
+        for (const separator of separators) {
+          candidates.add(`/safe${separator}${left}${right}/outside.txt`);
+        }
+      }
+    }
+    for (let byte = 0; byte < 32; byte += 1)
+      candidates.add(`/bad%${byte.toString(16).padStart(2, "0")}`);
+    candidates.add("/bad%");
+    candidates.add("/bad%GG");
+    candidates.add("/%F0%28%8C%28");
+
+    for (const candidate of candidates) {
+      assert.equal((await rawRequest(candidate)).status, 400, candidate);
+    }
+  });
+
+  it("round-trips generated encoded Unicode and delimiter filenames", async () => {
+    const pieces = ["雪", "한글", "😀", "space name", "a,b", "x#y", "q?z"];
+    for (let index = 0; index < 70; index += 1) {
+      const name = `${index}-${pieces[index % pieces.length]}.txt`;
+      const contents = `value-${index}-${name}`;
+      await writeFile(path.join(root, "assets", name), contents);
+      const response = await rawRequest(`/assets/${encodeURIComponent(name)}`);
+      assert.equal(response.status, 200, name);
+      assert.equal(response.body.toString(), contents, name);
+    }
+  });
+
   it("rejects symlink escape and directories", async () => {
     const outside = path.join(
       path.dirname(root),
@@ -262,6 +321,98 @@ describe("faithful static HTTP", () => {
       }
     } finally {
       await unlink(outside);
+    }
+  });
+
+  it("streams a large file and remains healthy after an aborted reader", async () => {
+    const contents = Buffer.alloc(2 * 1024 * 1024, 0x5a);
+    await writeFile(path.join(root, "assets", "large.bin"), contents);
+    const complete = await rawRequest("/assets/large.bin");
+    assert.equal(complete.status, 200);
+    assert.deepEqual(complete.body, contents);
+
+    await new Promise<void>((resolve, reject) => {
+      const operation = request(
+        {
+          hostname: "127.0.0.1",
+          port: server.port,
+          path: "/assets/large.bin",
+          headers: { host: `${server.hostname}:${server.port}` },
+        },
+        (response) => {
+          response.once("data", () => response.destroy());
+          response.once("close", resolve);
+        },
+      );
+      operation.once("error", reject);
+      operation.end();
+    });
+    assert.equal((await rawRequest(grant.entryUrlPath)).status, 200);
+  });
+
+  it("ends a slow-progress response at its absolute deadline", async () => {
+    const large = path.join(root, "assets", "deadline.bin");
+    await writeFile(large, "");
+    await truncate(large, 64 * 1024 * 1024);
+    const bounded = await startStaticServer(grant, {
+      hostname: "h-deadline.localhost",
+      responseDeadlineMilliseconds: 50,
+    });
+    try {
+      await new Promise<void>((resolve, reject) => {
+        let received = 0;
+        const timeout = setTimeout(
+          () => reject(new Error("Slow response exceeded its deadline")),
+          2_000,
+        );
+        const operation = request(
+          {
+            hostname: "127.0.0.1",
+            port: bounded.port,
+            path: "/assets/deadline.bin",
+            headers: { host: `${bounded.hostname}:${bounded.port}` },
+          },
+          (response) => {
+            response.on("data", (chunk: Buffer) => {
+              received += chunk.length;
+              response.pause();
+              setTimeout(() => response.resume(), 10);
+            });
+          },
+        );
+        operation.once("socket", (socket) =>
+          socket.once("close", () => {
+            clearTimeout(timeout);
+            assert.ok(received < 64 * 1024 * 1024);
+            resolve();
+          }),
+        );
+        operation.once("error", (error) => {
+          clearTimeout(timeout);
+          reject(error);
+        });
+        operation.end();
+      });
+
+      const status = await new Promise<number>((resolve, reject) => {
+        const operation = request(
+          {
+            hostname: "127.0.0.1",
+            port: bounded.port,
+            path: grant.entryUrlPath,
+            headers: { host: `${bounded.hostname}:${bounded.port}` },
+          },
+          (response) => {
+            response.resume();
+            response.once("end", () => resolve(response.statusCode ?? 0));
+          },
+        );
+        operation.once("error", reject);
+        operation.end();
+      });
+      assert.equal(status, 200);
+    } finally {
+      await bounded.close();
     }
   });
 });

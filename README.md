@@ -16,9 +16,10 @@ copy-paste URL handoff and independently validated controller paths.
 
 ## Status
 
-Implementation in progress. The Node.js/TypeScript CLI, confined raw serving,
-detached supervisor lifecycle, and two-controller interoperability checks are
-complete; release hardening remains.
+The version-one raw-serving implementation is complete and release-validated:
+confined serving, detached lifecycle, two-controller interoperability,
+security checks, and macOS/Linux npm package lifecycles all pass. The `0.1.0`
+artifact has not been published from this repository.
 
 ## Product boundary
 
@@ -55,11 +56,13 @@ serving core without changing its raw response path.
 
 ## Start here
 
+- [Install, upgrade, and remove](docs/INSTALL.md)
 - [Product requirements](docs/PRODUCT.md)
 - [Agent-facing CLI contract](docs/CLI.md)
 - [Browser-controller interoperability](docs/INTEROPERABILITY.md)
 - [Architecture](ARCHITECTURE.md)
 - [Threat model](docs/THREAT_MODEL.md)
+- [Security validation evidence](docs/SECURITY_VALIDATION.md)
 - [Implementation plan](PLAN.md)
 - [Core-boundary decision](docs/decisions/0001-separate-serving-from-browser-control.md)
 - [Supervisor decision](docs/decisions/0002-per-user-loopback-supervisor.md)

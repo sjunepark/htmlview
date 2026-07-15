@@ -3,6 +3,15 @@ import { describe, it } from "node:test";
 import { parseCommand } from "../src/command.js";
 
 describe("command parsing", () => {
+  it("accepts a structured top-level version query", () => {
+    assert.deepEqual(parseCommand(["--version", "--json"]), {
+      kind: "version",
+      format: "json",
+      help: false,
+    });
+    const conflict = parseCommand(["--version", "--help"]);
+    assert.equal("exitCode" in conflict && conflict.exitCode, 2);
+  });
   it("accepts format and optional home fields", () => {
     assert.deepEqual(parseCommand(["--fields", "entry,root", "--json"]), {
       kind: "home",
@@ -31,6 +40,16 @@ describe("command parsing", () => {
       message: "Unknown flag --stat for `htmlview serve`",
       valid_flags: ["--root", "--json", "--help"],
     });
+  });
+
+  it("has no public or caller-selected bind option", () => {
+    const result = parseCommand(["serve", "report.html", "--host", "0.0.0.0"]);
+    assert.equal("exitCode" in result && result.exitCode, 2);
+    if ("exitCode" in result)
+      assert.equal(
+        (result.result.error as Record<string, unknown>).code,
+        "usage.unknown_flag",
+      );
   });
 
   it("never treats a single-dash option as an entry path", () => {

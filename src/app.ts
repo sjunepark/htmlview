@@ -9,6 +9,7 @@ import { errorResult } from "./contracts.js";
 import { parseCommand, type ParsedCommand } from "./command.js";
 import { serialize } from "./output.js";
 import { OperationError, type CommandService } from "./service.js";
+import { htmlviewVersion } from "./version.js";
 
 export interface AppContext {
   readonly executablePath: string;
@@ -67,13 +68,19 @@ function topLevelHelp(): JsonObject {
   return {
     command: "htmlview",
     description: "Serve local HTML through confined loopback HTTP",
-    usage: "htmlview [--fields entry,root] [--json]",
+    usage:
+      "htmlview [--fields entry,root] [--json] | htmlview --version [--json]",
     flags: [
       { name: "--fields", value: "entry,root", default: "none" },
       { name: "--json", default: false },
+      { name: "--version", default: false },
       { name: "--help", default: false },
     ],
-    examples: ["htmlview", "htmlview --fields entry,root", "htmlview --json"],
+    examples: [
+      "htmlview",
+      "htmlview --fields entry,root",
+      "htmlview --version --json",
+    ],
     commands: ["serve", "stop"],
   };
 }
@@ -168,6 +175,8 @@ export async function runApp(
           : parsed.kind === "serve"
             ? serveHelp()
             : stopHelp();
+    } else if (parsed.kind === "version") {
+      result = { command: "htmlview", version: htmlviewVersion };
     } else if (parsed.kind === "home") {
       result = homeResult(
         context.executablePath,

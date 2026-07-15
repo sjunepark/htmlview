@@ -20,6 +20,12 @@ client can check it directly:
 curl --fail --silent --show-error "$url" >/dev/null
 ```
 
+Browsers recognize every name beneath the special-use `.localhost` domain.
+Some non-browser Linux resolvers do not. For those clients, connect to
+`127.0.0.1` while retaining the URL's exact `Host` authority; the Linux package
+smoke test demonstrates this with Node's `http` client. Do not replace the URL
+hostname itself, because the content listener rejects a mismatched `Host`.
+
 Or pass the same value to an external browser tool. These are interoperability
 examples, not product dependencies:
 

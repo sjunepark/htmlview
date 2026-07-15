@@ -17,12 +17,14 @@ Version one keeps four operations:
 
 ```sh
 htmlview [--fields <name,...>] [--json]
+htmlview --version [--json]
 htmlview serve <entry.html> [--root <directory>]
 htmlview stop <session>
 htmlview stop --all
 ```
 
-Every command accepts `--json` and `--help`. The home view accepts
+Every command accepts `--json` and `--help`. `--version` is a top-level
+structured query. The home view accepts
 `--fields entry,root` to add those fields to each session row. Unknown
 commands, arguments, flags, and field names are usage errors; they are never
 ignored.
@@ -53,6 +55,11 @@ official `@toon-format/spec` 3.3.0 fixtures rather than interpolate
 paths, errors, or other untrusted values into either format. The selected TOON
 implementation and conformance fixtures are pinned with the runtime during the
 foundation milestone.
+
+The stdout adapter emits JSON escapes for TOON structural punctuation inside
+quoted strings. This preserves the logical string while avoiding a known
+reference-decoder ambiguity such as the valid value `[]:`; generated hostile
+values are round-tripped through both output formats in release checks.
 
 ## Output channels and exit codes
 

@@ -12,6 +12,8 @@ import { request } from "node:http";
 import { homedir, tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, it } from "node:test";
+import { resolveServingGrant } from "../src/serving/grant.js";
+import { startStaticServer } from "../src/serving/http.js";
 import { SupervisorClient } from "../src/supervisor/client.js";
 import { supervisorProtocol } from "../src/supervisor/protocol.js";
 import {
@@ -74,7 +76,8 @@ afterEach(async () => {
 
 describe("supervisor lifecycle", () => {
   it("creates and reuses one ready session for concurrent matching requests", async () => {
-    const { client, root, entry } = await setup();
+    const { client, root, entry, supervisor } = await setup();
+    assert.equal(supervisor.controlAddress, "127.0.0.1");
     const results = await Promise.all([
       client.serve(entry, root),
       client.serve(entry, root),
@@ -112,13 +115,46 @@ describe("supervisor lifecycle", () => {
 
   it("requires the private credential on control operations", async () => {
     const { supervisor } = await setup();
+    for (const [method, route] of [
+      ["GET", "/sessions"],
+      ["POST", "/stop"],
+    ] as const) {
+      const status = await new Promise<number>((resolve, reject) => {
+        const operation = request(
+          {
+            hostname: "127.0.0.1",
+            port: supervisor.discovery.port,
+            method,
+            path: route,
+            headers: { host: `127.0.0.1:${supervisor.discovery.port}` },
+          },
+          (response) => {
+            response.resume();
+            response.on("end", () => resolve(response.statusCode ?? 0));
+          },
+        );
+        operation.once("error", reject);
+        operation.end();
+      });
+      assert.equal(status, 401);
+    }
+  });
+
+  it("rejects oversized authenticated control bodies", async () => {
+    const { supervisor } = await setup();
     const status = await new Promise<number>((resolve, reject) => {
+      const payload = Buffer.alloc(65 * 1024, 0x20);
       const operation = request(
         {
           hostname: "127.0.0.1",
           port: supervisor.discovery.port,
+          method: "POST",
           path: "/sessions",
-          headers: { host: `127.0.0.1:${supervisor.discovery.port}` },
+          headers: {
+            host: `127.0.0.1:${supervisor.discovery.port}`,
+            authorization: `Bearer ${supervisor.discovery.token}`,
+            "content-length": String(payload.length),
+          },
         },
         (response) => {
           response.resume();
@@ -126,14 +162,15 @@ describe("supervisor lifecycle", () => {
         },
       );
       operation.once("error", reject);
-      operation.end();
+      operation.end(payload);
     });
-    assert.equal(status, 401);
+    assert.equal(status, 413);
   });
 
   it("stores private state outside the served root", async () => {
-    const { paths, client, root, entry } = await setup();
+    const { paths, client, root, entry, supervisor } = await setup();
     await client.serve(entry, root);
+    assert.match(supervisor.discovery.token, /^[A-Za-z0-9_-]{43}$/);
     assert.equal((await stat(paths.directory)).mode & 0o777, 0o700);
     assert.equal((await stat(paths.discovery)).mode & 0o777, 0o600);
     assert.deepEqual((await readdir(root)).sort(), ["report.html"]);
@@ -191,6 +228,91 @@ describe("supervisor lifecycle", () => {
     assert.equal(await fetch(session.url).then((value) => value.status), 200);
   });
 
+  it("forces a bounded shutdown when a control client stalls", async () => {
+    const { paths } = await setup();
+    const supervisor = supervisors.pop();
+    assert.notEqual(supervisor, undefined);
+    await supervisor?.close();
+
+    const bounded = await startSupervisor({
+      paths,
+      idleMilliseconds: 10_000,
+      shutdownGraceMilliseconds: 50,
+    });
+    supervisors.push(bounded);
+    const operation = request({
+      hostname: "127.0.0.1",
+      port: bounded.discovery.port,
+      method: "POST",
+      path: "/sessions",
+      headers: {
+        host: `127.0.0.1:${bounded.discovery.port}`,
+        authorization: `Bearer ${bounded.discovery.token}`,
+      },
+    });
+    operation.on("error", () => undefined);
+    operation.write('{"entry":"unfinished');
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    const started = Date.now();
+    await bounded.close();
+    assert.ok(Date.now() - started < 500);
+    operation.destroy();
+  });
+
+  it("does not create a session when grant resolution resumes after shutdown", async () => {
+    const parent = await temporaryDirectory("htmlview-delayed-grant-");
+    const paths = statePaths({
+      HTMLVIEW_STATE_DIR: path.join(parent, "state"),
+    });
+    const root = await temporaryDirectory("htmlview-delayed-entry-");
+    const entry = path.join(root, "report.html");
+    await writeFile(entry, "<!doctype html>");
+    let releaseGrant = (): void => undefined;
+    const grantGate = new Promise<void>((resolve) => {
+      releaseGrant = resolve;
+    });
+    let grantStarted = (): void => undefined;
+    const started = new Promise<void>((resolve) => {
+      grantStarted = resolve;
+    });
+    let contentStarts = 0;
+    const supervisor = await startSupervisor({
+      paths,
+      idleMilliseconds: 10_000,
+      shutdownGraceMilliseconds: 50,
+      resolveGrant: async (...arguments_) => {
+        grantStarted();
+        await grantGate;
+        return resolveServingGrant(...arguments_);
+      },
+      startSessionServer: async (sessionGrant) => {
+        contentStarts += 1;
+        return startStaticServer(sessionGrant);
+      },
+    });
+    supervisors.push(supervisor);
+    const operation = request({
+      hostname: "127.0.0.1",
+      port: supervisor.discovery.port,
+      method: "POST",
+      path: "/sessions",
+      headers: {
+        host: `127.0.0.1:${supervisor.discovery.port}`,
+        authorization: `Bearer ${supervisor.discovery.token}`,
+        "content-type": "application/json",
+      },
+    });
+    operation.on("error", () => undefined);
+    operation.end(JSON.stringify({ entry, root }));
+    await started;
+
+    await supervisor.close();
+    releaseGrant();
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    assert.equal(contentStarts, 0);
+  });
+
   it("rejects stale or unauthenticated discovery instead of trusting its PID", async () => {
     const parent = await temporaryDirectory("htmlview-stale-");
     const paths = statePaths({
@@ -241,6 +363,50 @@ describe("supervisor lifecycle", () => {
       code: "supervisor.start_failed",
       message: "The htmlview supervisor process could not start",
     });
+  });
+
+  it("exposes stable content start and readiness failures", async () => {
+    for (const [expected, startSessionServer] of [
+      [
+        "http.start_failed",
+        async () => {
+          throw Object.assign(new Error("bind failed"), {
+            code: "EADDRNOTAVAIL",
+          });
+        },
+      ],
+      [
+        "http.readiness_failed",
+        async () => ({
+          bindAddress: "127.0.0.1" as const,
+          hostname: "h-unready.localhost",
+          port: 9,
+          origin: "http://h-unready.localhost:9",
+          url: "http://h-unready.localhost:9/report.html",
+          close: async () => undefined,
+        }),
+      ],
+    ] as const) {
+      const parent = await temporaryDirectory(`htmlview-${expected}-`);
+      const paths = statePaths({
+        HTMLVIEW_STATE_DIR: path.join(parent, "state"),
+      });
+      const root = await temporaryDirectory(`htmlview-${expected}-entry-`);
+      const entry = path.join(root, "report.html");
+      await writeFile(entry, "<!doctype html>");
+      const supervisor = await startSupervisor({
+        paths,
+        idleMilliseconds: 10_000,
+        startSessionServer,
+      });
+      supervisors.push(supervisor);
+
+      await assert.rejects(new SupervisorClient(paths).serve(entry, root), {
+        code: expected,
+      });
+      await supervisor.close();
+      supervisors.pop();
+    }
   });
 });
 
@@ -319,5 +485,19 @@ describe("supervisor state", () => {
     const successor = owners.find(({ index }) => index !== winner.index);
     assert.notEqual(successor, undefined);
     await successor?.lock.release();
+  });
+
+  it("bounds private state records and removes failed temporary writes", async () => {
+    const parent = await temporaryDirectory("htmlview-state-limit-");
+    const paths = statePaths({
+      HTMLVIEW_STATE_DIR: path.join(parent, "state"),
+    });
+    await ensurePrivateStateDirectory(paths);
+
+    await assert.rejects(
+      writePrivateJson(paths.discovery, { oversized: "x".repeat(17 * 1024) }),
+      /State record exceeds size limit/,
+    );
+    assert.deepEqual(await readdir(paths.directory), []);
   });
 });

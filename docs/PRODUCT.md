@@ -114,10 +114,10 @@ contract.
 - HTML sanitization
 - Annotation in version one
 
-## Planned CLI behavior
+## CLI behavior
 
-The exact spelling is provisional until Milestone 0. The complete interface
-contract is in the [CLI contract](CLI.md); the intended command surface is:
+The complete interface contract is in the [CLI contract](CLI.md). The command
+surface is:
 
 ```sh
 htmlview serve ./report.html
@@ -161,7 +161,6 @@ authorization credential.
 
 ## Deferred product decisions
 
-- Implementation language and package channel
 - Supported operating-system versions beyond initial macOS and Linux targets
 - Whether optional annotations eventually live here or in a companion project
 - Whether usage evidence justifies an opt-in ambient agent-session integration

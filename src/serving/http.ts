@@ -12,8 +12,14 @@ import { contentType } from "mime-types";
 import { isWithinRoot, type ServingGrant } from "./grant.js";
 
 const loopbackAddress = "127.0.0.1";
+const defaultResponseDeadlineMilliseconds = 5 * 60_000;
+const responseDeadlines = new WeakMap<
+  IncomingMessage["socket"],
+  NodeJS.Timeout
+>();
 
 export interface StaticSessionServer {
+  readonly bindAddress: "127.0.0.1";
   readonly hostname: string;
   readonly port: number;
   readonly origin: string;
@@ -23,6 +29,7 @@ export interface StaticSessionServer {
 
 export interface StaticHandlerOptions {
   readonly hostname: string;
+  readonly responseDeadlineMilliseconds: number;
 }
 
 function send(
@@ -66,7 +73,11 @@ function decodeRequestPath(
   } catch {
     return undefined;
   }
-  if (decoded.includes("\0") || decoded.includes("\\")) return undefined;
+  const hasControl = [...decoded].some((character) => {
+    const codePoint = character.codePointAt(0) ?? 0;
+    return codePoint <= 0x1f || codePoint === 0x7f;
+  });
+  if (hasControl || decoded.includes("\\")) return undefined;
   const segments = decoded.split("/").slice(1);
   if (segments.some((segment) => segment === "." || segment === ".."))
     return undefined;
@@ -152,6 +163,19 @@ export function createStaticHandler(
     request: IncomingMessage,
     response: ServerResponse,
   ): Promise<void> => {
+    if (!responseDeadlines.has(request.socket)) {
+      const responseDeadline = setTimeout(
+        () => request.socket.destroy(),
+        options.responseDeadlineMilliseconds,
+      );
+      responseDeadline.unref();
+      responseDeadlines.set(request.socket, responseDeadline);
+      request.socket.once("close", () => {
+        clearTimeout(responseDeadline);
+        responseDeadlines.delete(request.socket);
+      });
+    }
+
     if (!isExpectedAuthority(request, options.hostname)) {
       send(response, 421, "Misdirected Request");
       return;
@@ -236,15 +260,28 @@ export function generateSessionHostname(): string {
 
 export async function startStaticServer(
   grant: ServingGrant,
-  options: { readonly hostname?: string } = {},
+  options: {
+    readonly hostname?: string;
+    readonly responseDeadlineMilliseconds?: number;
+  } = {},
 ): Promise<StaticSessionServer> {
   const hostname = options.hostname ?? generateSessionHostname();
-  const server = createServer(createStaticHandler(grant, { hostname }));
+  const responseDeadlineMilliseconds =
+    options.responseDeadlineMilliseconds !== undefined &&
+    Number.isFinite(options.responseDeadlineMilliseconds) &&
+    options.responseDeadlineMilliseconds > 0
+      ? options.responseDeadlineMilliseconds
+      : defaultResponseDeadlineMilliseconds;
+  const server = createServer(
+    createStaticHandler(grant, { hostname, responseDeadlineMilliseconds }),
+  );
+  server.maxConnections = 100;
   server.maxHeadersCount = 100;
   server.headersTimeout = 5_000;
   server.requestTimeout = 30_000;
   server.keepAliveTimeout = 5_000;
   server.maxRequestsPerSocket = 100;
+  server.setTimeout(30_000, (socket) => socket.destroy());
 
   await new Promise<void>((resolve, reject) => {
     server.once("error", reject);
@@ -257,6 +294,7 @@ export async function startStaticServer(
   }
   const origin = `http://${hostname}:${address.port}`;
   return {
+    bindAddress: loopbackAddress,
     hostname,
     port: address.port,
     origin,

@@ -61,16 +61,13 @@ minimal JSON-compatible result value. It encodes that value as TOON by default
 or JSON with `--json`, then exits after the requested state is confirmed. It
 does not need to remain attached to keep content available.
 
-The planned command surface is intentionally small:
+The command surface is intentionally small:
 
 - `htmlview` lists active sessions.
 - `htmlview serve <entry.html> [--root <directory>]` creates or reuses a
   session and returns its raw URL.
 - `htmlview stop <session>` stops one session.
 - `htmlview stop --all` stops all sessions and allows the supervisor to exit.
-
-Names and flags may be refined during the foundation milestone, but the state
-transitions and output contracts should remain this small.
 
 With no command, the client renders a content-first home view containing its
 executable identity, a definitive session count, minimal live session rows,
@@ -220,6 +217,7 @@ origin-keyed state from concurrent services and later port reuse.
 - `src/command.ts` owns strict syntax, flag, field, and usage validation.
 - `src/contracts.ts` owns JSON-compatible result and error types.
 - `src/output.ts` is the only TOON/JSON encoding boundary.
+- `src/version.ts` is the release version surfaced by the CLI and supervisor.
 - `src/serving/grant.ts` validates and canonicalizes the entry/root disclosure
   grant.
 - `src/serving/http.ts` owns the byte-faithful confined HTTP handler and
@@ -236,6 +234,8 @@ origin-keyed state from concurrent services and later port reuse.
   outside the runtime.
 - `validation/interoperability/` passes real CLI-returned URLs to independent
   browser controllers without adding them to the runtime.
+- `validation/package/` verifies reproducible pack/install/upgrade/uninstall
+  behavior on macOS/current platform and Node 22 Linux.
 
 Avoid a generic plugin or browser-adapter layer without a current second
 implementation.

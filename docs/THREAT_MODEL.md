@@ -117,6 +117,9 @@ content because it would change what the page can execute.
 
 ## Required adversarial validation
 
+The implementation evidence and explicit residual notes for this list are
+maintained in [Security validation evidence](SECURITY_VALIDATION.md).
+
 - `..`, percent-encoded traversal, double encoding, mixed separators, NULs,
   malformed UTF-8, Unicode filenames, and platform-specific path forms
 - Symlinks created before and during requests, including targets swapped around

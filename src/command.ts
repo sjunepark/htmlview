@@ -26,10 +26,15 @@ export type ParsedCommand =
       readonly session?: string;
       readonly all: boolean;
       readonly help: boolean;
+    }
+  | {
+      readonly kind: "version";
+      readonly format: OutputFormat;
+      readonly help: false;
     };
 
 const validCommands = ["serve", "stop"];
-const homeFlags = ["--fields", "--json", "--help"];
+const homeFlags = ["--fields", "--json", "--help", "--version"];
 const serveFlags = ["--root", "--json", "--help"];
 const stopFlags = ["--all", "--json", "--help"];
 
@@ -81,6 +86,16 @@ export function parseCommand(
   for (let index = args.length - 1; index >= 0; index -= 1) {
     if (args[index] === "--json") args.splice(index, 1);
   }
+
+  if (args.length === 1 && args[0] === "--version")
+    return { kind: "version", format, help: false };
+  if (args.includes("--version"))
+    return usageFailure(
+      "usage.conflicting_arguments",
+      "Flag --version cannot be combined with other arguments",
+      { usage: "htmlview --version [--json]" },
+      "Run `htmlview --help` for command examples",
+    );
 
   if (args.length === 0 || args[0]?.startsWith("-"))
     return parseHome(args, format);

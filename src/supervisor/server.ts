@@ -30,16 +30,21 @@ import {
   type StopControlResult,
   type SupervisorSession,
 } from "./protocol.js";
+import { htmlviewVersion } from "../version.js";
 
 const maximumControlBodyBytes = 64 * 1024;
 const defaultIdleMilliseconds = 30_000;
+const defaultShutdownGraceMilliseconds = 2_000;
 
 interface LiveSession {
   readonly summary: SupervisorSession;
   readonly server: StaticSessionServer;
 }
 
+type StartSessionServer = (grant: ServingGrant) => Promise<StaticSessionServer>;
+
 export interface RunningSupervisor {
+  readonly controlAddress: "127.0.0.1";
   readonly discovery: DiscoveryRecord;
   readonly paths: StatePaths;
   close(): Promise<void>;
@@ -93,9 +98,21 @@ async function readJsonBody(request: IncomingMessage): Promise<unknown> {
   }
 }
 
-function closeServer(server: Server): Promise<void> {
+function closeServer(
+  server: Server,
+  graceMilliseconds = defaultShutdownGraceMilliseconds,
+): Promise<void> {
   return new Promise((resolve, reject) => {
-    server.close((error) => (error === undefined ? resolve() : reject(error)));
+    const force = setTimeout(
+      () => server.closeAllConnections(),
+      graceMilliseconds,
+    );
+    force.unref();
+    server.close((error) => {
+      clearTimeout(force);
+      if (error === undefined) resolve();
+      else reject(error);
+    });
     server.closeIdleConnections();
   });
 }
@@ -137,6 +154,9 @@ class SessionRegistry {
   readonly #sessions = new Map<string, LiveSession>();
   readonly #identity = new Map<string, string>();
   #mutationTail: Promise<void> = Promise.resolve();
+  #closing = false;
+
+  constructor(private readonly startServer: StartSessionServer) {}
 
   list(): SupervisorSession[] {
     return [...this.#sessions.values()]
@@ -146,6 +166,7 @@ class SessionRegistry {
 
   async serve(grant: ServingGrant): Promise<ServeControlResult> {
     return this.#mutate(async () => {
+      if (this.#closing) throw new Error("control.shutting_down");
       const key = `${grant.entry}\0${grant.root}`;
       const existingId = this.#identity.get(key);
       if (existingId !== undefined) {
@@ -161,7 +182,7 @@ class SessionRegistry {
   async #create(grant: ServingGrant, key: string): Promise<LiveSession> {
     let server: StaticSessionServer;
     try {
-      server = await startStaticServer(grant);
+      server = await this.startServer(grant);
     } catch {
       throw new Error("http.start_failed");
     }
@@ -213,6 +234,10 @@ class SessionRegistry {
     return this.#sessions.size;
   }
 
+  beginShutdown(): void {
+    this.#closing = true;
+  }
+
   async #mutate<T>(operation: () => Promise<T>): Promise<T> {
     const previous = this.#mutationTail;
     let release = (): void => undefined;
@@ -232,6 +257,9 @@ export async function startSupervisor(
   options: {
     readonly paths?: StatePaths;
     readonly idleMilliseconds?: number;
+    readonly shutdownGraceMilliseconds?: number;
+    readonly resolveGrant?: typeof resolveServingGrant;
+    readonly startSessionServer?: StartSessionServer;
     readonly version?: string;
   } = {},
 ): Promise<RunningSupervisor> {
@@ -239,7 +267,10 @@ export async function startSupervisor(
   await ensurePrivateStateDirectory(paths);
   const token = randomBytes(32).toString("base64url");
   const instanceId = randomUUID();
-  const sessions = new SessionRegistry();
+  const sessions = new SessionRegistry(
+    options.startSessionServer ?? ((grant) => startStaticServer(grant)),
+  );
+  const resolveGrant = options.resolveGrant ?? resolveServingGrant;
   const requestedIdleMilliseconds =
     options.idleMilliseconds ??
     Number(process.env.HTMLVIEW_IDLE_MS ?? defaultIdleMilliseconds);
@@ -247,6 +278,12 @@ export async function startSupervisor(
     Number.isFinite(requestedIdleMilliseconds) && requestedIdleMilliseconds > 0
       ? requestedIdleMilliseconds
       : defaultIdleMilliseconds;
+  const shutdownGraceMilliseconds =
+    options.shutdownGraceMilliseconds !== undefined &&
+    Number.isFinite(options.shutdownGraceMilliseconds) &&
+    options.shutdownGraceMilliseconds > 0
+      ? options.shutdownGraceMilliseconds
+      : defaultShutdownGraceMilliseconds;
   let idleTimer: NodeJS.Timeout | undefined;
   let activeHandlers = 0;
   let closing = false;
@@ -309,7 +346,7 @@ export async function startSupervisor(
           typeof candidate.root !== "string"
         )
           throw new Error("control.invalid_request");
-        const grant = await resolveServingGrant(candidate.entry, {
+        const grant = await resolveGrant(candidate.entry, {
           root: candidate.root,
         });
         json(response, 200, await sessions.serve(grant));
@@ -342,9 +379,11 @@ export async function startSupervisor(
         const status =
           message === "control.body_too_large"
             ? 413
-            : message.startsWith("control.")
-              ? 400
-              : 500;
+            : message === "control.shutting_down"
+              ? 503
+              : message.startsWith("control.")
+                ? 400
+                : 500;
         const exposed =
           message.startsWith("control.") || message.startsWith("http.");
         json(response, status, {
@@ -367,9 +406,11 @@ export async function startSupervisor(
   });
   control.maxConnections = 25;
   control.maxHeadersCount = 50;
+  control.maxRequestsPerSocket = 100;
   control.headersTimeout = 5_000;
   control.requestTimeout = 10_000;
   control.keepAliveTimeout = 2_000;
+  control.setTimeout(10_000, (socket) => socket.destroy());
 
   await new Promise<void>((resolve, reject) => {
     control.once("error", reject);
@@ -382,7 +423,7 @@ export async function startSupervisor(
     pid: process.pid,
     port: address.port,
     token,
-    version: options.version ?? "0.1.0",
+    version: options.version ?? htmlviewVersion,
   };
   try {
     await writePrivateJson(paths.discovery, discovery);
@@ -394,8 +435,9 @@ export async function startSupervisor(
   function close(): Promise<void> {
     closePromise ??= (async () => {
       closing = true;
+      sessions.beginShutdown();
       cancelIdleShutdown();
-      await closeServer(control);
+      await closeServer(control, shutdownGraceMilliseconds);
       await sessions.stopAll();
       await removeDiscovery(paths, instanceId);
     })();
@@ -404,5 +446,5 @@ export async function startSupervisor(
 
   scheduleIdleShutdown();
 
-  return { discovery, paths, close };
+  return { controlAddress: "127.0.0.1", discovery, paths, close };
 }

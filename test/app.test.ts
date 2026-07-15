@@ -97,6 +97,7 @@ describe("CLI application contract", () => {
   for (const args of [
     [],
     ["--help"],
+    ["--version"],
     ["serve", "--help"],
     ["stop", "--help"],
     ["serve", "x.html"],
