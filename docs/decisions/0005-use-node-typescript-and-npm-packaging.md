@@ -13,7 +13,9 @@ must not acquire a browser runtime dependency.
 ## Decision
 
 Implement `htmlview` in strict TypeScript targeting Node.js 22.13 or newer and
-publish the compiled ESM CLI through npm with an `htmlview` executable.
+publish the compiled ESM CLI through npm with an `htmlview` executable. The
+registry package identity is `@sejunpark/htmlview`, published publicly; the
+unscoped `htmlview` name belongs to an unrelated project.
 Node's standard library owns process spawning, loopback HTTP, filesystem, and
 cryptographic primitives.
 
@@ -28,8 +30,8 @@ Prettier. `npm run check` is the single local validation entry point.
 
 ## Consequences
 
-- `npm install --global htmlview` and `npx htmlview` are natural distribution
-  paths once the package is published.
+- Global npm installation and one-shot npm execution use the scoped package;
+  the installed executable remains `htmlview`.
 - The supervisor can be a detached invocation of the same installed artifact,
   so CLI and daemon versions cannot drift within one package.
 - The runtime dependency surface begins with only the reference TOON encoder;

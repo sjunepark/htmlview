@@ -128,7 +128,10 @@ async function openAuthorizedFile(root: string, target: string) {
 
   let handle;
   try {
-    handle = await open(resolved, fsConstants.O_RDONLY);
+    handle = await open(
+      resolved,
+      fsConstants.O_RDONLY | fsConstants.O_NONBLOCK,
+    );
     const openedMetadata = await handle.stat({ bigint: true });
     if (!openedMetadata.isFile()) {
       await handle.close();
@@ -204,6 +207,11 @@ export function createStaticHandler(
       send(response, 404, "Not Found");
       return;
     }
+    if (opened.metadata.size > BigInt(Number.MAX_SAFE_INTEGER) + 1n) {
+      await opened.handle.close();
+      send(response, 413, "File exceeds the supported size");
+      return;
+    }
 
     const modified = new Date(Number(opened.metadata.mtimeNs / 1_000_000n));
     const tag = etag(
@@ -238,7 +246,15 @@ export function createStaticHandler(
       response.end();
       return;
     }
-    const stream = opened.handle.createReadStream({ autoClose: true });
+    if (opened.metadata.size === 0n) {
+      await opened.handle.close();
+      response.end();
+      return;
+    }
+    const stream = opened.handle.createReadStream({
+      autoClose: true,
+      end: Number(opened.metadata.size - 1n),
+    });
     stream.on("error", () => response.destroy());
     response.on("close", () => {
       if (!stream.destroyed) stream.destroy();

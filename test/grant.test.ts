@@ -1,9 +1,13 @@
 import assert from "node:assert/strict";
 import { mkdtemp, mkdir, realpath, symlink, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, it } from "node:test";
-import { GrantError, resolveServingGrant } from "../src/serving/grant.js";
+import {
+  GrantError,
+  isBroadServingRoot,
+  resolveServingGrant,
+} from "../src/serving/grant.js";
 
 const temporaryDirectories: string[] = [];
 
@@ -23,6 +27,22 @@ afterEach(async () => {
 });
 
 describe("serving grants", () => {
+  it("rejects roots equal to or broader than the user home", async () => {
+    const home = await realpath(homedir());
+    assert.equal(isBroadServingRoot(home, home), true);
+    assert.equal(isBroadServingRoot(path.dirname(home), home), true);
+    assert.equal(isBroadServingRoot(path.join(home, "projects"), home), false);
+
+    const root = await fixtureDirectory();
+    const entry = path.join(root, "report.html");
+    await writeFile(entry, "fixture");
+    await assert.rejects(
+      resolveServingGrant(entry, { root: path.parse(home).root }),
+      (error: unknown) =>
+        error instanceof GrantError && error.code === "path.root_too_broad",
+    );
+  });
+
   it("uses the supplied entry parent as the default grant", async () => {
     const root = await fixtureDirectory();
     await mkdir(path.join(root, "pages"));

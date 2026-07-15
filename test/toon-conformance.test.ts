@@ -51,11 +51,7 @@ describe("TOON v3.3 conformance fixtures", () => {
         const operation = () =>
           decode(testCase.input as string, testCase.options);
         if (testCase.shouldError === true) {
-          assert.throws(
-            operation,
-            undefined,
-            `${path.basename(file)}: ${testCase.name}`,
-          );
+          assert.throws(operation, `${path.basename(file)}: ${testCase.name}`);
         } else {
           assert.deepEqual(
             operation(),

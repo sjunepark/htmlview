@@ -1,4 +1,8 @@
-import type { JsonObject, SessionSummary } from "./contracts.js";
+import type {
+  JsonObject,
+  OptionalSessionField,
+  SessionSummary,
+} from "./contracts.js";
 import { GrantError, resolveServingGrant } from "./serving/grant.js";
 import {
   SupervisorClient,
@@ -17,17 +21,22 @@ export class OperationError extends Error {
 }
 
 export interface CommandService {
-  listSessions(): Promise<readonly SessionSummary[]>;
+  listSessions(
+    fields?: readonly OptionalSessionField[],
+  ): Promise<readonly SessionSummary[]>;
   serve(entry: string, root?: string): Promise<JsonObject>;
-  stop(session?: string, all?: boolean): Promise<JsonObject>;
+  stopSession(session: string): Promise<JsonObject>;
+  stopAll(): Promise<JsonObject>;
 }
 
 export class HtmlviewService implements CommandService {
   constructor(private readonly supervisor = new SupervisorClient()) {}
 
-  async listSessions(): Promise<readonly SessionSummary[]> {
+  async listSessions(
+    fields: readonly OptionalSessionField[] = [],
+  ): Promise<readonly SessionSummary[]> {
     try {
-      return await this.supervisor.list();
+      return await this.supervisor.list(fields);
     } catch (error) {
       throw translate(error);
     }
@@ -57,13 +66,28 @@ export class HtmlviewService implements CommandService {
     }
   }
 
-  async stop(session?: string, all = false): Promise<JsonObject> {
+  async stopSession(session: string): Promise<JsonObject> {
     try {
-      const result = await this.supervisor.stop(session, all);
+      const result = await this.supervisor.stopSession(session);
       return {
         stop: {
-          scope: all ? "all" : "session",
-          ...(session === undefined ? {} : { session }),
+          scope: "session",
+          session,
+          stopped: result.stopped,
+          status: result.stopped === 0 ? "already_stopped" : "stopped",
+        },
+      };
+    } catch (error) {
+      throw translate(error);
+    }
+  }
+
+  async stopAll(): Promise<JsonObject> {
+    try {
+      const result = await this.supervisor.stopAll();
+      return {
+        stop: {
+          scope: "all",
           stopped: result.stopped,
           status: result.stopped === 0 ? "already_stopped" : "stopped",
         },

@@ -2,7 +2,11 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { runApp } from "../src/app.js";
 import { decodeOutput } from "../src/output.js";
-import type { OutputFormat, SessionSummary } from "../src/contracts.js";
+import type {
+  OptionalSessionField,
+  OutputFormat,
+  SessionSummary,
+} from "../src/contracts.js";
 import { OperationError } from "../src/service.js";
 
 async function invoke(
@@ -12,10 +16,15 @@ async function invoke(
 ) {
   let stdout = "";
   let stderr = "";
+  let listedFields: readonly OptionalSessionField[] | undefined;
+  const stopCalls: string[] = [];
   const exitCode = await runApp(args, {
     executablePath: "/Users/example/.local/bin/htmlview",
     service: {
-      listSessions: async () => sessions,
+      listSessions: async (fields) => {
+        listedFields = fields;
+        return sessions;
+      },
       serve: async () => {
         if (serveFailure !== undefined) throw serveFailure;
         return {
@@ -31,14 +40,27 @@ async function invoke(
           },
         };
       },
-      stop: async (session, all) => ({
-        stop: {
-          scope: all === true ? "all" : "session",
-          ...(session === undefined ? {} : { session }),
-          stopped: 0,
-          status: "already_stopped",
-        },
-      }),
+      stopSession: async (session) => {
+        stopCalls.push(`session:${session}`);
+        return {
+          stop: {
+            scope: "session",
+            session,
+            stopped: 0,
+            status: "already_stopped",
+          },
+        };
+      },
+      stopAll: async () => {
+        stopCalls.push("all");
+        return {
+          stop: {
+            scope: "all",
+            stopped: 0,
+            status: "already_stopped",
+          },
+        };
+      },
     },
     stdout: (value) => {
       stdout += value;
@@ -47,7 +69,22 @@ async function invoke(
       stderr += value;
     },
   });
-  return { exitCode, stdout, stderr };
+  return { exitCode, stdout, stderr, listedFields, stopCalls };
+}
+
+function normalizeContextualHelp(
+  value: Record<string, unknown>,
+): Record<string, unknown> {
+  return {
+    ...value,
+    ...(Array.isArray(value.help)
+      ? {
+          help: value.help.map((item) =>
+            typeof item === "string" ? item.replaceAll(" --json", "") : item,
+          ),
+        }
+      : {}),
+  };
 }
 
 describe("CLI application contract", () => {
@@ -76,6 +113,8 @@ describe("CLI application contract", () => {
     ];
     const minimal = await invoke([], sessions);
     const expanded = await invoke(["--fields", "entry,root"], sessions);
+    assert.deepEqual(minimal.listedFields, []);
+    assert.deepEqual(expanded.listedFields, ["entry", "root"]);
     assert.deepEqual(
       (decodeOutput(minimal.stdout, "toon") as Record<string, unknown>)
         .sessions,
@@ -92,6 +131,13 @@ describe("CLI application contract", () => {
         .sessions,
       sessions,
     );
+  });
+
+  it("dispatches stop selectors through valid-by-construction operations", async () => {
+    const session = await invoke(["stop", "abc123"]);
+    const all = await invoke(["stop", "--all"]);
+    assert.deepEqual(session.stopCalls, ["session:abc123"]);
+    assert.deepEqual(all.stopCalls, ["all"]);
   });
 
   for (const args of [
@@ -117,14 +163,10 @@ describe("CLI application contract", () => {
         string,
         unknown
       >;
-      if (args.length === 0 || (args[0] === "serve" && args.length === 2)) {
-        assert.deepEqual(
-          { ...toonValue, help: undefined },
-          { ...jsonValue, help: undefined },
-        );
-      } else {
-        assert.deepEqual(toonValue, jsonValue);
-      }
+      assert.deepEqual(
+        normalizeContextualHelp(toonValue),
+        normalizeContextualHelp(jsonValue),
+      );
       assert.equal(toon.stderr, "");
       assert.equal(json.stderr, "");
     });
@@ -137,6 +179,17 @@ describe("CLI application contract", () => {
       unknown
     >;
     assert.deepEqual(value.help, ["Run `htmlview serve <entry.html> --json`"]);
+  });
+
+  it("preserves JSON in usage-error corrective commands", async () => {
+    const result = await invoke(["serve", "x.html", "--bad", "--json"]);
+    const value = decodeOutput(result.stdout, "json") as Record<
+      string,
+      unknown
+    >;
+    assert.deepEqual(value.help, [
+      "Run `htmlview serve --help --json` for complete examples",
+    ]);
   });
 
   it("emits equivalent structured runtime errors", async () => {
@@ -162,10 +215,10 @@ describe("CLI application contract", () => {
       { ...jsonValue, help: undefined },
     );
     assert.deepEqual(toonValue.help, [
-      "Run `htmlview` after correcting runtime-state permissions",
+      "Run `htmlview serve <entry.html>` after correcting runtime-state permissions",
     ]);
     assert.deepEqual(jsonValue.help, [
-      "Run `htmlview --json` after correcting runtime-state permissions",
+      "Run `htmlview serve <entry.html> --json` after correcting runtime-state permissions",
     ]);
   });
 
@@ -185,6 +238,36 @@ describe("CLI application contract", () => {
     >;
     assert.deepEqual(value.help, [
       "Run `htmlview serve <entry.html> --root <directory> --json` to retry",
+    ]);
+  });
+
+  it("suggests freeing capacity when the session limit is reached", async () => {
+    const failure = new OperationError(
+      "control.session_limit",
+      "Concurrent session limit of 32 reached",
+    );
+    const result = await invoke(["serve", "x.html", "--json"], [], failure);
+    const value = decodeOutput(result.stdout, "json") as Record<
+      string,
+      unknown
+    >;
+    assert.deepEqual(value.help, [
+      "Run `htmlview stop <session> --json` before serving another entry",
+    ]);
+  });
+
+  it("suggests the compatible stop path for a supervisor mismatch", async () => {
+    const failure = new OperationError(
+      "supervisor.incompatible",
+      "The running htmlview supervisor uses an incompatible control protocol",
+    );
+    const result = await invoke(["serve", "x.html", "--json"], [], failure);
+    const value = decodeOutput(result.stdout, "json") as Record<
+      string,
+      unknown
+    >;
+    assert.deepEqual(value.help, [
+      "Run `htmlview stop --all --json` before retrying this command",
     ]);
   });
 

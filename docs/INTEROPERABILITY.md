@@ -30,7 +30,13 @@ Or pass the same value to an external browser tool. These are interoperability
 examples, not product dependencies:
 
 ```sh
-agent-browser open "$url"
+HTMLVIEW_URL="$url" browser-use <<'PY'
+import os
+new_tab(os.environ["HTMLVIEW_URL"])
+wait_for_load()
+capture_screenshot()
+print(page_info())
+PY
 ```
 
 ```js
@@ -50,8 +56,8 @@ Release validation passes a CLI-returned URL through two independently
 installed controllers:
 
 - `npm run validate:interoperability` uses Playwright Chromium.
-- `npm run validate:agent-browser` uses the separately installed
-  `agent-browser` executable.
+- `npm run validate:browser-use` uses the separately installed `browser-use`
+  executable and its default connection to a running Chrome instance.
 
 Neither controller is imported by the runtime or included in the published
 package.

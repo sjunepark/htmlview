@@ -2,7 +2,7 @@
 set -euo pipefail
 
 export HTMLVIEW_STATE_DIR="/tmp/htmlview-state"
-export HTMLVIEW_IDLE_MS="50"
+export HTMLVIEW_IDLE_MS="1000"
 tarball=(/artifacts/*.tgz)
 
 npm install --global "${tarball[0]}" >/dev/null
@@ -29,10 +29,10 @@ sleep 0.2
 
 npm install --global "${tarball[0]}" >/dev/null
 htmlview --version --json >/dev/null
-npm uninstall --global htmlview >/dev/null
+npm uninstall --global @sejunpark/htmlview >/dev/null
 hash -r
 if command -v htmlview >/dev/null; then
   echo "htmlview remained installed" >&2
   exit 1
 fi
-printf '{"platform":"linux","version":"%s","install":"passed","upgrade":"passed","uninstall":"passed"}\n' "$EXPECTED_VERSION"
+printf '{"platform":"linux","version":"%s","install":"passed","reinstall":"passed","uninstall":"passed"}\n' "$EXPECTED_VERSION"

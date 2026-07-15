@@ -1,9 +1,17 @@
 import { randomBytes } from "node:crypto";
-import { closeSync, fsyncSync, openSync, writeSync } from "node:fs";
+import {
+  closeSync,
+  constants,
+  fstatSync,
+  fsyncSync,
+  openSync,
+  readSync,
+  writeSync,
+} from "node:fs";
 import {
   chmod,
+  lstat,
   mkdir,
-  readFile,
   rename,
   rm,
   stat,
@@ -11,14 +19,15 @@ import {
 } from "node:fs/promises";
 import { homedir } from "node:os";
 import path from "node:path";
-import { supervisorProtocol, type DiscoveryRecord } from "./protocol.js";
 
 const maximumStateFileBytes = 16 * 1024;
+const maximumPortableSocketPathBytes = 100;
 
 export interface StatePaths {
   readonly directory: string;
-  readonly discovery: string;
-  readonly startupLock: string;
+  readonly controlSocket: string;
+  readonly supervisorLock: string;
+  readonly configurationError?: string;
 }
 
 export function statePaths(
@@ -26,9 +35,15 @@ export function statePaths(
   platform: NodeJS.Platform = process.platform,
 ): StatePaths {
   let directory: string;
-  if (environment.HTMLVIEW_STATE_DIR !== undefined) {
+  let configurationError: string | undefined;
+  if (
+    environment.HTMLVIEW_STATE_DIR !== undefined &&
+    path.isAbsolute(environment.HTMLVIEW_STATE_DIR)
+  ) {
     directory = path.resolve(environment.HTMLVIEW_STATE_DIR);
   } else if (platform === "darwin") {
+    if (environment.HTMLVIEW_STATE_DIR !== undefined)
+      configurationError = "HTMLVIEW_STATE_DIR must be an absolute path";
     directory = path.join(
       homedir(),
       "Library",
@@ -36,6 +51,8 @@ export function statePaths(
       "htmlview",
     );
   } else {
+    if (environment.HTMLVIEW_STATE_DIR !== undefined)
+      configurationError = "HTMLVIEW_STATE_DIR must be an absolute path";
     const xdgStateHome = environment.XDG_STATE_HOME;
     const stateHome =
       xdgStateHome !== undefined && path.isAbsolute(xdgStateHome)
@@ -45,14 +62,19 @@ export function statePaths(
   }
   return {
     directory,
-    discovery: path.join(directory, "supervisor.json"),
-    startupLock: path.join(directory, "startup.lock"),
+    controlSocket: path.join(directory, "control.sock"),
+    supervisorLock: path.join(directory, "supervisor.lock"),
+    ...(configurationError === undefined ? {} : { configurationError }),
   };
 }
 
 export async function ensurePrivateStateDirectory(
   paths: StatePaths,
 ): Promise<void> {
+  if (paths.configurationError !== undefined)
+    throw new Error(paths.configurationError);
+  if (Buffer.byteLength(paths.controlSocket) > maximumPortableSocketPathBytes)
+    throw new Error("The htmlview control-socket path is too long");
   await mkdir(paths.directory, { recursive: true, mode: 0o700 });
   await chmod(paths.directory, 0o700);
   const metadata = await stat(paths.directory);
@@ -89,49 +111,21 @@ export async function writePrivateJson(
   }
 }
 
-function isDiscoveryRecord(value: unknown): value is DiscoveryRecord {
-  if (typeof value !== "object" || value === null) return false;
-  const record = value as Record<string, unknown>;
-  return (
-    record.protocol === supervisorProtocol &&
-    typeof record.instanceId === "string" &&
-    typeof record.pid === "number" &&
-    Number.isSafeInteger(record.pid) &&
-    typeof record.port === "number" &&
-    Number.isInteger(record.port) &&
-    record.port > 0 &&
-    record.port <= 65_535 &&
-    typeof record.token === "string" &&
-    record.token.length >= 43 &&
-    typeof record.version === "string"
-  );
-}
-
-export async function readDiscovery(
+export async function removeStaleControlSocket(
   paths: StatePaths,
-): Promise<DiscoveryRecord | undefined> {
-  try {
-    const body = await readFile(paths.discovery);
-    if (body.length > maximumStateFileBytes) return undefined;
-    const value: unknown = JSON.parse(body.toString("utf8"));
-    return isDiscoveryRecord(value) ? value : undefined;
-  } catch {
-    return undefined;
-  }
-}
-
-export async function removeDiscovery(
-  paths: StatePaths,
-  instanceId?: string,
 ): Promise<void> {
-  if (instanceId !== undefined) {
-    const current = await readDiscovery(paths);
-    if (current?.instanceId !== instanceId) return;
-  }
-  await unlink(paths.discovery).catch(() => undefined);
+  const metadata = await lstat(paths.controlSocket).catch((error: unknown) => {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+    throw error;
+  });
+  if (metadata === undefined) return;
+  if (!metadata.isSocket())
+    throw new Error("The htmlview control-socket path is not a socket");
+  await unlink(paths.controlSocket);
 }
 
-export interface StartupLock {
+export interface SupervisorLock {
+  readonly nonce: string;
   release(): Promise<void>;
 }
 
@@ -145,31 +139,62 @@ function processIsAlive(pid: number): boolean {
   }
 }
 
-interface StartupLockOwner {
+interface SupervisorLockOwner {
   readonly pid: number;
-  readonly createdAt: number;
   readonly nonce: string;
+}
+
+function readBoundedRegularFile(file: string): string | undefined {
+  let descriptor: number | undefined;
+  try {
+    descriptor = openSync(
+      file,
+      constants.O_RDONLY | constants.O_NONBLOCK | constants.O_NOFOLLOW,
+    );
+    const metadata = fstatSync(descriptor);
+    if (!metadata.isFile() || metadata.size > maximumStateFileBytes)
+      return undefined;
+    const body = Buffer.alloc(metadata.size);
+    let offset = 0;
+    while (offset < body.length) {
+      const count = readSync(
+        descriptor,
+        body,
+        offset,
+        body.length - offset,
+        offset,
+      );
+      if (count === 0) break;
+      offset += count;
+    }
+    return body.subarray(0, offset).toString("utf8");
+  } catch {
+    return undefined;
+  } finally {
+    if (descriptor !== undefined) closeSync(descriptor);
+  }
 }
 
 async function readLockOwner(
   paths: StatePaths,
-): Promise<StartupLockOwner | undefined> {
+): Promise<SupervisorLockOwner | undefined> {
   try {
-    const value: unknown = JSON.parse(
-      await readFile(path.join(paths.startupLock, "owner.json"), "utf8"),
+    const text = readBoundedRegularFile(
+      path.join(paths.supervisorLock, "owner.json"),
     );
+    if (text === undefined) return undefined;
+    const value: unknown = JSON.parse(text);
     if (typeof value !== "object" || value === null) return undefined;
     const owner = value as Record<string, unknown>;
     if (
       typeof owner.pid !== "number" ||
       !Number.isSafeInteger(owner.pid) ||
-      typeof owner.createdAt !== "number" ||
-      !Number.isFinite(owner.createdAt) ||
+      owner.pid <= 0 ||
       typeof owner.nonce !== "string" ||
       owner.nonce.length < 16
     )
       return undefined;
-    return owner as unknown as StartupLockOwner;
+    return owner as unknown as SupervisorLockOwner;
   } catch {
     return undefined;
   }
@@ -184,7 +209,7 @@ interface StaleLockSnapshot {
 async function staleLockSnapshot(
   paths: StatePaths,
 ): Promise<StaleLockSnapshot | undefined> {
-  const metadata = await stat(paths.startupLock, { bigint: true }).catch(
+  const metadata = await stat(paths.supervisorLock, { bigint: true }).catch(
     () => undefined,
   );
   if (metadata === undefined) return undefined;
@@ -206,7 +231,7 @@ async function reclaimStaleLock(
   paths: StatePaths,
   snapshot: StaleLockSnapshot,
 ): Promise<boolean> {
-  const claim = path.join(paths.startupLock, ".reclaim");
+  const claim = path.join(paths.supervisorLock, ".reclaim");
   try {
     await mkdir(claim, { mode: 0o700 });
   } catch (error) {
@@ -218,7 +243,7 @@ async function reclaimStaleLock(
   let reclaimed = false;
   try {
     const [metadata, owner] = await Promise.all([
-      stat(paths.startupLock, { bigint: true }).catch(() => undefined),
+      stat(paths.supervisorLock, { bigint: true }).catch(() => undefined),
       readLockOwner(paths),
     ]);
     if (
@@ -228,7 +253,7 @@ async function reclaimStaleLock(
       owner?.nonce !== snapshot.ownerNonce
     )
       return false;
-    await rm(paths.startupLock, { recursive: true, force: true });
+    await rm(paths.supervisorLock, { recursive: true, force: true });
     reclaimed = true;
     return true;
   } finally {
@@ -236,30 +261,30 @@ async function reclaimStaleLock(
   }
 }
 
-export async function acquireStartupLock(
+export async function acquireSupervisorLock(
   paths: StatePaths,
   timeoutMilliseconds = 10_000,
-): Promise<StartupLock> {
+): Promise<SupervisorLock> {
   const deadline = Date.now() + timeoutMilliseconds;
   while (Date.now() < deadline) {
     try {
-      await mkdir(paths.startupLock, { mode: 0o700 });
+      await mkdir(paths.supervisorLock, { mode: 0o700 });
       const nonce = randomBytes(16).toString("hex");
       try {
-        await writePrivateJson(path.join(paths.startupLock, "owner.json"), {
+        await writePrivateJson(path.join(paths.supervisorLock, "owner.json"), {
           pid: process.pid,
-          createdAt: Date.now(),
           nonce,
         });
       } catch (error) {
-        await rm(paths.startupLock, { recursive: true, force: true });
+        await rm(paths.supervisorLock, { recursive: true, force: true });
         throw error;
       }
       return {
+        nonce,
         release: async () => {
           const owner = await readLockOwner(paths);
           if (owner?.nonce !== nonce) return;
-          await rm(paths.startupLock, { recursive: true, force: true });
+          await rm(paths.supervisorLock, { recursive: true, force: true });
         },
       };
     } catch (error) {
@@ -270,5 +295,28 @@ export async function acquireStartupLock(
       await new Promise((resolve) => setTimeout(resolve, 50));
     }
   }
-  throw new Error("Timed out waiting for the supervisor startup lock");
+  throw new Error("Timed out waiting for the supervisor ownership lock");
+}
+
+export async function transferSupervisorLock(
+  paths: StatePaths,
+  expectedNonce: string,
+  owner: { readonly pid: number; readonly instanceId: string },
+): Promise<SupervisorLock> {
+  const current = await readLockOwner(paths);
+  if (current?.nonce !== expectedNonce)
+    throw new Error("The htmlview supervisor ownership lock changed owners");
+  const nonce = owner.instanceId;
+  await writePrivateJson(path.join(paths.supervisorLock, "owner.json"), {
+    pid: owner.pid,
+    nonce,
+  });
+  return {
+    nonce,
+    release: async () => {
+      const latest = await readLockOwner(paths);
+      if (latest?.nonce !== nonce) return;
+      await rm(paths.supervisorLock, { recursive: true, force: true });
+    },
+  };
 }

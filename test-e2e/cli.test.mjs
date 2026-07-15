@@ -3,12 +3,13 @@ import { decode } from "@toon-format/toon";
 import { spawn } from "node:child_process";
 import {
   mkdtemp,
-  readFile,
+  lstat,
   readdir,
   realpath,
   stat,
   writeFile,
 } from "node:fs/promises";
+import { request } from "node:http";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { after, before, test } from "node:test";
@@ -61,10 +62,51 @@ async function toonCli(args, cwd) {
   return { ...result, value: decode(result.stdout.trimEnd()) };
 }
 
+function supervisorHealth() {
+  return new Promise((resolve, reject) => {
+    const operation = request(
+      {
+        socketPath: path.join(stateDirectory, "control.sock"),
+        method: "GET",
+        path: "/health",
+        headers: { host: "htmlview-control" },
+      },
+      (response) => {
+        const chunks = [];
+        response.on("data", (chunk) => chunks.push(chunk));
+        response.on("end", () =>
+          resolve(JSON.parse(Buffer.concat(chunks).toString("utf8"))),
+        );
+      },
+    );
+    operation.once("error", reject);
+    operation.end();
+  });
+}
+
 function withoutHelp(value) {
   const result = { ...value };
   delete result.help;
   return result;
+}
+
+function processExists(pid) {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    if (error.code === "ESRCH") return false;
+    throw error;
+  }
+}
+
+async function waitForProcessExit(pid, timeoutMilliseconds = 2_000) {
+  const deadline = Date.now() + timeoutMilliseconds;
+  while (Date.now() < deadline) {
+    if (!processExists(pid)) return;
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+  assert.equal(processExists(pid), false, `process ${pid} did not exit`);
 }
 
 before(async () => {
@@ -91,19 +133,6 @@ before(async () => {
 
 after(async () => {
   await cli(["stop", "--all", "--json"]).catch(() => undefined);
-  const discovery = await readFile(
-    path.join(stateDirectory, "supervisor.json"),
-    "utf8",
-  )
-    .then(JSON.parse)
-    .catch(() => undefined);
-  if (typeof discovery?.pid === "number") {
-    try {
-      process.kill(discovery.pid, "SIGTERM");
-    } catch {
-      // The bounded idle shutdown may already have exited.
-    }
-  }
   const { rm } = await import("node:fs/promises");
   await rm(base, { recursive: true, force: true });
 });
@@ -168,18 +197,22 @@ test("detached CLI lifecycle converges, recovers, and remains project-clean", as
   );
 
   const stopped = await jsonCli(["stop", firstCall.value.session.id]);
+  assert.equal(stopped.code, 0, JSON.stringify(stopped.value));
   assert.equal(stopped.value.stop.status, "stopped");
   const stoppedAgain = await jsonCli(["stop", firstCall.value.session.id]);
   assert.equal(stoppedAgain.value.stop.status, "already_stopped");
   const toonNoOp = await toonCli(["stop", firstCall.value.session.id]);
   assert.deepEqual(toonNoOp.value, stoppedAgain.value);
+  const stopAllOwner = await supervisorHealth();
   assert.equal((await jsonCli(["stop", "--all"])).value.stop.stopped, 1);
+  await waitForProcessExit(stopAllOwner.pid);
+  await assert.rejects(lstat(path.join(stateDirectory, "control.sock")));
+  await assert.rejects(fetch(other.value.session.url));
 
   const beforeCrash = await jsonCli(["serve", "report.html"]);
-  const crashedDiscovery = JSON.parse(
-    await readFile(path.join(stateDirectory, "supervisor.json"), "utf8"),
-  );
-  process.kill(crashedDiscovery.pid, "SIGKILL");
+  const crashedSupervisor = await supervisorHealth();
+  assert.notEqual(crashedSupervisor.instanceId, stopAllOwner.instanceId);
+  process.kill(crashedSupervisor.pid, "SIGKILL");
   await new Promise((resolve) => setTimeout(resolve, 50));
   const afterCrash = await jsonCli(["serve", "report.html"]);
   assert.equal(afterCrash.code, 0);
@@ -189,19 +222,15 @@ test("detached CLI lifecycle converges, recovers, and remains project-clean", as
     new URL(beforeCrash.value.session.url).hostname,
   );
 
-  const gracefulDiscovery = JSON.parse(
-    await readFile(path.join(stateDirectory, "supervisor.json"), "utf8"),
-  );
+  const gracefulSupervisor = await supervisorHealth();
   assert.equal(
-    (await stat(path.join(stateDirectory, "supervisor.json"))).mode & 0o777,
+    (await lstat(path.join(stateDirectory, "control.sock"))).mode & 0o777,
     0o600,
   );
-  process.kill(gracefulDiscovery.pid, "SIGTERM");
+  process.kill(gracefulSupervisor.pid, "SIGTERM");
   const shutdownDeadline = Date.now() + 2_000;
   while (Date.now() < shutdownDeadline) {
-    const stillPresent = await readFile(
-      path.join(stateDirectory, "supervisor.json"),
-    )
+    const stillPresent = await lstat(path.join(stateDirectory, "control.sock"))
       .then(() => true)
       .catch(() => false);
     if (!stillPresent) break;

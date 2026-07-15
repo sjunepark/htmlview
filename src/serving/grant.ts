@@ -1,4 +1,5 @@
 import { realpath, stat } from "node:fs/promises";
+import { homedir } from "node:os";
 import path from "node:path";
 
 export interface ServingGrant {
@@ -27,6 +28,10 @@ export function isWithinRoot(root: string, target: string): boolean {
     !relative.startsWith(`..${path.sep}`) &&
     !path.isAbsolute(relative)
   );
+}
+
+export function isBroadServingRoot(root: string, home: string): boolean {
+  return root === home || isWithinRoot(root, home);
 }
 
 function encodeRelativePath(relativePath: string): string {
@@ -89,6 +94,14 @@ export async function resolveServingGrant(
       ? path.dirname(suppliedEntry)
       : path.resolve(cwd, options.root);
   const canonicalRoot = await canonicalDirectory(candidateRoot);
+  const canonicalHome = await realpath(homedir()).catch(() =>
+    path.resolve(homedir()),
+  );
+  if (isBroadServingRoot(canonicalRoot, canonicalHome))
+    throw new GrantError(
+      "path.root_too_broad",
+      "Serving root cannot be the user home directory or one of its ancestors",
+    );
 
   let canonicalEntry: string;
   try {

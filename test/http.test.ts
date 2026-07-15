@@ -1,7 +1,11 @@
 import assert from "node:assert/strict";
+import { execFile } from "node:child_process";
+import { constants as fsConstants } from "node:fs";
 import {
+  appendFile,
   mkdtemp,
   mkdir,
+  open,
   rename,
   symlink,
   truncate,
@@ -9,9 +13,11 @@ import {
   writeFile,
 } from "node:fs/promises";
 import { request } from "node:http";
+import { connect } from "node:net";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, it } from "node:test";
+import { promisify } from "node:util";
 import {
   isWithinRoot,
   resolveServingGrant,
@@ -32,6 +38,7 @@ interface ResponseResult {
 let root: string;
 let grant: ServingGrant;
 let server: StaticSessionServer;
+const execute = promisify(execFile);
 
 function rawRequest(
   rawPath: string,
@@ -284,6 +291,26 @@ describe("faithful static HTTP", () => {
     }
   });
 
+  it("rejects FIFOs without blocking filesystem workers", async () => {
+    const fifo = path.join(root, "assets", "blocked.fifo");
+    await execute("mkfifo", [fifo]);
+    let releasedBlockedReader = false;
+    let releasePromise = Promise.resolve();
+    const release = setTimeout(() => {
+      releasedBlockedReader = true;
+      releasePromise = open(fifo, fsConstants.O_WRONLY | fsConstants.O_NONBLOCK)
+        .then((handle) => handle.close())
+        .catch(() => undefined);
+    }, 1_000);
+
+    const response = await rawRequest("/assets/blocked.fifo");
+    clearTimeout(release);
+    await releasePromise;
+    assert.equal(releasedBlockedReader, false);
+    assert.equal(response.status, 404);
+    assert.equal((await rawRequest(grant.entryUrlPath)).status, 200);
+  });
+
   it("rejects forged hosts and unsupported methods", async () => {
     assert.equal(
       (
@@ -298,7 +325,7 @@ describe("faithful static HTTP", () => {
     assert.equal(post.headers.allow, "GET, HEAD");
   });
 
-  it("never serves outside bytes while a symlink is swapped", async () => {
+  it("never serves outside bytes during concurrent symlink swaps", async () => {
     const inside = path.join(root, "inside.txt");
     const outside = path.join(
       path.dirname(root),
@@ -309,11 +336,18 @@ describe("faithful static HTTP", () => {
     await writeFile(outside, "outside-secret");
     await symlink(inside, link);
     try {
-      for (let index = 0; index < 40; index += 1) {
-        const replacement = `${link}.next`;
-        await symlink(index % 2 === 0 ? outside : inside, replacement);
-        await rename(replacement, link);
-        const response = await rawRequest("/race.txt");
+      const swaps = (async () => {
+        for (let index = 0; index < 80; index += 1) {
+          const replacement = `${link}.next`;
+          await symlink(index % 2 === 0 ? outside : inside, replacement);
+          await rename(replacement, link);
+        }
+      })();
+      const responses = await Promise.all(
+        Array.from({ length: 80 }, () => rawRequest("/race.txt")),
+      );
+      await swaps;
+      for (const response of responses) {
         assert.notEqual(response.body.toString(), "outside-secret");
         if (response.status === 200)
           assert.equal(response.body.toString(), "inside");
@@ -348,6 +382,70 @@ describe("faithful static HTTP", () => {
       operation.end();
     });
     assert.equal((await rawRequest(grant.entryUrlPath)).status, 200);
+  });
+
+  it("does not stream bytes appended after response authorization", async () => {
+    const file = path.join(root, "assets", "growing.bin");
+    await writeFile(file, "");
+    await truncate(file, 64 * 1024 * 1024);
+
+    const result = await new Promise<{
+      declared: number;
+      received: number;
+    }>((resolve, reject) => {
+      const socket = connect(server.port, "127.0.0.1", () => {
+        socket.write(
+          `GET /assets/growing.bin HTTP/1.1\r\nHost: ${server.hostname}:${server.port}\r\nConnection: close\r\n\r\n`,
+        );
+      });
+      let header = Buffer.alloc(0);
+      let declared: number | undefined;
+      let received = 0;
+      let appended = false;
+      let appendPromise = Promise.resolve();
+      socket.on("data", (chunk: Buffer) => {
+        if (!appended) {
+          appended = true;
+          socket.pause();
+          appendPromise = appendFile(
+            file,
+            Buffer.alloc(4 * 1024 * 1024, 0x61),
+          ).then(() => {
+            socket.resume();
+          });
+        }
+        if (declared !== undefined) {
+          received += chunk.length;
+          return;
+        }
+        header = Buffer.concat([header, chunk]);
+        const separator = header.indexOf("\r\n\r\n");
+        if (separator === -1) return;
+        const match = header
+          .subarray(0, separator)
+          .toString("latin1")
+          .match(/\r\ncontent-length: (\d+)/i);
+        if (match?.[1] === undefined) {
+          socket.destroy();
+          reject(new Error("Response omitted Content-Length"));
+          return;
+        }
+        declared = Number(match[1]);
+        received += header.length - (separator + 4);
+        header = Buffer.alloc(0);
+      });
+      socket.once("error", reject);
+      socket.once("end", () => {
+        void appendPromise.then(() => {
+          if (declared === undefined)
+            reject(new Error("Response ended before its headers"));
+          else resolve({ declared, received });
+        }, reject);
+      });
+    });
+
+    assert.equal(result.declared, 64 * 1024 * 1024);
+    assert.equal(result.received, result.declared);
   });
 
   it("ends a slow-progress response at its absolute deadline", async () => {

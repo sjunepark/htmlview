@@ -38,6 +38,14 @@ const homeFlags = ["--fields", "--json", "--help", "--version"];
 const serveFlags = ["--root", "--json", "--help"];
 const stopFlags = ["--all", "--json", "--help"];
 
+function commandHelp(
+  command: string,
+  format: OutputFormat,
+  purpose: string,
+): string {
+  return `Run \`${command}${format === "json" ? " --json" : ""}\` ${purpose}`;
+}
+
 function usageFailure(
   code: string,
   message: string,
@@ -51,12 +59,13 @@ function unknownFlag(
   flag: string,
   command: string,
   validFlags: string[],
+  format: OutputFormat,
 ): UsageFailure {
   return usageFailure(
     "usage.unknown_flag",
     `Unknown flag ${flag} for \`${command}\``,
     { valid_flags: validFlags },
-    `Run \`${command} --help\` for complete examples`,
+    commandHelp(`${command} --help`, format, "for complete examples"),
   );
 }
 
@@ -64,12 +73,13 @@ function missingValue(
   flag: string,
   command: string,
   usage: string,
+  format: OutputFormat,
 ): UsageFailure {
   return usageFailure(
     "usage.missing_flag_value",
     `Flag ${flag} requires a value for \`${command}\``,
     { usage },
-    `Run \`${command} --help\` for complete examples`,
+    commandHelp(`${command} --help`, format, "for complete examples"),
   );
 }
 
@@ -94,7 +104,7 @@ export function parseCommand(
       "usage.conflicting_arguments",
       "Flag --version cannot be combined with other arguments",
       { usage: "htmlview --version [--json]" },
-      "Run `htmlview --help` for command examples",
+      commandHelp("htmlview --help", format, "for command examples"),
     );
 
   if (args.length === 0 || args[0]?.startsWith("-"))
@@ -106,7 +116,7 @@ export function parseCommand(
       "usage.unknown_command",
       `Unknown command ${command}`,
       { valid_commands: validCommands },
-      "Run `htmlview --help` for command examples",
+      commandHelp("htmlview --help", format, "for command examples"),
     );
   }
 
@@ -134,6 +144,7 @@ function parseHome(
           "--fields",
           "htmlview",
           "htmlview [--fields entry,root] [--json]",
+          format,
         );
       const requested = value.split(",");
       const unknown = requested.find(
@@ -144,7 +155,7 @@ function parseHome(
           "usage.unknown_field",
           `Unknown session field ${unknown}`,
           { valid_fields: ["entry", "root"] },
-          "Run `htmlview --help` for complete examples",
+          commandHelp("htmlview --help", format, "for complete examples"),
         );
       }
       fields = [...new Set(requested)] as OptionalSessionField[];
@@ -152,12 +163,12 @@ function parseHome(
       continue;
     }
     return argument.startsWith("-")
-      ? unknownFlag(argument, "htmlview", homeFlags)
+      ? unknownFlag(argument, "htmlview", homeFlags, format)
       : usageFailure(
           "usage.unexpected_argument",
           `Unexpected argument ${argument} for \`htmlview\``,
           { usage: "htmlview [--fields entry,root] [--json]" },
-          "Run `htmlview --help` for complete examples",
+          commandHelp("htmlview --help", format, "for complete examples"),
         );
   }
   return { kind: "home", format, fields, help };
@@ -181,19 +192,20 @@ function parseServe(
           "--root",
           "htmlview serve",
           "htmlview serve <entry.html> [--root <directory>] [--json]",
+          format,
         );
       if (root !== undefined) {
         return usageFailure(
           "usage.duplicate_flag",
           "Flag --root may be provided only once",
           { valid_flags: serveFlags },
-          "Run `htmlview serve --help` for complete examples",
+          commandHelp("htmlview serve --help", format, "for complete examples"),
         );
       }
       root = value;
       index += 1;
     } else if (argument.startsWith("-")) {
-      return unknownFlag(argument, "htmlview serve", serveFlags);
+      return unknownFlag(argument, "htmlview serve", serveFlags, format);
     } else if (entry === undefined) {
       entry = argument;
     } else {
@@ -201,7 +213,7 @@ function parseServe(
         "usage.unexpected_argument",
         `Unexpected argument ${argument} for \`htmlview serve\``,
         { usage: "htmlview serve <entry.html> [--root <directory>] [--json]" },
-        "Run `htmlview serve --help` for complete examples",
+        commandHelp("htmlview serve --help", format, "for complete examples"),
       );
     }
   }
@@ -210,7 +222,7 @@ function parseServe(
       "usage.missing_argument",
       "Missing required argument <entry.html> for `htmlview serve`",
       { usage: "htmlview serve <entry.html> [--root <directory>] [--json]" },
-      "Run `htmlview serve --help` for complete examples",
+      commandHelp("htmlview serve --help", format, "for complete examples"),
     );
   }
   return {
@@ -233,7 +245,7 @@ function parseStop(
     if (argument === "--help") help = true;
     else if (argument === "--all") all = true;
     else if (argument.startsWith("-"))
-      return unknownFlag(argument, "htmlview stop", stopFlags);
+      return unknownFlag(argument, "htmlview stop", stopFlags, format);
     else if (session === undefined) session = argument;
     else {
       return usageFailure(
@@ -243,7 +255,7 @@ function parseStop(
           usage:
             "htmlview stop <session> [--json] | htmlview stop --all [--json]",
         },
-        "Run `htmlview stop --help` for complete examples",
+        commandHelp("htmlview stop --help", format, "for complete examples"),
       );
     }
   }
@@ -255,7 +267,7 @@ function parseStop(
         usage:
           "htmlview stop <session> [--json] | htmlview stop --all [--json]",
       },
-      "Run `htmlview stop --help` for complete examples",
+      commandHelp("htmlview stop --help", format, "for complete examples"),
     );
   }
   if (!all && session === undefined && !help) {
@@ -266,7 +278,7 @@ function parseStop(
         usage:
           "htmlview stop <session> [--json] | htmlview stop --all [--json]",
       },
-      "Run `htmlview stop --help` for complete examples",
+      commandHelp("htmlview stop --help", format, "for complete examples"),
     );
   }
   return {

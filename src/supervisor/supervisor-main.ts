@@ -4,7 +4,12 @@ import { startSupervisor } from "./server.js";
 
 const paths = statePaths();
 await ensurePrivateStateDirectory(paths);
-const supervisor = await startSupervisor({ paths });
+const supervisor = await startSupervisor({
+  paths,
+  ...(process.env.HTMLVIEW_SUPERVISOR_LOCK_NONCE === undefined
+    ? {}
+    : { ownershipNonce: process.env.HTMLVIEW_SUPERVISOR_LOCK_NONCE }),
+});
 
 let stopping = false;
 async function stop(): Promise<void> {

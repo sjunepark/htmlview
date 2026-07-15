@@ -5,7 +5,7 @@
 `htmlview` converts a local HTML entry and an explicitly granted directory root
 into a byte-faithful loopback HTTP URL. An agent passes that URL to any
 separately supplied browser controller. Documentation may use
-[`agent-browser`](https://github.com/vercel-labs/agent-browser) as an example,
+[Browser Use](https://github.com/browser-use/browser-harness) as an example,
 but no controller is privileged by the architecture.
 
 The core owns local path validation, static HTTP serving, session lifecycle,
@@ -31,7 +31,7 @@ htmlview client
   |  \
   |   +-- result encoder --> stdout: TOON (default) / JSON
   |
-  +-- authenticated control channel --+
+  +-- private Unix control socket -----+
                                         |
                                per-user supervisor
                                         |
@@ -67,7 +67,7 @@ The command surface is intentionally small:
 - `htmlview serve <entry.html> [--root <directory>]` creates or reuses a
   session and returns its raw URL.
 - `htmlview stop <session>` stops one session.
-- `htmlview stop --all` stops all sessions and allows the supervisor to exit.
+- `htmlview stop --all` stops all sessions and the supervisor.
 
 With no command, the client renders a content-first home view containing its
 executable identity, a definitive session count, minimal live session rows,
@@ -77,34 +77,35 @@ owns the complete public contract.
 
 ### Per-user supervisor
 
-Owns one authenticated loopback control endpoint and multiple independent
-content sessions. Each content session gets an automatically allocated
+Owns one operating-system-user-private Unix-domain control socket and multiple
+independent content sessions. Each content session gets an automatically allocated
 loopback port and a fresh random name beneath `.localhost`, so its serving root
 is also its HTTP origin root. This preserves authored root-relative URLs
 without adding a session prefix to document paths.
 
-The CLI discovers or starts the supervisor, authenticates over the control
-channel, and waits until the requested content listener is ready before
-returning.
+The CLI discovers or starts the supervisor at a deterministic socket path and
+waits until the requested content listener is ready before returning. Bounded
+health retries preserve ownership when a live supervisor is temporarily
+unavailable.
 
 The listener binds only to `127.0.0.1`; the unique hostname isolates cookies,
 storage, caches, and service workers and is never reused after a session stops.
-The supervisor owns concurrency, idle shutdown, stale-state recovery, and
+The supervisor owns concurrency, idle shutdown, stale-socket recovery, and
 graceful termination. It must not require a project-local process manager.
 
 ### Session registry
 
 Maps a session identifier to:
 
-- the canonical entry-file path;
+- the public entry route and canonical entry-file target;
 - the canonical serving root;
 - the dedicated content-listener address;
 - lifecycle state; and
 - timestamps needed for cleanup and diagnostics.
 
 Runtime state belongs in the user's platform-appropriate state directory, not
-in a served project. State writes must be atomic and private to the user. A
-session identifier is not an authorization mechanism for control operations.
+in a served project. The control socket and lifetime ownership lock are private
+to the user. A session identifier is not an authorization mechanism for control operations.
 The canonical root in each record is the session's complete disclosure grant.
 
 ### Static HTTP service
@@ -135,16 +136,19 @@ visible on a later request or reload without requiring a new session.
    grant.
 3. It canonicalizes the candidate root and entry independently. An entry
    symlink whose target falls outside the canonical root is rejected before
-   contacting the supervisor.
+   contacting the supervisor. Roots equal to or broader than the user home are
+   rejected.
 4. It discovers a healthy supervisor or starts one and waits for readiness.
-5. The supervisor atomically creates or reuses the session for the canonical
-   entry/root pair.
+5. The supervisor rejects a root containing its runtime state, then atomically
+   creates or reuses the session for the public entry route/canonical-root pair.
 6. The CLI returns the session state, raw URL, resolved root, and grant meaning
    as TOON or JSON, then exits.
 
 Repeating the same request is a successful no-op that returns the existing
 session. A different root is a different session because it changes
-root-relative resource resolution and the authorized file set.
+root-relative resource resolution and the authorized file set. Different
+authorized routes to one symlink target are also distinct because they change
+document-relative resolution.
 
 ### Serve a browser request
 
@@ -163,9 +167,12 @@ reach the server and remain available to the page.
 ### Stop and recover
 
 Stopping a missing or already stopped session succeeds as an idempotent no-op.
-The supervisor removes inactive sessions, closes after a bounded idle period,
-and treats stale discovery state as recoverable rather than requiring manual
-file deletion.
+`stop --all` first closes every content listener, acknowledges the result, then
+closes the supervisor; the client confirms that the old socket owner is gone.
+An empty supervisor otherwise closes after a bounded idle period. A refused
+stale socket is recovered only after acquiring the lifetime ownership lock.
+That lock remains held until the old listener has fully closed, so transient
+failures and graceful shutdown cannot trigger an overlapping replacement.
 
 ## Invariants
 
@@ -177,7 +184,7 @@ file deletion.
 3. **Loopback only.** Version one has no LAN or public bind mode.
 4. **The root is the grant.** A session may read permitted files beneath its
    canonical root and cannot read a resolved target outside it. No broader root
-   is inferred.
+   is inferred; roots containing the home or runtime state are rejected.
 5. **No source mutation.** Serving, listing, stopping, and future annotations
    never alter the served project.
 6. **Ready before output.** A successful `serve` result means its URL already
@@ -187,18 +194,26 @@ file deletion.
    internal diagnostics stay on stderr.
 8. **Explicit lifecycle.** Sessions are observable and stoppable, and abandoned
    supervisors clean themselves up.
-9. **Optional layers cannot weaken the core.** A later review or annotation
-   route may transform its own representation but cannot alter raw-route
-   behavior or security checks.
+9. **Authoritative control ownership.** One lifetime lock fences the supervisor
+   that owns the private socket. Transient control failure cannot erase or
+   replace that owner.
+10. **Optional layers cannot weaken the core.** A later review or annotation
+    route may transform its own representation but cannot alter raw-route
+    behavior or security checks.
 
 ## State and concurrency
 
-At most one healthy supervisor owns the per-user discovery record. Startup must
-use an inter-process lock or an equivalent atomic claim so concurrent agents do
-not create competing supervisors. The discovery record contains only the
-minimum control-endpoint metadata and a control credential; both the directory
-and record use user-only permissions. Content-listener host labels and ports
-belong to session state and are never caller-selected.
+At most one healthy supervisor owns the deterministic per-user control socket.
+Its directory is `0700` and the socket is `0600`; there is no persisted control
+credential. An owner-fenced inter-process lock is held for the supervisor's
+full lifetime; it serializes startup and confines stale-socket removal. Health includes protocol,
+version, instance, and process identity; mismatches are never replaced
+silently. Content-listener host labels and ports belong to session state and
+are never caller-selected.
+
+The registry permits at most 32 live sessions. Listing selects optional fields
+at the control seam, keeping complete enumeration within the bounded response
+contract without pagination.
 
 Session mutations are serialized inside the supervisor. Static file reads do
 not require registry-wide locking after a session snapshot has been validated.
@@ -222,19 +237,19 @@ origin-keyed state from concurrent services and later port reuse.
   grant.
 - `src/serving/http.ts` owns the byte-faithful confined HTTP handler and
   per-session content listener.
-- `src/supervisor/server.ts` owns authenticated control, serialized session
+- `src/supervisor/server.ts` owns private socket control, serialized session
   mutation, idle shutdown, and graceful cleanup.
 - `src/supervisor/client.ts` discovers, verifies, starts, and calls the detached
   supervisor.
-- `src/supervisor/state.ts` owns private atomic discovery state and concurrent
-  startup locking.
+- `src/supervisor/state.ts` owns private socket paths and the lifetime
+  ownership lock that also serializes startup and stale recovery.
 - `src/service.ts` translates CLI intent into grant and supervisor operations.
 - `test/` holds contract and TOON v3.3 conformance tests.
 - `validation/browser-origin/` holds browser behavior evidence and remains
   outside the runtime.
 - `validation/interoperability/` passes real CLI-returned URLs to independent
   browser controllers without adding them to the runtime.
-- `validation/package/` verifies reproducible pack/install/upgrade/uninstall
+- `validation/package/` verifies reproducible pack/install/reinstall/uninstall
   behavior on macOS/current platform and Node 22 Linux.
 
 Avoid a generic plugin or browser-adapter layer without a current second
@@ -247,5 +262,6 @@ implementation.
 - [ADR 0003: Adopt an AXI output contract](docs/decisions/0003-adopt-an-axi-output-contract.md)
 - [ADR 0004: Treat the serving root as a disclosure grant](docs/decisions/0004-treat-the-serving-root-as-a-disclosure-grant.md)
 - [ADR 0005: Use Node.js, TypeScript, and npm packaging](docs/decisions/0005-use-node-typescript-and-npm-packaging.md)
+- [ADR 0006: Use a private Unix-domain control socket](docs/decisions/0006-use-a-private-control-socket.md)
 - [Agent-facing CLI contract](docs/CLI.md)
 - [Threat model](docs/THREAT_MODEL.md)

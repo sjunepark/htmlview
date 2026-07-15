@@ -16,7 +16,7 @@ static HTTP service. It does not claim that rendered HTML is safe.
 - Files inside the chosen root, which may contain secrets despite being inside
   the disclosure boundary
 - Canonical local paths, which may themselves be sensitive
-- The control credential and supervisor discovery state
+- The private control socket and supervisor ownership state
 - Availability of the user's machine and agent session
 - Browser credentials, local-network access, and data reachable by page scripts
 
@@ -35,7 +35,7 @@ static HTTP service. It does not claim that rendered HTML is safe.
 ## Boundaries
 
 1. CLI input crosses from the caller into local path and command validation.
-2. The CLI crosses an authenticated local control channel into the supervisor.
+2. The CLI crosses a user-private Unix-domain control socket into the supervisor.
 3. Browsers cross an unauthenticated, per-session HTTP content origin.
 4. The HTTP service crosses from URL paths into the local filesystem.
 5. Authored page scripts cross from local content into the browser's network,
@@ -57,17 +57,19 @@ static HTTP service. It does not claim that rendered HTML is safe.
 - **Unintended in-root disclosure.** Treat the root as the complete disclosure
   grant, never infer a directory broader than the entry's parent, and return
   the exact resolved root and grant meaning from `serve`. Do not imply that a
-  dotfile or sensitive-filename denylist protects files inside the root.
-- **Unauthorized control or CSRF.** Require a separate high-entropy control
-  credential on every mutation and sensitive query. Do not rely on HTTP
-  method, CORS, `Origin`, or route secrecy alone.
+  dotfile or sensitive-filename denylist protects files inside the root. Reject
+  roots equal to or broader than the user home and roots containing runtime
+  state.
+- **Unauthorized control or CSRF.** Keep control on a `0600` Unix-domain socket
+  beneath a current-user-owned `0700` directory. Browsers cannot address it;
+  do not expose a TCP control route or rely on CORS, `Origin`, or route secrecy.
 - **Plain and encoded traversal.** Decode once, reject malformed encodings and
   forbidden separators, resolve the final target, and enforce canonical root
   containment.
 - **Symlink escape.** Authorize the resolved target, not only the lexical path.
   Re-check safely when opening to limit check/use races.
-- **State theft or tampering.** Store discovery state and credentials in a
-  user-private directory with restrictive file permissions and atomic writes.
+- **State theft or tampering.** Keep the control socket and owner-fenced
+  lifetime lock in a user-private directory with restrictive permissions.
 - **Source modification.** Open content read-only and never place state,
   generated files, or annotations under the serving root.
 - **Resource exhaustion.** Bound headers, request concurrency, request
@@ -79,9 +81,10 @@ static HTTP service. It does not claim that rendered HTML is safe.
   and JSON libraries. Never interpolate paths, error text, or source-derived
   strings into structured output. Test delimiters, newlines, controls, Unicode,
   and terminal escape characters in both formats.
-- **Stale or hijacked supervisor.** Verify service identity through the
-  authenticated health contract; recover stale records without killing an
-  unrelated process.
+- **Stale or hijacked supervisor.** Verify protocol, version, instance, and
+  process identity through health. Retry transient failures without removing
+  ownership; reclaim a refused stale socket only after acquiring the lifetime
+  ownership lock held by every live supervisor.
 - **Browser-state collision.** Cookies are shared across ports and exact origin
   reuse revives storage, caches, and service workers. Give every new session a
   never-reused random `.localhost` label with at least 128 bits of entropy.
@@ -127,10 +130,10 @@ maintained in [Security validation evidence](SECURITY_VALIDATION.md).
 - Malicious same-origin requests for unreferenced, hidden, and sensitive files
   inside the selected root, confirming the documented grant rather than a
   nonexistent filename denylist
-- Forged `Host`, cross-origin `fetch`, form posts, and unauthenticated control
-  calls
-- Concurrent first startup, corrupted state, stale PIDs, occupied ports, and
-  supervisor crashes
+- Forged `Host`, cross-origin `fetch`, form posts, and wrong-authority control
+  calls over the private socket
+- Concurrent first startup, malformed or occupied socket paths, stale sockets,
+  version mismatch, and supervisor crashes
 - Very large files, slow readers, excessive connections, and aborted requests
 - Files outside an explicit root and symlinks resolving to them
 - Concurrent sessions and an unrelated loopback service setting overlapping
@@ -143,8 +146,8 @@ maintained in [Security validation evidence](SECURITY_VALIDATION.md).
 ## Residual risks
 
 - Another process running as the same operating-system user can generally read
-  the same files and runtime credentials; `htmlview` is not a privilege
-  boundary within one user account.
+  the same files and open the same private socket; `htmlview` is not a
+  privilege boundary within one user account.
 - The page and any same-origin script can read and exfiltrate permitted files
   inside the selected root. Confinement protects the boundary, not files within
   it.

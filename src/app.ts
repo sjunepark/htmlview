@@ -139,10 +139,15 @@ function runtimeHelp(error: OperationError, parsed: ParsedCommand): string[] {
     return [
       `Run \`htmlview serve --help${jsonSuffix}\` to review entry and root requirements`,
     ];
-  if (error.code === "state.unavailable")
-    return [
-      `Run \`htmlview${jsonSuffix}\` after correcting runtime-state permissions`,
-    ];
+  if (error.code === "state.unavailable") {
+    const command =
+      parsed.kind === "serve"
+        ? `htmlview serve <entry.html>${parsed.root === undefined ? "" : " --root <directory>"}${jsonSuffix}`
+        : parsed.kind === "stop"
+          ? `htmlview stop${parsed.all ? " --all" : " <session>"}${jsonSuffix}`
+          : `htmlview${parsed.kind === "home" && parsed.fields.length > 0 ? ` --fields ${parsed.fields.join(",")}` : ""}${jsonSuffix}`;
+    return [`Run \`${command}\` after correcting runtime-state permissions`];
+  }
   if (
     parsed.kind === "serve" &&
     (error.code.startsWith("http.") || error.code === "supervisor.start_failed")
@@ -152,6 +157,14 @@ function runtimeHelp(error: OperationError, parsed: ParsedCommand): string[] {
       `Run \`htmlview serve <entry.html>${rootSuffix}${jsonSuffix}\` to retry`,
     ];
   }
+  if (error.code === "control.session_limit")
+    return [
+      `Run \`htmlview stop <session>${jsonSuffix}\` before serving another entry`,
+    ];
+  if (error.code === "supervisor.incompatible")
+    return [
+      `Run \`htmlview stop --all${jsonSuffix}\` before retrying this command`,
+    ];
   return [...error.help];
 }
 
@@ -180,7 +193,7 @@ export async function runApp(
     } else if (parsed.kind === "home") {
       result = homeResult(
         context.executablePath,
-        await context.service.listSessions(),
+        await context.service.listSessions(parsed.fields),
         parsed.fields,
         parsed.format === "json",
       );
@@ -190,7 +203,14 @@ export async function runApp(
         `Run \`htmlview stop <session>${parsed.format === "json" ? " --json" : ""}\` to stop this session`,
       ];
     } else {
-      result = await context.service.stop(parsed.session, parsed.all);
+      if (parsed.all) result = await context.service.stopAll();
+      else if (parsed.session !== undefined)
+        result = await context.service.stopSession(parsed.session);
+      else
+        throw new OperationError(
+          "runtime.internal",
+          "htmlview could not resolve the stop target",
+        );
     }
     context.stdout(serialize(result, parsed.format));
     return 0;

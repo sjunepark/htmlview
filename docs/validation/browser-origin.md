@@ -1,8 +1,8 @@
 # Browser-origin validation
 
 Validated on 2026-07-15 with Playwright 1.61.1 (Chromium) and independently
-installed `agent-browser` 0.31.2. Both controllers consumed an ordinary HTTP
-URL; neither supplies serving behavior to `htmlview`.
+installed Browser Use 0.1.5 connected to Chrome. Both controllers consumed an
+ordinary HTTP URL; neither supplies serving behavior to `htmlview`.
 
 ## Direct-file fixture matrix
 
@@ -33,4 +33,4 @@ references, is the disclosure boundary.
   mutated, so per-session numeric addresses were rejected.
 
 Run `npm run validate:browser-origin` for the state and direct-file matrix and
-`npm run validate:agent-browser` for the second-controller HTTP check.
+`npm run validate:browser-use` for the second-controller HTTP check.

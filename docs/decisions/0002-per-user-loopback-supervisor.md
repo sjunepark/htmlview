@@ -13,21 +13,21 @@ Multiple projects may be inspected concurrently.
 ## Decision
 
 Run one on-demand supervisor per operating-system user. It exposes an
-authenticated loopback control endpoint and manages multiple sessions. Each
-session receives its own ephemeral content listener bound to numeric loopback.
+operating-system-user-private Unix-domain control socket and manages multiple
+sessions. Each session receives its own ephemeral content listener bound to
+numeric loopback.
 
 The returned URL retains the entry file's path relative to the selected root.
 Because the session owns the whole content origin, document-relative and
 root-relative references resolve naturally without rewriting HTML or prefixing
 paths with a session identifier.
 
-CLI invocations discover or start the supervisor through private runtime state,
-authenticate control requests, and wait for confirmed readiness. The
-supervisor owns session lifecycle, stale-state recovery, and bounded idle
-shutdown.
-
-Control authorization uses a private credential and never depends on a session
-identifier, port number, or content URL remaining secret.
+CLI invocations discover or start the supervisor at its deterministic private
+socket and wait for confirmed readiness. The supervisor owns session
+lifecycle, stale-socket recovery, and bounded idle shutdown.
+[ADR 0006](0006-use-a-private-control-socket.md) records the control ownership
+and failure semantics; control never depends on a
+session identifier, port number, or content URL remaining secret.
 
 Each new session receives a cryptographically random, never-reused hostname
 under the special-use `.localhost` name and an ephemeral port, for example
@@ -48,7 +48,7 @@ show that cookies cross ports on one numeric host and that exact origin reuse
 revives local storage, cached responses, and a service worker. A fresh
 `.localhost` label isolates all four even when the port is reused; a cookie
 attempting `Domain=localhost` is rejected. The same fixture loads through both
-Playwright and `agent-browser`. The complete fixture matrix is recorded in
+Playwright and Browser Use. The complete fixture matrix is recorded in
 [`docs/validation/browser-origin.md`](../validation/browser-origin.md).
 
 ## Consequences
@@ -60,7 +60,7 @@ Playwright and `agent-browser`. The complete fixture matrix is recorded in
 - Returned URLs use a special-use loopback hostname rather than a numeric host;
   compatibility with supported plain HTTP clients and browser controllers is a
   release gate.
-- Startup requires careful locking, state permissions, and stale-record
+- Startup requires careful locking, socket permissions, and stale-socket
   recovery.
 - A supervisor failure temporarily affects all sessions, but the next CLI call
   can recover them from caller intent without modifying project files.

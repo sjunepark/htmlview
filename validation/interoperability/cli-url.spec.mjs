@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { lstat, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
@@ -11,13 +11,11 @@ const execute = promisify(execFile);
 test("a separate browser controller consumes the URL returned by htmlview", async ({
   page,
 }) => {
-  const stateParent = await mkdtemp(
-    path.join(tmpdir(), "htmlview-playwright-interoperability-"),
-  );
+  const stateParent = await mkdtemp(path.join(tmpdir(), "hv-interop-"));
   const environment = {
     ...process.env,
     HTMLVIEW_STATE_DIR: path.join(stateParent, "state"),
-    HTMLVIEW_IDLE_MS: "50",
+    HTMLVIEW_IDLE_MS: "1000",
   };
   delete environment.NO_COLOR;
   delete environment.FORCE_COLOR;
@@ -27,7 +25,12 @@ test("a separate browser controller consumes the URL returned by htmlview", asyn
       process.execPath,
       [cli, "serve", entryPath, "--root", fixtureRoot, "--json"],
       { env: environment },
-    );
+    ).catch((error) => {
+      throw new Error(
+        `htmlview serve failed: stdout=${JSON.stringify(error.stdout)} stderr=${JSON.stringify(error.stderr)}`,
+        { cause: error },
+      );
+    });
     const result = JSON.parse(served.stdout);
     const session = result.session;
     expect(served.stderr).toBe("");
@@ -48,10 +51,10 @@ test("a separate browser controller consumes the URL returned by htmlview", asyn
     await execute(process.execPath, [cli, "stop", "--all", "--json"], {
       env: environment,
     }).catch(() => undefined);
-    const discovery = path.join(stateParent, "state", "supervisor.json");
+    const controlSocket = path.join(stateParent, "state", "control.sock");
     const deadline = Date.now() + 2_000;
     while (Date.now() < deadline) {
-      const present = await readFile(discovery)
+      const present = await lstat(controlSocket)
         .then(() => true)
         .catch(() => false);
       if (!present) break;

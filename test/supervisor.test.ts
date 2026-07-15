@@ -1,29 +1,36 @@
 import assert from "node:assert/strict";
+import { spawn } from "node:child_process";
+import { once } from "node:events";
 import {
+  lstat,
   mkdir,
   mkdtemp,
-  readFile,
+  realpath,
   readdir,
   rm,
   stat,
+  utimes,
   writeFile,
 } from "node:fs/promises";
 import { request } from "node:http";
+import { createServer as createNetServer } from "node:net";
 import { homedir, tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, it } from "node:test";
 import { resolveServingGrant } from "../src/serving/grant.js";
 import { startStaticServer } from "../src/serving/http.js";
 import { SupervisorClient } from "../src/supervisor/client.js";
-import { supervisorProtocol } from "../src/supervisor/protocol.js";
+import {
+  controlHost,
+  maximumConcurrentSessions,
+} from "../src/supervisor/protocol.js";
 import {
   startSupervisor,
   type RunningSupervisor,
 } from "../src/supervisor/server.js";
 import {
-  acquireStartupLock,
+  acquireSupervisorLock,
   ensurePrivateStateDirectory,
-  readDiscovery,
   statePaths,
   writePrivateJson,
   type StatePaths,
@@ -38,7 +45,20 @@ async function temporaryDirectory(prefix: string): Promise<string> {
   return directory;
 }
 
-async function setup(idleMilliseconds = 10_000): Promise<{
+async function socketExists(paths: StatePaths): Promise<boolean> {
+  return lstat(paths.controlSocket)
+    .then(() => true)
+    .catch(() => false);
+}
+
+async function setup(
+  options: {
+    readonly idleMilliseconds?: number;
+    readonly maximumSessions?: number;
+    readonly version?: string;
+    readonly beforeHealth?: () => Promise<void>;
+  } = {},
+): Promise<{
   paths: StatePaths;
   supervisor: RunningSupervisor;
   client: SupervisorClient;
@@ -48,7 +68,17 @@ async function setup(idleMilliseconds = 10_000): Promise<{
   const state = await temporaryDirectory("htmlview-state-parent-");
   const paths = statePaths({ HTMLVIEW_STATE_DIR: path.join(state, "state") });
   await ensurePrivateStateDirectory(paths);
-  const supervisor = await startSupervisor({ paths, idleMilliseconds });
+  const supervisor = await startSupervisor({
+    paths,
+    idleMilliseconds: options.idleMilliseconds ?? 10_000,
+    ...(options.maximumSessions === undefined
+      ? {}
+      : { maximumSessions: options.maximumSessions }),
+    ...(options.version === undefined ? {} : { version: options.version }),
+    ...(options.beforeHealth === undefined
+      ? {}
+      : { beforeHealth: options.beforeHealth }),
+  });
   supervisors.push(supervisor);
   const root = await temporaryDirectory("htmlview-session-");
   const entry = path.join(root, "report.html");
@@ -62,11 +92,53 @@ async function setup(idleMilliseconds = 10_000): Promise<{
   };
 }
 
+function controlRequest(
+  paths: StatePaths,
+  method: "GET" | "POST",
+  route: string,
+  body?: unknown,
+  host = controlHost,
+): Promise<{ status: number; value: unknown }> {
+  return new Promise((resolve, reject) => {
+    const payload =
+      body === undefined ? undefined : Buffer.from(JSON.stringify(body));
+    const operation = request(
+      {
+        socketPath: paths.controlSocket,
+        method,
+        path: route,
+        headers: {
+          host,
+          ...(payload === undefined
+            ? {}
+            : {
+                "content-type": "application/json",
+                "content-length": String(payload.length),
+              }),
+        },
+      },
+      (response) => {
+        const chunks: Buffer[] = [];
+        response.on("data", (chunk: Buffer) => chunks.push(chunk));
+        response.on("end", () => {
+          const text = Buffer.concat(chunks).toString("utf8");
+          resolve({
+            status: response.statusCode ?? 0,
+            value: text === "" ? undefined : JSON.parse(text),
+          });
+        });
+      },
+    );
+    operation.once("error", reject);
+    if (payload !== undefined) operation.write(payload);
+    operation.end();
+  });
+}
+
 afterEach(async () => {
   await Promise.all(
     supervisors.splice(0).map((supervisor) => supervisor.close()),
   );
-  const { rm } = await import("node:fs/promises");
   await Promise.all(
     temporaryDirectories
       .splice(0)
@@ -75,9 +147,39 @@ afterEach(async () => {
 });
 
 describe("supervisor lifecycle", () => {
-  it("creates and reuses one ready session for concurrent matching requests", async () => {
-    const { client, root, entry, supervisor } = await setup();
-    assert.equal(supervisor.controlAddress, "127.0.0.1");
+  it("converges concurrent first startup on one healthy owner", async () => {
+    const parent = await temporaryDirectory("htmlview-first-start-");
+    const paths = statePaths({
+      HTMLVIEW_STATE_DIR: path.join(parent, "state"),
+    });
+    const root = await temporaryDirectory("htmlview-first-entry-");
+    const entry = path.join(root, "report.html");
+    await writeFile(entry, "first startup");
+    let starts = 0;
+    const start = async (_: StatePaths, ownershipNonce: string) => {
+      starts += 1;
+      supervisors.push(await startSupervisor({ paths, ownershipNonce }));
+    };
+    const firstClient = new SupervisorClient(paths, start);
+    const secondClient = new SupervisorClient(paths, start);
+
+    const [first, second] = await Promise.all([
+      firstClient.serve(entry, root),
+      secondClient.serve(entry, root),
+    ]);
+    assert.equal(starts, 1);
+    assert.equal(first.session.id, second.session.id);
+    assert.equal((await secondClient.list()).length, 1);
+  });
+
+  it("creates one private control socket and reuses matching sessions", async () => {
+    const { client, root, entry, supervisor, paths } = await setup();
+    assert.equal(supervisor.controlAddress, paths.controlSocket);
+    const socketMetadata = await lstat(paths.controlSocket);
+    assert.equal(socketMetadata.isSocket(), true);
+    assert.equal(socketMetadata.mode & 0o777, 0o600);
+    assert.equal((await stat(paths.directory)).mode & 0o777, 0o700);
+
     const results = await Promise.all([
       client.serve(entry, root),
       client.serve(entry, root),
@@ -87,14 +189,14 @@ describe("supervisor lifecycle", () => {
     assert.equal(new Set(results.map((result) => result.session.url)).size, 1);
     assert.equal(results.filter((result) => result.reused).length, 2);
     assert.equal((await client.list()).length, 1);
-
-    const response = await fetch(results[0]?.session.url ?? "");
-    assert.equal(response.status, 200);
-    assert.equal(await response.text(), "<!doctype html><p>session</p>");
+    assert.equal(
+      await fetch(results[0]?.session.url ?? "").then((value) => value.text()),
+      "<!doctype html><p>session</p>",
+    );
   });
 
-  it("keeps independent roots in simultaneous sessions and stops idempotently", async () => {
-    const { client, root, entry } = await setup();
+  it("stops sessions idempotently and makes stop-all a complete shutdown", async () => {
+    const { client, root, entry, paths } = await setup();
     const otherRoot = await temporaryDirectory("htmlview-session-other-");
     const otherEntry = path.join(otherRoot, "other.html");
     await writeFile(otherEntry, "other");
@@ -103,56 +205,39 @@ describe("supervisor lifecycle", () => {
       client.serve(otherEntry, otherRoot),
     ]);
     assert.notEqual(first.session.id, second.session.id);
-    assert.notEqual(
-      new URL(first.session.url).hostname,
-      new URL(second.session.url).hostname,
+    assert.equal((await client.stopSession(first.session.id)).stopped, 1);
+    assert.equal((await client.stopSession(first.session.id)).stopped, 0);
+    assert.equal((await client.stopAll()).stopped, 1);
+    assert.equal(await socketExists(paths), false);
+    await assert.rejects(fetch(second.session.url));
+    assert.equal((await client.stopAll()).stopped, 0);
+  });
+
+  it("uses the private socket directory for authorization", async () => {
+    const { paths } = await setup();
+    assert.equal(
+      (await controlRequest(paths, "GET", "/sessions", undefined, "wrong"))
+        .status,
+      401,
     );
-    assert.equal((await client.stop(first.session.id)).stopped, 1);
-    assert.equal((await client.stop(first.session.id)).stopped, 0);
-    assert.equal((await client.stop(undefined, true)).stopped, 1);
-    assert.equal((await client.stop(undefined, true)).stopped, 0);
+    assert.equal((await controlRequest(paths, "GET", "/sessions")).status, 200);
+    assert.deepEqual((await readdir(paths.directory)).sort(), [
+      "control.sock",
+      "supervisor.lock",
+    ]);
   });
 
-  it("requires the private credential on control operations", async () => {
-    const { supervisor } = await setup();
-    for (const [method, route] of [
-      ["GET", "/sessions"],
-      ["POST", "/stop"],
-    ] as const) {
-      const status = await new Promise<number>((resolve, reject) => {
-        const operation = request(
-          {
-            hostname: "127.0.0.1",
-            port: supervisor.discovery.port,
-            method,
-            path: route,
-            headers: { host: `127.0.0.1:${supervisor.discovery.port}` },
-          },
-          (response) => {
-            response.resume();
-            response.on("end", () => resolve(response.statusCode ?? 0));
-          },
-        );
-        operation.once("error", reject);
-        operation.end();
-      });
-      assert.equal(status, 401);
-    }
-  });
-
-  it("rejects oversized authenticated control bodies", async () => {
-    const { supervisor } = await setup();
+  it("rejects oversized control bodies", async () => {
+    const { paths } = await setup();
     const status = await new Promise<number>((resolve, reject) => {
       const payload = Buffer.alloc(65 * 1024, 0x20);
       const operation = request(
         {
-          hostname: "127.0.0.1",
-          port: supervisor.discovery.port,
+          socketPath: paths.controlSocket,
           method: "POST",
           path: "/sessions",
           headers: {
-            host: `127.0.0.1:${supervisor.discovery.port}`,
-            authorization: `Bearer ${supervisor.discovery.token}`,
+            host: controlHost,
             "content-length": String(payload.length),
           },
         },
@@ -167,40 +252,74 @@ describe("supervisor lifecycle", () => {
     assert.equal(status, 413);
   });
 
-  it("stores private state outside the served root", async () => {
-    const { paths, client, root, entry, supervisor } = await setup();
+  it("keeps control state outside an ordinary served root", async () => {
+    const { paths, client, root, entry } = await setup();
     await client.serve(entry, root);
-    assert.match(supervisor.discovery.token, /^[A-Za-z0-9_-]{43}$/);
-    assert.equal((await stat(paths.directory)).mode & 0o777, 0o700);
-    assert.equal((await stat(paths.discovery)).mode & 0o777, 0o600);
-    assert.deepEqual((await readdir(root)).sort(), ["report.html"]);
+    assert.deepEqual(await readdir(root), ["report.html"]);
+    assert.deepEqual((await readdir(paths.directory)).sort(), [
+      "control.sock",
+      "supervisor.lock",
+    ]);
   });
 
-  it("removes its discovery record after bounded idle shutdown", async () => {
-    const { paths } = await setup(30);
+  it("rejects a serving root that contains configured runtime state", async () => {
+    const root = await temporaryDirectory("htmlview-state-overlap-");
+    const paths = statePaths({
+      HTMLVIEW_STATE_DIR: path.join(root, "runtime-state"),
+    });
+    const entry = path.join(root, "report.html");
+    await writeFile(entry, "<!doctype html>");
+    let starts = 0;
+    const client = new SupervisorClient(paths, async () => {
+      starts += 1;
+    });
+    await assert.rejects(client.serve(entry, await realpath(root)), {
+      code: "path.root_contains_state",
+    });
+    assert.equal(starts, 0);
+    await assert.rejects(lstat(paths.directory));
+    assert.deepEqual(await readdir(root), ["report.html"]);
+  });
+
+  it("revalidates runtime-state overlap at the supervisor seam", async () => {
+    const root = await temporaryDirectory("hv-state-recheck-");
+    const paths = statePaths({
+      HTMLVIEW_STATE_DIR: path.join(root, "runtime-state"),
+    });
+    const entry = path.join(root, "report.html");
+    await writeFile(entry, "<!doctype html>");
+    const supervisor = await startSupervisor({ paths });
+    supervisors.push(supervisor);
+    const response = await controlRequest(paths, "POST", "/sessions", {
+      entry,
+      root,
+    });
+    assert.equal(response.status, 400);
+    assert.equal(
+      (response.value as { error: { code: string } }).error.code,
+      "path.root_contains_state",
+    );
+  });
+
+  it("removes the control socket after bounded idle shutdown", async () => {
+    const { paths } = await setup({ idleMilliseconds: 30 });
     const deadline = Date.now() + 2_000;
-    while (
-      (await readDiscovery(paths)) !== undefined &&
-      Date.now() < deadline
-    ) {
+    while ((await socketExists(paths)) && Date.now() < deadline)
       await new Promise((resolve) => setTimeout(resolve, 20));
-    }
-    assert.equal(await readDiscovery(paths), undefined);
+    assert.equal(await socketExists(paths), false);
   });
 
-  it("does not shut down while an authenticated request body is in flight", async () => {
-    const { paths, supervisor, root, entry } = await setup(100);
+  it("does not shut down while a request body is in flight", async () => {
+    const { paths, root, entry } = await setup({ idleMilliseconds: 100 });
     const response = new Promise<{ status: number; body: unknown }>(
       (resolve, reject) => {
         const operation = request(
           {
-            hostname: "127.0.0.1",
-            port: supervisor.discovery.port,
+            socketPath: paths.controlSocket,
             method: "POST",
             path: "/sessions",
             headers: {
-              host: `127.0.0.1:${supervisor.discovery.port}`,
-              authorization: `Bearer ${supervisor.discovery.token}`,
+              host: controlHost,
               "content-type": "application/json",
             },
           },
@@ -223,17 +342,16 @@ describe("supervisor lifecycle", () => {
 
     const result = await response;
     assert.equal(result.status, 200);
-    assert.notEqual(await readDiscovery(paths), undefined);
+    assert.equal(await socketExists(paths), true);
     const session = (result.body as { session: { url: string } }).session;
     assert.equal(await fetch(session.url).then((value) => value.status), 200);
   });
 
   it("forces a bounded shutdown when a control client stalls", async () => {
     const { paths } = await setup();
-    const supervisor = supervisors.pop();
-    assert.notEqual(supervisor, undefined);
-    await supervisor?.close();
-
+    const current = supervisors.pop();
+    assert.notEqual(current, undefined);
+    await current?.close();
     const bounded = await startSupervisor({
       paths,
       idleMilliseconds: 10_000,
@@ -241,14 +359,10 @@ describe("supervisor lifecycle", () => {
     });
     supervisors.push(bounded);
     const operation = request({
-      hostname: "127.0.0.1",
-      port: bounded.discovery.port,
+      socketPath: paths.controlSocket,
       method: "POST",
       path: "/sessions",
-      headers: {
-        host: `127.0.0.1:${bounded.discovery.port}`,
-        authorization: `Bearer ${bounded.discovery.token}`,
-      },
+      headers: { host: controlHost },
     });
     operation.on("error", () => undefined);
     operation.write('{"entry":"unfinished');
@@ -258,6 +372,283 @@ describe("supervisor lifecycle", () => {
     await bounded.close();
     assert.ok(Date.now() - started < 500);
     operation.destroy();
+  });
+
+  it("preserves ownership when a live supervisor is temporarily unavailable", async () => {
+    let stallHealth = false;
+    let releaseHealth = (): void => undefined;
+    const healthGate = new Promise<void>((resolve) => {
+      releaseHealth = resolve;
+    });
+    const { paths, client, root, entry } = await setup({
+      beforeHealth: async () => {
+        if (stallHealth) await healthGate;
+      },
+    });
+    const served = await client.serve(entry, root);
+    let replacementStarts = 0;
+    const guardedClient = new SupervisorClient(paths, async () => {
+      replacementStarts += 1;
+    });
+    stallHealth = true;
+
+    await assert.rejects(guardedClient.list(), {
+      code: "supervisor.unavailable",
+    });
+    await assert.rejects(guardedClient.serve(entry, root), {
+      code: "supervisor.unavailable",
+    });
+    assert.equal(replacementStarts, 0);
+    assert.equal(await socketExists(paths), true);
+    assert.equal(
+      await fetch(served.session.url).then((value) => value.status),
+      200,
+    );
+
+    stallHealth = false;
+    releaseHealth();
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    assert.equal((await client.stopAll()).stopped, 1);
+  });
+
+  it("does not replace a live foreign owner of the control socket", async () => {
+    const parent = await temporaryDirectory("htmlview-foreign-socket-");
+    const paths = statePaths({
+      HTMLVIEW_STATE_DIR: path.join(parent, "state"),
+    });
+    await ensurePrivateStateDirectory(paths);
+    const foreignSockets = new Set<import("node:net").Socket>();
+    const foreign = createNetServer((socket) => {
+      foreignSockets.add(socket);
+      socket.once("close", () => foreignSockets.delete(socket));
+      socket.end(
+        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 2\r\n\r\n{}",
+      );
+    });
+    await new Promise<void>((resolve, reject) => {
+      foreign.once("error", reject);
+      foreign.listen(paths.controlSocket, resolve);
+    });
+    const original = await lstat(paths.controlSocket);
+    let replacementStarts = 0;
+    const client = new SupervisorClient(paths, async () => {
+      replacementStarts += 1;
+    });
+    const root = await temporaryDirectory("htmlview-foreign-entry-");
+    const entry = path.join(root, "report.html");
+    await writeFile(entry, "foreign owner remains");
+
+    try {
+      await assert.rejects(client.list(), { code: "supervisor.unavailable" });
+      await assert.rejects(client.serve(entry, root), {
+        code: "supervisor.unavailable",
+      });
+      const current = await lstat(paths.controlSocket);
+      assert.equal(current.ino, original.ino);
+      assert.equal(replacementStarts, 0);
+    } finally {
+      for (const socket of foreignSockets) socket.destroy();
+      await new Promise<void>((resolve, reject) =>
+        foreign.close((error) =>
+          error === undefined ? resolve() : reject(error),
+        ),
+      );
+    }
+  });
+
+  it("waits for graceful ownership release before starting a replacement", async () => {
+    const { paths, supervisor, root, entry } = await setup();
+    const held = request({
+      socketPath: paths.controlSocket,
+      method: "POST",
+      path: "/sessions",
+      headers: { host: controlHost },
+    });
+    held.on("error", () => undefined);
+    held.write('{"entry":"unfinished');
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    const closing = supervisor.close();
+    const replacementClient = new SupervisorClient(
+      paths,
+      async (_, ownershipNonce) => {
+        supervisors.push(await startSupervisor({ paths, ownershipNonce }));
+      },
+    );
+    const replacement = replacementClient.serve(entry, root);
+    await closing;
+    held.destroy();
+    const served = await replacement;
+
+    assert.equal(await socketExists(paths), true);
+    assert.equal((await replacementClient.list()).length, 1);
+    assert.equal(
+      await fetch(served.session.url).then((response) => response.status),
+      200,
+    );
+  });
+
+  it("makes stop-all clean a stale socket and dead ownership lock", async () => {
+    const parent = await temporaryDirectory("htmlview-stale-stop-");
+    const paths = statePaths({
+      HTMLVIEW_STATE_DIR: path.join(parent, "state"),
+    });
+    await ensurePrivateStateDirectory(paths);
+    const child = spawn(
+      process.execPath,
+      [
+        "-e",
+        `const fs=require('fs');const net=require('net');fs.mkdirSync(${JSON.stringify(paths.supervisorLock)},{mode:448});fs.writeFileSync(${JSON.stringify(path.join(paths.supervisorLock, "owner.json"))},JSON.stringify({pid:process.pid,nonce:'d'.repeat(32)}),{mode:384});const s=net.createServer();s.listen(${JSON.stringify(paths.controlSocket)},()=>process.stdout.write('ready'));setInterval(()=>{},1000)`,
+      ],
+      { stdio: ["ignore", "pipe", "ignore"] },
+    );
+    await once(child.stdout, "data");
+    child.kill("SIGKILL");
+    await once(child, "exit");
+
+    assert.equal((await new SupervisorClient(paths).stopAll()).stopped, 0);
+    assert.equal(await socketExists(paths), false);
+    await assert.rejects(lstat(paths.supervisorLock));
+  });
+
+  it("recovers a stale socket left by a killed supervisor", async () => {
+    const parent = await temporaryDirectory("htmlview-stale-socket-");
+    const paths = statePaths({
+      HTMLVIEW_STATE_DIR: path.join(parent, "state"),
+    });
+    await ensurePrivateStateDirectory(paths);
+    const child = spawn(
+      process.execPath,
+      [
+        "-e",
+        `const net=require('node:net');const s=net.createServer();s.listen(${JSON.stringify(paths.controlSocket)},()=>process.stdout.write('ready'));setInterval(()=>{},1000)`,
+      ],
+      { stdio: ["ignore", "pipe", "ignore"] },
+    );
+    await once(child.stdout, "data");
+    child.kill("SIGKILL");
+    await once(child, "exit");
+    assert.equal((await lstat(paths.controlSocket)).isSocket(), true);
+
+    const root = await temporaryDirectory("htmlview-stale-entry-");
+    const entry = path.join(root, "report.html");
+    await writeFile(entry, "recovered");
+    const client = new SupervisorClient(paths, async (_, ownershipNonce) => {
+      supervisors.push(await startSupervisor({ paths, ownershipNonce }));
+    });
+    const result = await client.serve(entry, root);
+    assert.equal(
+      await fetch(result.session.url).then((value) => value.text()),
+      "recovered",
+    );
+  });
+
+  it("treats public entry aliases as distinct session identities", async () => {
+    const { client, root } = await setup();
+    await mkdir(path.join(root, "shared"));
+    await mkdir(path.join(root, "a"));
+    await mkdir(path.join(root, "b"));
+    const target = path.join(root, "shared", "index.html");
+    await writeFile(target, "shared");
+    const { symlink } = await import("node:fs/promises");
+    await symlink(target, path.join(root, "a", "index.html"));
+    await symlink(target, path.join(root, "b", "index.html"));
+
+    const first = await client.serve(path.join(root, "a", "index.html"), root);
+    const second = await client.serve(path.join(root, "b", "index.html"), root);
+    assert.notEqual(first.session.id, second.session.id);
+    assert.equal(new URL(first.session.url).pathname, "/a/index.html");
+    assert.equal(new URL(second.session.url).pathname, "/b/index.html");
+    assert.equal(
+      (await client.serve(path.join(root, "a", "index.html"), root)).session.id,
+      first.session.id,
+    );
+    await client.stopSession(first.session.id);
+    assert.equal(
+      (await client.serve(path.join(root, "b", "index.html"), root)).session.id,
+      second.session.id,
+    );
+    assert.notEqual(
+      (await client.serve(path.join(root, "a", "index.html"), root)).session.id,
+      first.session.id,
+    );
+  });
+
+  it("selects list fields at the control seam", async () => {
+    const { client, root, entry, paths } = await setup();
+    await client.serve(entry, root);
+    const minimal = await client.list();
+    assert.deepEqual(Object.keys(minimal[0] ?? {}).sort(), [
+      "id",
+      "status",
+      "url",
+    ]);
+    const expanded = await client.list(["entry", "root"]);
+    assert.deepEqual(Object.keys(expanded[0] ?? {}).sort(), [
+      "entry",
+      "id",
+      "root",
+      "status",
+      "url",
+    ]);
+    assert.equal(
+      (await controlRequest(paths, "GET", "/sessions?fields=unknown")).status,
+      400,
+    );
+    assert.equal(
+      (await controlRequest(paths, "GET", "/sessions?unknown=true")).status,
+      400,
+    );
+    assert.equal(
+      (
+        await controlRequest(paths, "POST", "/stop", {
+          session: minimal[0]?.id,
+          all: true,
+        })
+      ).status,
+      400,
+    );
+  });
+
+  it("caps new sessions while allowing reuse and capacity recovery", async () => {
+    const { client, root, entry } = await setup({ maximumSessions: 1 });
+    const first = await client.serve(entry, root);
+    assert.equal((await client.serve(entry, root)).reused, true);
+    const otherRoot = await temporaryDirectory("htmlview-limit-");
+    const otherEntry = path.join(otherRoot, "other.html");
+    await writeFile(otherEntry, "other");
+    await assert.rejects(client.serve(otherEntry, otherRoot), {
+      code: "control.session_limit",
+    });
+    await client.stopSession(first.session.id);
+    assert.equal((await client.serve(otherEntry, otherRoot)).reused, false);
+  });
+
+  it("enumerates the production session cap and rejects the next session", async () => {
+    const { client, root } = await setup();
+    for (let index = 0; index < maximumConcurrentSessions; index += 1) {
+      const entry = path.join(root, `report-${index}.html`);
+      await writeFile(entry, String(index));
+      await client.serve(entry, root);
+    }
+    const sessions = await client.list(["entry", "root"]);
+    assert.equal(sessions.length, maximumConcurrentSessions);
+    assert.ok(sessions.every((session) => session.entry && session.root));
+
+    const overflow = path.join(root, "overflow.html");
+    await writeFile(overflow, "overflow");
+    await assert.rejects(client.serve(overflow, root), {
+      code: "control.session_limit",
+    });
+  });
+
+  it("rejects incompatible versions but lets stop-all shut them down", async () => {
+    const { client, paths } = await setup({ version: "9.9.9" });
+    await assert.rejects(client.list(), {
+      code: "supervisor.incompatible",
+    });
+    assert.equal((await client.stopAll()).stopped, 0);
+    assert.equal(await socketExists(paths), false);
   });
 
   it("does not create a session when grant resolution resumes after shutdown", async () => {
@@ -292,43 +683,15 @@ describe("supervisor lifecycle", () => {
       },
     });
     supervisors.push(supervisor);
-    const operation = request({
-      hostname: "127.0.0.1",
-      port: supervisor.discovery.port,
-      method: "POST",
-      path: "/sessions",
-      headers: {
-        host: `127.0.0.1:${supervisor.discovery.port}`,
-        authorization: `Bearer ${supervisor.discovery.token}`,
-        "content-type": "application/json",
-      },
-    });
-    operation.on("error", () => undefined);
-    operation.end(JSON.stringify({ entry, root }));
+    const operation = controlRequest(paths, "POST", "/sessions", {
+      entry,
+      root,
+    }).catch(() => undefined);
     await started;
-
     await supervisor.close();
     releaseGrant();
-    await new Promise((resolve) => setTimeout(resolve, 100));
+    await operation;
     assert.equal(contentStarts, 0);
-  });
-
-  it("rejects stale or unauthenticated discovery instead of trusting its PID", async () => {
-    const parent = await temporaryDirectory("htmlview-stale-");
-    const paths = statePaths({
-      HTMLVIEW_STATE_DIR: path.join(parent, "state"),
-    });
-    await ensurePrivateStateDirectory(paths);
-    await writePrivateJson(paths.discovery, {
-      protocol: supervisorProtocol,
-      instanceId: "stale",
-      pid: process.pid,
-      port: 9,
-      token: "x".repeat(43),
-      version: "0.1.0",
-    });
-    assert.deepEqual(await new SupervisorClient(paths).list(), []);
-    await assert.rejects(readFile(paths.discovery));
   });
 
   it("translates an unusable state location into a stable client error", async () => {
@@ -338,14 +701,13 @@ describe("supervisor lifecycle", () => {
     const client = new SupervisorClient(
       statePaths({ HTMLVIEW_STATE_DIR: stateFile }),
     );
-
     await assert.rejects(client.list(), {
       code: "state.unavailable",
       message: "The private htmlview runtime state directory is unavailable",
     });
   });
 
-  it("translates detached process spawn failures without raw process errors", async () => {
+  it("translates detached process spawn failures without raw errors", async () => {
     const parent = await temporaryDirectory("htmlview-spawn-failure-");
     const paths = statePaths({
       HTMLVIEW_STATE_DIR: path.join(parent, "state"),
@@ -358,7 +720,6 @@ describe("supervisor lifecycle", () => {
         code: "EAGAIN",
       });
     });
-
     await assert.rejects(client.serve(entry, root), {
       code: "supervisor.start_failed",
       message: "The htmlview supervisor process could not start",
@@ -387,11 +748,11 @@ describe("supervisor lifecycle", () => {
         }),
       ],
     ] as const) {
-      const parent = await temporaryDirectory(`htmlview-${expected}-`);
+      const parent = await temporaryDirectory("hv-fail-");
       const paths = statePaths({
         HTMLVIEW_STATE_DIR: path.join(parent, "state"),
       });
-      const root = await temporaryDirectory(`htmlview-${expected}-entry-`);
+      const root = await temporaryDirectory("hv-fail-entry-");
       const entry = path.join(root, "report.html");
       await writeFile(entry, "<!doctype html>");
       const supervisor = await startSupervisor({
@@ -400,7 +761,6 @@ describe("supervisor lifecycle", () => {
         startSessionServer,
       });
       supervisors.push(supervisor);
-
       await assert.rejects(new SupervisorClient(paths).serve(entry, root), {
         code: expected,
       });
@@ -411,6 +771,29 @@ describe("supervisor lifecycle", () => {
 });
 
 describe("supervisor state", () => {
+  it("rejects a relative custom state root without writing below cwd", async () => {
+    const relative = statePaths(
+      { HTMLVIEW_STATE_DIR: ".repository-state" },
+      "linux",
+    );
+    assert.equal(
+      relative.directory,
+      path.join(homedir(), ".local", "state", "htmlview"),
+    );
+    assert.equal(
+      relative.configurationError,
+      "HTMLVIEW_STATE_DIR must be an absolute path",
+    );
+    await assert.rejects(new SupervisorClient(relative).list(), {
+      code: "state.unavailable",
+    });
+    assert.equal(
+      statePaths({ HTMLVIEW_STATE_DIR: "/var/tmp/htmlview-state" }, "linux")
+        .directory,
+      "/var/tmp/htmlview-state",
+    );
+  });
+
   it("ignores a relative XDG state home instead of writing below cwd", () => {
     assert.equal(
       statePaths({ XDG_STATE_HOME: ".repository-state" }, "linux").directory,
@@ -422,69 +805,90 @@ describe("supervisor state", () => {
     );
   });
 
-  it("does not expire a startup lock while its owning process is alive", async () => {
+  it("rejects a non-portable control-socket path", async () => {
+    const paths = statePaths({
+      HTMLVIEW_STATE_DIR: path.join("/tmp", "x".repeat(110)),
+    });
+    await assert.rejects(new SupervisorClient(paths).list(), {
+      code: "state.unavailable",
+    });
+  });
+
+  it("does not expire an ownership lock while its process is alive", async () => {
     const parent = await temporaryDirectory("htmlview-live-lock-");
     const paths = statePaths({
       HTMLVIEW_STATE_DIR: path.join(parent, "state"),
     });
     await ensurePrivateStateDirectory(paths);
-    await mkdir(paths.startupLock, { mode: 0o700 });
-    await writePrivateJson(path.join(paths.startupLock, "owner.json"), {
+    await mkdir(paths.supervisorLock, { mode: 0o700 });
+    await writePrivateJson(path.join(paths.supervisorLock, "owner.json"), {
       pid: process.pid,
-      createdAt: 0,
       nonce: "a".repeat(32),
     });
-
     await assert.rejects(
-      acquireStartupLock(paths, 80),
-      /Timed out waiting for the supervisor startup lock/,
+      acquireSupervisorLock(paths, 80),
+      /Timed out waiting for the supervisor ownership lock/,
     );
   });
 
-  it("does not let an old owner release a replacement startup lock", async () => {
+  it("does not let an old owner release a replacement ownership lock", async () => {
     const parent = await temporaryDirectory("htmlview-fenced-lock-");
     const paths = statePaths({
       HTMLVIEW_STATE_DIR: path.join(parent, "state"),
     });
     await ensurePrivateStateDirectory(paths);
-    const oldOwner = await acquireStartupLock(paths);
-    await rm(paths.startupLock, { recursive: true, force: true });
-    const replacement = await acquireStartupLock(paths);
-
+    const oldOwner = await acquireSupervisorLock(paths);
+    await rm(paths.supervisorLock, { recursive: true, force: true });
+    const replacement = await acquireSupervisorLock(paths);
     await oldOwner.release();
-    assert.equal((await stat(paths.startupLock)).isDirectory(), true);
+    assert.equal((await stat(paths.supervisorLock)).isDirectory(), true);
     await replacement.release();
-    await assert.rejects(stat(paths.startupLock));
+    await assert.rejects(stat(paths.supervisorLock));
   });
 
-  it("serializes simultaneous recovery of one stale startup lock", async () => {
+  it("serializes simultaneous recovery of one stale ownership lock", async () => {
     const parent = await temporaryDirectory("htmlview-stale-lock-");
     const paths = statePaths({
       HTMLVIEW_STATE_DIR: path.join(parent, "state"),
     });
     await ensurePrivateStateDirectory(paths);
-    await mkdir(paths.startupLock, { mode: 0o700 });
-    await writePrivateJson(path.join(paths.startupLock, "owner.json"), {
+    await mkdir(paths.supervisorLock, { mode: 0o700 });
+    await writePrivateJson(path.join(paths.supervisorLock, "owner.json"), {
       pid: 2_147_483_647,
-      createdAt: 0,
       nonce: "s".repeat(32),
     });
-
     const resolved: number[] = [];
     const contenders = [0, 1].map(async (index) => {
-      const lock = await acquireStartupLock(paths, 2_000);
+      const lock = await acquireSupervisorLock(paths, 2_000);
       resolved.push(index);
       return { index, lock };
     });
     const winner = await Promise.race(contenders);
     await new Promise((resolve) => setTimeout(resolve, 100));
     assert.deepEqual(resolved, [winner.index]);
-
     await winner.lock.release();
     const owners = await Promise.all(contenders);
     const successor = owners.find(({ index }) => index !== winner.index);
     assert.notEqual(successor, undefined);
     await successor?.lock.release();
+  });
+
+  it("does not treat a malformed process-group PID as a live owner", async () => {
+    const parent = await temporaryDirectory("htmlview-malformed-owner-");
+    const paths = statePaths({
+      HTMLVIEW_STATE_DIR: path.join(parent, "state"),
+    });
+    await ensurePrivateStateDirectory(paths);
+    await mkdir(paths.supervisorLock, { mode: 0o700 });
+    await writePrivateJson(path.join(paths.supervisorLock, "owner.json"), {
+      pid: 0,
+      nonce: "m".repeat(32),
+    });
+    const old = new Date(Date.now() - 20_000);
+    await utimes(paths.supervisorLock, old, old);
+
+    const lock = await acquireSupervisorLock(paths, 500);
+    await lock.release();
   });
 
   it("bounds private state records and removes failed temporary writes", async () => {
@@ -493,9 +897,10 @@ describe("supervisor state", () => {
       HTMLVIEW_STATE_DIR: path.join(parent, "state"),
     });
     await ensurePrivateStateDirectory(paths);
-
     await assert.rejects(
-      writePrivateJson(paths.discovery, { oversized: "x".repeat(17 * 1024) }),
+      writePrivateJson(path.join(paths.directory, "record.json"), {
+        oversized: "x".repeat(17 * 1024),
+      }),
       /State record exceeds size limit/,
     );
     assert.deepEqual(await readdir(paths.directory), []);

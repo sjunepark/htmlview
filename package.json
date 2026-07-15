@@ -1,10 +1,13 @@
 {
-  "name": "htmlview",
+  "name": "@sejunpark/htmlview",
   "version": "0.1.0",
   "description": "Serve local HTML through confined loopback HTTP",
   "type": "module",
   "bin": {
     "htmlview": "dist/cli.js"
+  },
+  "publishConfig": {
+    "access": "public"
   },
   "files": [
     "dist",
@@ -23,13 +26,14 @@
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "lint": "eslint .",
+    "prepack": "npm run build",
     "test": "tsx --test test/**/*.test.ts",
     "test:e2e": "node --test --test-concurrency=1 test-e2e/**/*.test.mjs",
-    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.test.json",
     "validate:browser-origin": "npm run build --silent && playwright test --config validation/browser-origin/playwright.config.mjs",
     "validate:docs": "node validation/docs/check-links.mjs",
     "validate:interoperability": "npm run build --silent && playwright test --config validation/interoperability/playwright.config.mjs",
-    "validate:agent-browser": "npm run build --silent && bash validation/interoperability/run-agent-browser.sh",
+    "validate:browser-use": "npm run build --silent && bash validation/interoperability/run-browser-use.sh",
     "validate:package": "npm run build --silent && node validation/package/install-smoke.mjs",
     "validate:package:linux": "bash validation/package/run-linux.sh"
   },

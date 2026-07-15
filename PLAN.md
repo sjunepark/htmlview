@@ -18,27 +18,28 @@ caller.
   contract are accepted product decisions.
 - TOON is the compact default output; `--json` returns the same logical result
   for existing automation.
-- Browser validation uses Playwright and independently installed
-  `agent-browser`; neither is a runtime dependency.
+- Browser validation uses Playwright and independently installed Browser Use;
+  neither is a runtime dependency.
 - Milestone 0 is complete: ADR 0005 selects Node.js 22.13+, TypeScript, npm,
   and `@toon-format/toon`; the CLI foundation and pinned v3.3 conformance tests
   are in place.
 - Milestone 1 is complete: canonical disclosure grants, byte-faithful GET/HEAD,
   MIME and conditional responses, exact Host checks, and adversarial
   confinement tests are implemented independently of lifecycle.
-- Milestone 2 is complete: authenticated private discovery, concurrency-safe
-  detached startup, serialized idempotent sessions, readiness, stop/recovery,
-  bounded idle shutdown, and graceful signals are wired through the CLI.
-- Milestone 3 is complete: real CLI URLs pass Playwright and `agent-browser`,
+- Milestone 2 is complete: one private Unix-domain control socket owns the
+  supervisor lifecycle, transient health failures preserve that ownership,
+  stale sockets recover under the lifetime ownership lock, graceful handoff
+  cannot overlap owners, and `stop --all` confirms full shutdown.
+- Milestone 3 is complete: real CLI URLs pass Playwright and Browser Use,
   browser-neutral handoff guidance is documented, and success/error contracts
   are equivalent across TOON and JSON.
-- Milestone 4 is complete: generated path/output adversarial checks, explicit
-  resource bounds, a threat-control evidence matrix, structured versioning,
-  reproducible npm artifacts, and clean macOS/Linux package lifecycles are in
-  place.
-- The next action is publishing the validated `0.1.0` npm artifact when release
-  credentials and change control are available. Optional annotation work has
-  not started.
+- Milestone 4 is complete: broad and state-overlapping roots are rejected,
+  control has no persisted bearer credential, resources are bounded, and
+  macOS/Linux package lifecycle checks pass for `@sejunpark/htmlview`.
+- The `0.1.0` artifact is ready for release review but has not been published.
+  Optional annotation work has not started.
+- Final validation passes `npm run check`, the Node 22 Linux package workflow,
+  `npm run validate:browser-use`, and `npm audit` with zero vulnerabilities.
 
 Update this document in place. Keep completed work, current validation,
 blockers, decisions, and the single next action concise; do not append session
@@ -51,7 +52,7 @@ Status: Complete. See `docs/validation/browser-origin.md` and ADR 0002.
 - Compare direct `file://` navigation with a minimal loopback HTTP fixture for
   root-relative assets, JavaScript modules, fetches, MIME behavior, spaces, and
   Unicode paths.
-- Exercise `agent-browser` and at least one other independently installed
+- Exercise Browser Use and at least one other independently installed
   controller without adding either to the runtime.
 - Demonstrate that the selected root, rather than the entry alone, is the
   disclosure boundary by having page code request an unreferenced in-root file.
@@ -155,20 +156,23 @@ Acceptance:
 
 ## Milestone 2: Supervisor and sessions
 
-Status: Complete. Unit and detached-process coverage includes concurrent first
-startup, simultaneous roots, idempotent serve/stop, private permissions,
-SIGKILL recovery with a fresh origin, and graceful shutdown.
+Status: Complete. ADR 0006 records the authoritative private-socket control
+seam and its failure semantics.
 
-- Implement one discoverable per-user supervisor with an authenticated
-  loopback control endpoint.
+- Implement one discoverable per-user supervisor with a user-private
+  Unix-domain control socket.
 - Implement the content-origin strategy accepted by the pre-foundation gate so
   each live session maps its chosen filesystem root to the HTTP origin root and
   cross-lifetime browser state follows the documented isolation contract.
-- Protect control operations with a credential stored in a user-private state
-  directory.
-- Make concurrent startup safe and recover stale discovery records.
-- Add idempotent session creation keyed by canonical entry/root identity.
+- Protect control operations with operating-system ownership and permissions;
+  persist no bearer credential.
+- Make concurrent startup safe and recover refused stale sockets without
+  replacing temporarily unavailable owners.
+- Add idempotent session creation keyed by public entry route/canonical root.
 - Implement content-first session listing and targeted/all-session stopping.
+- Select requested list fields at the supervisor, cap live sessions at 32, and
+  keep enumeration complete without pagination.
+- Make `stop --all` an acknowledged full supervisor shutdown.
 - Add bounded idle shutdown and graceful signal handling.
 - Ensure successful `serve` output is emitted only after the raw URL is ready.
 - Include the exact resolved root and disclosure-grant meaning in every
@@ -186,12 +190,12 @@ Acceptance:
 
 ## Milestone 3: Agent interoperability
 
-Status: Complete. Playwright and separately installed `agent-browser` consume
+Status: Complete. Playwright and separately installed Browser Use consume
 the URL emitted by the built CLI and exercise the full fixture. The Agent Skill
 evaluation is recorded in `docs/INTEROPERABILITY.md`; no skill or ambient hook
 ships in version one.
 
-- Validate the returned URL with plain HTTP clients, `agent-browser`, and at
+- Validate the returned URL with plain HTTP clients, Browser Use, and at
   least one other separately installed browser controller without importing
   either controller into `htmlview`.
 - Document browser-neutral copy-paste examples that pass a returned URL to
@@ -216,9 +220,8 @@ Acceptance:
 
 ## Milestone 4: Security and release hardening
 
-Status: Complete. `docs/SECURITY_VALIDATION.md` maps every threat-model check to
-automation or an explicit residual note. Package validation covers the current
-macOS environment and Node 22 Debian Linux without adding a browser runtime.
+Status: Complete. Security and package evidence is current in
+`docs/SECURITY_VALIDATION.md`.
 
 - Complete the checks in `docs/THREAT_MODEL.md`.
 - Fuzz or property-test URL decoding and root containment.
@@ -270,6 +273,6 @@ annotation transport before a working second use case requires it.
 
 ## Next action
 
-Publish the validated `0.1.0` npm artifact when release credentials and change
-control are available. Do not begin optional annotation work as part of the
+Review the release diff, then publish `@sejunpark/htmlview@0.1.0` only after an
+explicit release request. Do not begin optional annotation work as part of the
 raw-serving release.

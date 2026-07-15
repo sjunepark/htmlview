@@ -1,4 +1,5 @@
-import { randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
+import { chmod, lstat, realpath } from "node:fs/promises";
 import {
   createServer,
   request as httpRequest,
@@ -6,10 +7,11 @@ import {
   type Server,
   type ServerResponse,
 } from "node:http";
-import type { AddressInfo } from "node:net";
+import type { OptionalSessionField, SessionSummary } from "../contracts.js";
 import {
   resolveServingGrant,
   GrantError,
+  isWithinRoot,
   type ServingGrant,
 } from "../serving/grant.js";
 import {
@@ -17,17 +19,21 @@ import {
   type StaticSessionServer,
 } from "../serving/http.js";
 import {
+  acquireSupervisorLock,
   ensurePrivateStateDirectory,
-  removeDiscovery,
   statePaths,
-  writePrivateJson,
+  transferSupervisorLock,
+  type SupervisorLock,
   type StatePaths,
 } from "./state.js";
 import {
+  controlHost,
+  maximumConcurrentSessions,
+  maximumControlResponseBytes,
   supervisorProtocol,
-  type DiscoveryRecord,
   type ServeControlResult,
   type StopControlResult,
+  type SupervisorIdentity,
   type SupervisorSession,
 } from "./protocol.js";
 import { htmlviewVersion } from "../version.js";
@@ -38,20 +44,33 @@ const defaultShutdownGraceMilliseconds = 2_000;
 
 interface LiveSession {
   readonly summary: SupervisorSession;
+  readonly identityKey: string;
+  readonly createdAt: string;
   readonly server: StaticSessionServer;
 }
 
 type StartSessionServer = (grant: ServingGrant) => Promise<StaticSessionServer>;
 
 export interface RunningSupervisor {
-  readonly controlAddress: "127.0.0.1";
-  readonly discovery: DiscoveryRecord;
+  readonly controlAddress: string;
+  readonly identity: SupervisorIdentity;
   readonly paths: StatePaths;
   close(): Promise<void>;
 }
 
 function json(response: ServerResponse, status: number, value: unknown): void {
-  const body = Buffer.from(JSON.stringify(value));
+  let body = Buffer.from(JSON.stringify(value));
+  if (body.length > maximumControlResponseBytes) {
+    status = 500;
+    body = Buffer.from(
+      JSON.stringify({
+        error: {
+          code: "control.response_too_large",
+          message: "Control response exceeded the supported size",
+        },
+      }),
+    );
+  }
   response.writeHead(status, {
     "content-type": "application/json; charset=utf-8",
     "content-length": String(body.length),
@@ -61,19 +80,8 @@ function json(response: ServerResponse, status: number, value: unknown): void {
   response.end(body);
 }
 
-function authorized(
-  request: IncomingMessage,
-  token: string,
-  port: number,
-): boolean {
-  const supplied = request.headers.authorization?.replace(/^Bearer /, "") ?? "";
-  const expectedBuffer = Buffer.from(token);
-  const suppliedBuffer = Buffer.from(supplied);
-  return (
-    request.headers.host === `127.0.0.1:${port}` &&
-    expectedBuffer.length === suppliedBuffer.length &&
-    timingSafeEqual(expectedBuffer, suppliedBuffer)
-  );
+function authorized(request: IncomingMessage): boolean {
+  return request.headers.host === controlHost;
 }
 
 async function readJsonBody(request: IncomingMessage): Promise<unknown> {
@@ -156,24 +164,35 @@ class SessionRegistry {
   #mutationTail: Promise<void> = Promise.resolve();
   #closing = false;
 
-  constructor(private readonly startServer: StartSessionServer) {}
+  constructor(
+    private readonly startServer: StartSessionServer,
+    private readonly maximumSessions: number,
+  ) {}
 
-  list(): SupervisorSession[] {
+  list(fields: readonly OptionalSessionField[]): SessionSummary[] {
     return [...this.#sessions.values()]
-      .map(({ summary }) => summary)
-      .sort((left, right) => left.createdAt.localeCompare(right.createdAt));
+      .sort((left, right) => left.createdAt.localeCompare(right.createdAt))
+      .map(({ summary }) => ({
+        id: summary.id,
+        status: summary.status,
+        url: summary.url,
+        ...(fields.includes("entry") ? { entry: summary.entry } : {}),
+        ...(fields.includes("root") ? { root: summary.root } : {}),
+      }));
   }
 
   async serve(grant: ServingGrant): Promise<ServeControlResult> {
     return this.#mutate(async () => {
       if (this.#closing) throw new Error("control.shutting_down");
-      const key = `${grant.entry}\0${grant.root}`;
+      const key = `${grant.routeEntry}\0${grant.root}`;
       const existingId = this.#identity.get(key);
       if (existingId !== undefined) {
         const existing = this.#sessions.get(existingId);
         if (existing !== undefined)
           return { session: existing.summary, reused: true };
       }
+      if (this.#sessions.size >= this.maximumSessions)
+        throw new Error("control.session_limit");
       const live = await this.#create(grant, key);
       return { session: live.summary, reused: false };
     });
@@ -199,11 +218,15 @@ class SessionRegistry {
       id,
       status: "ready",
       url: server.url,
-      entry: grant.entry,
+      entry: grant.routeEntry,
       root: grant.root,
-      createdAt: new Date().toISOString(),
     };
-    const live = { summary, server };
+    const live = {
+      summary,
+      identityKey: key,
+      createdAt: new Date().toISOString(),
+      server,
+    };
     this.#sessions.set(id, live);
     this.#identity.set(key, id);
     return live;
@@ -214,7 +237,7 @@ class SessionRegistry {
       const live = this.#sessions.get(sessionId);
       if (live === undefined) return { stopped: 0 };
       this.#sessions.delete(sessionId);
-      this.#identity.delete(`${live.summary.entry}\0${live.summary.root}`);
+      this.#identity.delete(live.identityKey);
       await live.server.close();
       return { stopped: 1 };
     });
@@ -261,16 +284,32 @@ export async function startSupervisor(
     readonly resolveGrant?: typeof resolveServingGrant;
     readonly startSessionServer?: StartSessionServer;
     readonly version?: string;
+    readonly maximumSessions?: number;
+    readonly beforeHealth?: () => Promise<void>;
+    readonly ownershipNonce?: string;
   } = {},
 ): Promise<RunningSupervisor> {
   const paths = options.paths ?? statePaths();
   await ensurePrivateStateDirectory(paths);
-  const token = randomBytes(32).toString("base64url");
   const instanceId = randomUUID();
   const sessions = new SessionRegistry(
     options.startSessionServer ?? ((grant) => startStaticServer(grant)),
+    options.maximumSessions ?? maximumConcurrentSessions,
   );
-  const resolveGrant = options.resolveGrant ?? resolveServingGrant;
+  const resolveGrantBase = options.resolveGrant ?? resolveServingGrant;
+  const canonicalStateDirectory = await realpath(paths.directory);
+  const resolveGrant: typeof resolveServingGrant = async (...arguments_) => {
+    const grant = await resolveGrantBase(...arguments_);
+    if (
+      grant.root === canonicalStateDirectory ||
+      isWithinRoot(grant.root, canonicalStateDirectory)
+    )
+      throw new GrantError(
+        "path.root_contains_state",
+        "Serving root cannot contain the htmlview runtime state directory",
+      );
+    return grant;
+  };
   const requestedIdleMilliseconds =
     options.idleMilliseconds ??
     Number(process.env.HTMLVIEW_IDLE_MS ?? defaultIdleMilliseconds);
@@ -288,6 +327,12 @@ export async function startSupervisor(
   let activeHandlers = 0;
   let closing = false;
   let closePromise: Promise<void> | undefined;
+  const identity: SupervisorIdentity = {
+    protocol: supervisorProtocol,
+    instanceId,
+    pid: process.pid,
+    version: options.version ?? htmlviewVersion,
+  };
 
   function cancelIdleShutdown(): void {
     if (idleTimer === undefined) return;
@@ -303,8 +348,7 @@ export async function startSupervisor(
   }
 
   const control = createServer(async (request, response) => {
-    const address = control.address() as AddressInfo | null;
-    if (address === null || !authorized(request, token, address.port)) {
+    if (!authorized(request)) {
       json(response, 401, {
         error: {
           code: "control.unauthorized",
@@ -325,20 +369,46 @@ export async function startSupervisor(
     activeHandlers += 1;
     cancelIdleShutdown();
     try {
-      if (request.method === "GET" && request.url === "/health") {
+      const requestUrl = new URL(request.url ?? "/", `http://${controlHost}`);
+      if (
+        request.method === "GET" &&
+        requestUrl.pathname === "/health" &&
+        requestUrl.search === ""
+      ) {
+        await options.beforeHealth?.();
+        json(response, 200, identity);
+      } else if (
+        request.method === "GET" &&
+        requestUrl.pathname === "/sessions"
+      ) {
+        if ([...requestUrl.searchParams.keys()].some((key) => key !== "fields"))
+          throw new Error("control.invalid_request");
+        const values = requestUrl.searchParams.getAll("fields");
+        if (values.length > 1) throw new Error("control.invalid_request");
+        const fields =
+          values.length === 0 || values[0] === ""
+            ? []
+            : (values[0]?.split(",") ?? []);
+        if (
+          fields.some((field) => field !== "entry" && field !== "root") ||
+          new Set(fields).size !== fields.length
+        )
+          throw new Error("control.invalid_request");
         json(response, 200, {
-          protocol: supervisorProtocol,
-          instanceId,
-          pid: process.pid,
+          sessions: sessions.list(fields as OptionalSessionField[]),
         });
-      } else if (request.method === "GET" && request.url === "/sessions") {
-        json(response, 200, {
-          sessions: sessions.list(),
-          count: sessions.size,
-        });
-      } else if (request.method === "POST" && request.url === "/sessions") {
+      } else if (
+        request.method === "POST" &&
+        requestUrl.pathname === "/sessions" &&
+        requestUrl.search === ""
+      ) {
         const body = await readJsonBody(request);
-        if (typeof body !== "object" || body === null)
+        if (
+          typeof body !== "object" ||
+          body === null ||
+          Array.isArray(body) ||
+          Object.keys(body).sort().join(",") !== "entry,root"
+        )
           throw new Error("control.invalid_request");
         const candidate = body as Record<string, unknown>;
         if (
@@ -350,16 +420,41 @@ export async function startSupervisor(
           root: candidate.root,
         });
         json(response, 200, await sessions.serve(grant));
-      } else if (request.method === "POST" && request.url === "/stop") {
+      } else if (
+        request.method === "POST" &&
+        requestUrl.pathname === "/stop" &&
+        requestUrl.search === ""
+      ) {
         const body = await readJsonBody(request);
-        if (typeof body !== "object" || body === null)
+        if (
+          typeof body !== "object" ||
+          body === null ||
+          Array.isArray(body) ||
+          Object.keys(body).join(",") !== "session"
+        )
           throw new Error("control.invalid_request");
         const candidate = body as Record<string, unknown>;
-        if (candidate.all === true)
-          json(response, 200, await sessions.stopAll());
-        else if (typeof candidate.session === "string")
+        if (typeof candidate.session === "string")
           json(response, 200, await sessions.stop(candidate.session));
         else throw new Error("control.invalid_request");
+      } else if (
+        request.method === "POST" &&
+        requestUrl.pathname === "/shutdown" &&
+        requestUrl.search === ""
+      ) {
+        const body = await readJsonBody(request);
+        if (
+          typeof body !== "object" ||
+          body === null ||
+          Array.isArray(body) ||
+          Object.keys(body).length !== 0
+        )
+          throw new Error("control.invalid_request");
+        closing = true;
+        sessions.beginShutdown();
+        cancelIdleShutdown();
+        response.once("finish", () => setImmediate(() => void close()));
+        json(response, 200, await sessions.stopAll());
       } else {
         json(response, 404, {
           error: {
@@ -379,23 +474,28 @@ export async function startSupervisor(
         const status =
           message === "control.body_too_large"
             ? 413
-            : message === "control.shutting_down"
-              ? 503
-              : message.startsWith("control.")
-                ? 400
-                : 500;
+            : message === "control.session_limit"
+              ? 409
+              : message === "control.shutting_down"
+                ? 503
+                : message.startsWith("control.")
+                  ? 400
+                  : 500;
         const exposed =
           message.startsWith("control.") || message.startsWith("http.");
         json(response, status, {
           error: {
             code: exposed ? message : "control.internal",
-            message: message.startsWith("control.")
-              ? "Invalid control request"
-              : message === "http.start_failed"
-                ? "The loopback content listener could not start"
-                : message === "http.readiness_failed"
-                  ? "The content listener did not become ready"
-                  : "Supervisor could not complete the request",
+            message:
+              message === "control.session_limit"
+                ? `Concurrent session limit of ${options.maximumSessions ?? maximumConcurrentSessions} reached`
+                : message.startsWith("control.")
+                  ? "Invalid control request"
+                  : message === "http.start_failed"
+                    ? "The loopback content listener could not start"
+                    : message === "http.readiness_failed"
+                      ? "The content listener did not become ready"
+                      : "Supervisor could not complete the request",
           },
         });
       }
@@ -412,23 +512,40 @@ export async function startSupervisor(
   control.keepAliveTimeout = 2_000;
   control.setTimeout(10_000, (socket) => socket.destroy());
 
+  const bootstrapLock =
+    options.ownershipNonce === undefined
+      ? await acquireSupervisorLock(paths)
+      : undefined;
+  let ownership: SupervisorLock;
+  try {
+    ownership = await transferSupervisorLock(
+      paths,
+      options.ownershipNonce ?? bootstrapLock?.nonce ?? "",
+      identity,
+    );
+  } catch (error) {
+    await bootstrapLock?.release();
+    throw error;
+  }
+
   await new Promise<void>((resolve, reject) => {
     control.once("error", reject);
-    control.listen({ host: "127.0.0.1", port: 0 }, resolve);
+    control.listen(paths.controlSocket, resolve);
+  }).catch(async (error: unknown) => {
+    await ownership.release();
+    throw error;
   });
-  const address = control.address() as AddressInfo;
-  const discovery: DiscoveryRecord = {
-    protocol: supervisorProtocol,
-    instanceId,
-    pid: process.pid,
-    port: address.port,
-    token,
-    version: options.version ?? htmlviewVersion,
-  };
   try {
-    await writePrivateJson(paths.discovery, discovery);
+    await chmod(paths.controlSocket, 0o600);
+    const socketMetadata = await lstat(paths.controlSocket);
+    if (
+      !socketMetadata.isSocket() ||
+      (process.getuid !== undefined && socketMetadata.uid !== process.getuid())
+    )
+      throw new Error("The htmlview control socket is not privately owned");
   } catch (error) {
     await closeServer(control);
+    await ownership.release();
     throw error;
   }
 
@@ -437,14 +554,14 @@ export async function startSupervisor(
       closing = true;
       sessions.beginShutdown();
       cancelIdleShutdown();
-      await closeServer(control, shutdownGraceMilliseconds);
       await sessions.stopAll();
-      await removeDiscovery(paths, instanceId);
+      await closeServer(control, shutdownGraceMilliseconds);
+      await ownership.release();
     })();
     return closePromise;
   }
 
   scheduleIdleShutdown();
 
-  return { controlAddress: "127.0.0.1", discovery, paths, close };
+  return { controlAddress: paths.controlSocket, identity, paths, close };
 }
