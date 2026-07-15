@@ -1,9 +1,13 @@
 import { spawn } from "node:child_process";
 import { realpath } from "node:fs/promises";
-import { request as httpRequest } from "node:http";
+import {
+  request as httpRequest,
+  type ClientRequest,
+  type IncomingMessage,
+} from "node:http";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { Effect, Exit, Result, Scope } from "effect";
+import { Data, Effect, Exit, Result, Schedule, Scope } from "effect";
 import {
   operationalError,
   PathError,
@@ -96,63 +100,151 @@ interface ControlResponse {
   readonly value: unknown;
 }
 
+type ControlRequestFailureReason =
+  "timeout" | "transport" | "response_too_large" | "invalid_json";
+
+class ControlRequestError extends Data.TaggedError("ControlRequestError")<{
+  readonly reason: ControlRequestFailureReason;
+  readonly cause: unknown;
+  readonly transportCode: string | undefined;
+}> {}
+
+function requestFailure(
+  reason: ControlRequestFailureReason,
+  cause: unknown,
+): ControlRequestError {
+  return new ControlRequestError({
+    reason,
+    cause,
+    transportCode:
+      cause instanceof Error
+        ? (cause as NodeJS.ErrnoException).code
+        : undefined,
+  });
+}
+
 function controlRequest(
   paths: StatePaths,
   method: "GET" | "POST",
   route: string,
   body?: unknown,
   timeoutMilliseconds = controlRequestTimeoutMilliseconds,
-): Promise<ControlResponse> {
-  return new Promise((resolve, reject) => {
+): Effect.Effect<ControlResponse, ControlRequestError> {
+  return Effect.callback<ControlResponse, ControlRequestError>((resume) => {
     const payload =
       body === undefined ? undefined : Buffer.from(JSON.stringify(body));
-    const operation = httpRequest(
-      {
-        socketPath: paths.controlSocket,
-        method,
-        path: route,
-        headers: {
-          host: controlHost,
-          ...(payload === undefined
-            ? {}
-            : {
-                "content-type": "application/json",
-                "content-length": String(payload.length),
-              }),
-        },
-        timeout: timeoutMilliseconds,
-      },
-      (response) => {
-        const chunks: Buffer[] = [];
-        let size = 0;
-        response.on("data", (chunk: Buffer) => {
-          size += chunk.length;
-          if (size > maximumControlResponseBytes) {
-            response.destroy(
+    let operation: ClientRequest | undefined;
+    let response: IncomingMessage | undefined;
+    let settled = false;
+    const chunks: Buffer[] = [];
+    let size = 0;
+    const cleanup = (): void => {
+      operation?.off("timeout", onTimeout);
+      response?.off("data", onData);
+      response?.off("end", onEnd);
+      response?.off("aborted", onAborted);
+    };
+    const complete = (
+      result: Effect.Effect<ControlResponse, ControlRequestError>,
+    ): void => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      resume(result);
+    };
+    const onTimeout = (): void => {
+      complete(
+        Effect.fail(
+          requestFailure("timeout", new Error("Supervisor request timed out")),
+        ),
+      );
+      operation?.destroy();
+    };
+    const onRequestError = (cause: Error): void => {
+      complete(Effect.fail(requestFailure("transport", cause)));
+    };
+    const onData = (chunk: Buffer): void => {
+      size += chunk.length;
+      if (size > maximumControlResponseBytes) {
+        complete(
+          Effect.fail(
+            requestFailure(
+              "response_too_large",
               new Error("Supervisor response exceeded the size limit"),
-            );
+            ),
+          ),
+        );
+        response?.destroy();
+        operation?.destroy();
+        return;
+      }
+      chunks.push(chunk);
+    };
+    const onEnd = (): void => {
+      try {
+        complete(
+          Effect.succeed({
+            status: response?.statusCode ?? 0,
+            value: JSON.parse(Buffer.concat(chunks).toString("utf8")),
+          }),
+        );
+      } catch (cause) {
+        complete(Effect.fail(requestFailure("invalid_json", cause)));
+      }
+    };
+    const onResponseError = (cause: Error): void => {
+      complete(Effect.fail(requestFailure("transport", cause)));
+    };
+    const onAborted = (): void => {
+      complete(
+        Effect.fail(
+          requestFailure("transport", new Error("Supervisor response aborted")),
+        ),
+      );
+    };
+    try {
+      operation = httpRequest(
+        {
+          socketPath: paths.controlSocket,
+          method,
+          path: route,
+          headers: {
+            host: controlHost,
+            ...(payload === undefined
+              ? {}
+              : {
+                  "content-type": "application/json",
+                  "content-length": String(payload.length),
+                }),
+          },
+        },
+        (incoming) => {
+          if (settled) {
+            incoming.destroy();
             return;
           }
-          chunks.push(chunk);
-        });
-        response.on("end", () => {
-          try {
-            resolve({
-              status: response.statusCode ?? 0,
-              value: JSON.parse(Buffer.concat(chunks).toString("utf8")),
-            });
-          } catch {
-            reject(new Error("Supervisor returned invalid JSON"));
-          }
-        });
-      },
-    );
-    operation.once("timeout", () =>
-      operation.destroy(new Error("Supervisor request timed out")),
-    );
-    operation.once("error", reject);
+          response = incoming;
+          incoming.on("data", onData);
+          incoming.once("end", onEnd);
+          incoming.once("error", onResponseError);
+          incoming.once("aborted", onAborted);
+        },
+      );
+    } catch (cause) {
+      complete(Effect.fail(requestFailure("transport", cause)));
+      return;
+    }
+    operation.setTimeout(timeoutMilliseconds);
+    operation.once("timeout", onTimeout);
+    operation.once("error", onRequestError);
     if (payload !== undefined) operation.write(payload);
     operation.end();
+    return Effect.sync(() => {
+      settled = true;
+      cleanup();
+      response?.destroy();
+      operation?.destroy();
+    });
   });
 }
 
@@ -165,47 +257,53 @@ type ProbeResult =
   | { readonly status: "absent" | "stale" | "unavailable" }
   | { readonly status: "incompatible" };
 
-async function probeOnce(paths: StatePaths): Promise<ProbeResult> {
-  let response: ControlResponse;
-  try {
-    response = await controlRequest(
-      paths,
-      "GET",
-      "/health",
-      undefined,
-      healthRequestTimeoutMilliseconds,
-    );
-  } catch (error) {
-    const code = (error as NodeJS.ErrnoException).code;
-    if (code === "ENOENT") return { status: "absent" };
-    if (code === "ECONNREFUSED") return { status: "stale" };
-    return { status: "unavailable" };
-  }
-  if (response.status !== 200) return { status: "unavailable" };
-  const decoded = decodeSupervisorIdentity(response.value);
-  if (Result.isFailure(decoded)) return { status: "unavailable" };
-  if (decoded.success.protocol !== supervisorProtocol)
-    return { status: "incompatible" };
-  if (decoded.success.version !== htmlviewVersion)
-    return { status: "version_mismatch", identity: decoded.success };
-  return { status: "healthy", identity: decoded.success };
+function probeOnce(paths: StatePaths): Effect.Effect<ProbeResult> {
+  return controlRequest(
+    paths,
+    "GET",
+    "/health",
+    undefined,
+    healthRequestTimeoutMilliseconds,
+  ).pipe(
+    Effect.match({
+      onFailure: (error): ProbeResult => {
+        if (error.transportCode === "ENOENT") return { status: "absent" };
+        if (error.transportCode === "ECONNREFUSED") return { status: "stale" };
+        return { status: "unavailable" };
+      },
+      onSuccess: (response): ProbeResult => {
+        if (response.status !== 200) return { status: "unavailable" };
+        const decoded = decodeSupervisorIdentity(response.value);
+        if (Result.isFailure(decoded)) return { status: "unavailable" };
+        if (decoded.success.protocol !== supervisorProtocol)
+          return { status: "incompatible" };
+        if (decoded.success.version !== htmlviewVersion)
+          return { status: "version_mismatch", identity: decoded.success };
+        return { status: "healthy", identity: decoded.success };
+      },
+    }),
+  );
 }
 
-function delay(milliseconds: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, milliseconds));
-}
+class UnavailableProbe extends Data.TaggedError("UnavailableProbe")<{
+  readonly result: ProbeResult;
+}> {}
 
-async function probeWithRetries(paths: StatePaths): Promise<ProbeResult> {
-  let result = await probeOnce(paths);
-  for (
-    let attempt = 1;
-    result.status === "unavailable" && attempt < healthRetryCount;
-    attempt += 1
-  ) {
-    await delay(healthRetryDelayMilliseconds);
-    result = await probeOnce(paths);
-  }
-  return result;
+const healthProbeSchedule = Schedule.max([
+  Schedule.spaced(healthRetryDelayMilliseconds),
+  Schedule.recurs(healthRetryCount - 1),
+]);
+
+function probeWithRetries(paths: StatePaths): Effect.Effect<ProbeResult> {
+  return probeOnce(paths).pipe(
+    Effect.flatMap((result) =>
+      result.status === "unavailable"
+        ? Effect.fail(new UnavailableProbe({ result }))
+        : Effect.succeed(result),
+    ),
+    Effect.retry(healthProbeSchedule),
+    Effect.catchTag("UnavailableProbe", ({ result }) => Effect.succeed(result)),
+  );
 }
 
 function incompatible(result: ProbeResult): never {
@@ -220,7 +318,7 @@ async function currentSupervisor(
   paths: StatePaths,
   allowVersionMismatch = false,
 ): Promise<SupervisorIdentity | undefined> {
-  const result = await probeWithRetries(paths);
+  const result = await Effect.runPromise(probeWithRetries(paths));
   if (result.status === "healthy") return result.identity;
   if (result.status === "version_mismatch" && allowVersionMismatch)
     return result.identity;
@@ -304,7 +402,7 @@ async function ensureSupervisor(
   if (ownership.kind === "identity") return ownership.identity;
   const { lock } = ownership;
   try {
-    const afterLock = await probeWithRetries(paths);
+    const afterLock = await Effect.runPromise(probeWithRetries(paths));
     if (afterLock.status === "healthy") return afterLock.identity;
     if (
       afterLock.status === "version_mismatch" ||
@@ -330,14 +428,14 @@ async function ensureSupervisor(
 
     const deadline = Date.now() + supervisorStartTimeoutMilliseconds;
     while (Date.now() < deadline) {
-      const started = await probeOnce(paths);
+      const started = await Effect.runPromise(probeOnce(paths));
       if (started.status === "healthy") return started.identity;
       if (
         started.status === "version_mismatch" ||
         started.status === "incompatible"
       )
         return incompatible(started);
-      await delay(50);
+      await Effect.runPromise(Effect.sleep(50));
     }
     throw new SupervisorError({
       code: "supervisor.start_failed",
@@ -395,7 +493,7 @@ async function acquireOwnershipOrObserve(
         throw ownershipLockError(error);
     }
 
-    const result = await probeOnce(paths);
+    const result = await Effect.runPromise(probeOnce(paths));
     if (result.status === "healthy")
       return { kind: "identity", identity: result.identity };
     if (result.status === "version_mismatch" && allowVersionMismatch)
@@ -410,7 +508,7 @@ async function acquireOwnershipOrObserve(
         code: "supervisor.unavailable",
         message: "The htmlview supervisor is alive but temporarily unavailable",
       });
-    await delay(50);
+    await Effect.runPromise(Effect.sleep(50));
   }
   throw ownershipLockError(ownershipTimeoutError());
 }
@@ -429,7 +527,7 @@ async function existingSupervisor(
   if (ownership.kind === "identity") return ownership.identity;
   const { lock } = ownership;
   try {
-    const afterLock = await probeWithRetries(paths);
+    const afterLock = await Effect.runPromise(probeWithRetries(paths));
     if (afterLock.status === "healthy") return afterLock.identity;
     if (afterLock.status === "version_mismatch" && allowVersionMismatch)
       return afterLock.identity;
@@ -507,7 +605,9 @@ async function requiredRequest<T>(
 ): Promise<T> {
   let response: ControlResponse;
   try {
-    response = await controlRequest(paths, method, route, body);
+    response = await Effect.runPromise(
+      controlRequest(paths, method, route, body),
+    );
   } catch (cause) {
     throw new SupervisorError({
       code: "supervisor.unavailable",
@@ -534,7 +634,7 @@ async function waitForShutdown(
 ): Promise<void> {
   const deadline = Date.now() + supervisorShutdownTimeoutMilliseconds;
   while (Date.now() < deadline) {
-    const result = await probeOnce(paths);
+    const result = await Effect.runPromise(probeOnce(paths));
     if (
       (result.status === "healthy" || result.status === "version_mismatch") &&
       result.identity.instanceId !== instanceId
@@ -545,11 +645,11 @@ async function waitForShutdown(
       try {
         lock = await acquireScopedSupervisorLock(paths, 100);
       } catch {
-        await delay(50);
+        await Effect.runPromise(Effect.sleep(50));
         continue;
       }
       try {
-        const settled = await probeOnce(paths);
+        const settled = await Effect.runPromise(probeOnce(paths));
         if (settled.status === "stale") {
           await Effect.runPromise(removeStaleControlSocket(paths));
           return;
@@ -565,7 +665,7 @@ async function waitForShutdown(
         await lock.release();
       }
     }
-    await delay(50);
+    await Effect.runPromise(Effect.sleep(50));
   }
   throw new SupervisorError({
     code: "supervisor.unavailable",

@@ -25,6 +25,7 @@ import { startStaticServer } from "../src/serving/http.js";
 import { SupervisorClient } from "../src/supervisor/client.js";
 import {
   controlHost,
+  maximumControlResponseBytes,
   maximumConcurrentSessions,
 } from "../src/supervisor/protocol.js";
 import {
@@ -306,6 +307,51 @@ describe("supervisor lifecycle", () => {
     }
   });
 
+  it("bounds and parses control responses before schema decoding", async () => {
+    const parent = await temporaryDirectory("hv-control-response-");
+    const paths = statePaths({
+      HTMLVIEW_STATE_DIR: path.join(parent, "state"),
+    });
+    await Effect.runPromise(ensurePrivateStateDirectory(paths));
+    let oversized = false;
+    const fake = createHttpServer((incoming, response) => {
+      const route = new URL(incoming.url ?? "/", `http://${controlHost}`);
+      if (route.pathname === "/health") {
+        response.end(
+          JSON.stringify({
+            protocol: "htmlview-supervisor-v2",
+            instanceId: randomUUID(),
+            pid: process.pid,
+            version: htmlviewVersion,
+          }),
+        );
+        return;
+      }
+      response.end(
+        oversized
+          ? JSON.stringify({
+              padding: "x".repeat(maximumControlResponseBytes),
+            })
+          : "not-json",
+      );
+    });
+    await new Promise<void>((resolve, reject) => {
+      fake.once("error", reject);
+      fake.listen(paths.controlSocket, resolve);
+    });
+
+    try {
+      const client = new SupervisorClient(paths);
+      await assert.rejects(client.list(), { code: "supervisor.unavailable" });
+      oversized = true;
+      await assert.rejects(client.list(), { code: "supervisor.unavailable" });
+    } finally {
+      await new Promise<void>((resolve, reject) =>
+        fake.close((error) => (error ? reject(error) : resolve())),
+      );
+    }
+  });
+
   it("rejects valid-shaped responses that violate operation invariants", async () => {
     const parent = await temporaryDirectory("hv-invariant-");
     const paths = statePaths({
@@ -551,13 +597,17 @@ describe("supervisor lifecycle", () => {
 
   it("preserves ownership when a live supervisor is temporarily unavailable", async () => {
     let stallHealth = false;
+    let stalledHealthRequests = 0;
     let releaseHealth = (): void => undefined;
     const healthGate = new Promise<void>((resolve) => {
       releaseHealth = resolve;
     });
     const { paths, client, root, entry } = await setup({
       beforeHealth: async () => {
-        if (stallHealth) await healthGate;
+        if (stallHealth) {
+          stalledHealthRequests += 1;
+          await healthGate;
+        }
       },
     });
     const served = await client.serve(entry, root);
@@ -573,6 +623,7 @@ describe("supervisor lifecycle", () => {
     await assert.rejects(guardedClient.serve(entry, root), {
       code: "supervisor.unavailable",
     });
+    assert.equal(stalledHealthRequests, 6);
     assert.equal(replacementStarts, 0);
     assert.equal(await socketExists(paths), true);
     assert.equal(

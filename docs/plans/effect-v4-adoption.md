@@ -1,6 +1,6 @@
 # Effect v4 Adoption Plan
 
-- Status: In progress; Phase 5 complete
+- Status: In progress; Phase 6 transport migration
 - Updated: 2026-07-15
 - Parent plan: [`PLAN.md`](../../PLAN.md)
 - Decision scope: migrate htmlview's fallible asynchronous execution and
@@ -327,18 +327,18 @@ Do not retain two TypeScript unit-test runners after the migration.
 
 ## Phase status
 
-| Phase                                | Status   | Exit summary                                           |
-| ------------------------------------ | -------- | ------------------------------------------------------ |
-| 0. Baseline and API verification     | Complete | Green baseline and recorded v4/package decisions       |
-| 1. Decision records and toolchain    | Complete | Exact dependencies, diagnostics, build/test skeleton   |
-| 2. Errors and protocol schemas       | Complete | Shared runtime-validated control contract              |
-| 3. Runtime-state and lock lifecycle  | Complete | Typed, interruption-safe private state operations      |
-| 4. Grant and raw-server resources    | Complete | Scoped serving resources with byte fidelity intact     |
-| 5. Supervisor registry and server    | Complete | Scoped sessions, control work, and idle shutdown       |
-| 6. Supervisor client                 | Pending  | Schedule-driven, schema-decoded client lifecycle       |
-| 7. App services and entry points     | Pending  | One Effect runtime path for both executables           |
-| 8. Test-suite migration              | Pending  | Effect-aware TypeScript tests and deterministic clocks |
-| 9. Packaging, docs, and release gate | Pending  | Full validation and release-ready artifact             |
+| Phase                                | Status      | Exit summary                                           |
+| ------------------------------------ | ----------- | ------------------------------------------------------ |
+| 0. Baseline and API verification     | Complete    | Green baseline and recorded v4/package decisions       |
+| 1. Decision records and toolchain    | Complete    | Exact dependencies, diagnostics, build/test skeleton   |
+| 2. Errors and protocol schemas       | Complete    | Shared runtime-validated control contract              |
+| 3. Runtime-state and lock lifecycle  | Complete    | Typed, interruption-safe private state operations      |
+| 4. Grant and raw-server resources    | Complete    | Scoped serving resources with byte fidelity intact     |
+| 5. Supervisor registry and server    | Complete    | Scoped sessions, control work, and idle shutdown       |
+| 6. Supervisor client                 | In progress | Cancellable transport and scheduled client lifecycle   |
+| 7. App services and entry points     | Pending     | One Effect runtime path for both executables           |
+| 8. Test-suite migration              | Pending     | Effect-aware TypeScript tests and deterministic clocks |
+| 9. Packaging, docs, and release gate | Pending     | Full validation and release-ready artifact             |
 
 ## Phase 0: Baseline and API verification
 
@@ -723,11 +723,32 @@ Keep this table current; replace `Pending` when a gate is resolved.
 
 ## Next action
 
-Execute Phase 6: convert supervisor-client requests and lifecycle polling to
-cancellable Effects and named schedules while preserving ownership and retry
-semantics.
+Complete Phase 6 by typing HTTP/schema failures, migrating discovery, startup,
+ownership observation, and shutdown confirmation to scoped Effects with named
+soft-deadline schedules, and making detached launch interruption-safe.
 
 ## Progress log
+
+### 2026-07-15 — Phase 6 in progress
+
+- Replaced the Promise-based Unix-socket request with one cancellable
+  `Effect.callback`. Timeout, transport, response-size, and JSON failures are
+  typed internally; interruption destroys the native request/response and a
+  late response is rejected before it can attach listeners.
+- Replaced the three-attempt health loop with a named schedule: one initial
+  probe plus two retries, spaced 100 ms after unavailable results only. Existing
+  absence, stale-socket, protocol, version, and public error semantics remain
+  unchanged.
+- Added client response-bound/parsing coverage and an exact six-probe assertion
+  across two stalled operations. The focused 41-test supervisor/state suite and
+  final `pnpm run check` pass with 104 TypeScript tests, ten Effect tests, E2E,
+  seven Playwright checks, docs, build, and package lifecycle validation.
+- Review fixed a cancellation race that could attach response listeners after
+  interruption. Typed HTTP-status/schema failures and direct cancellation and
+  TestClock policy tests remain in the next client slice; no diet issue was
+  found in the raw Node adapter or health schedule.
+- Next: migrate required response handling and discovery/ownership to scoped
+  Effects, preserving soft attempt-start deadlines exactly.
 
 ### 2026-07-15 — Phase 5 complete
 

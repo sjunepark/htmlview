@@ -86,7 +86,9 @@ without adding a session prefix to document paths.
 The CLI discovers or starts the supervisor at a deterministic socket path and
 waits until the requested content listener is ready before returning. Bounded
 health retries preserve ownership when a live supervisor is temporarily
-unavailable.
+unavailable. Control requests use cancellable Effect adapters around the native
+Unix-socket HTTP client; response bytes and JSON are bounded before shared
+protocol schemas see a value.
 
 The listener binds only to `127.0.0.1`; the unique hostname isolates cookies,
 storage, caches, and service workers and is never reused after a session stops.
