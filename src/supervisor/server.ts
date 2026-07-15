@@ -7,7 +7,7 @@ import {
   type Server,
   type ServerResponse,
 } from "node:http";
-import { Effect, Exit, Result, Scope } from "effect";
+import { Clock, Effect, Exit, Result, Scope, Semaphore } from "effect";
 import { ContentListenerError, ControlError, PathError } from "../errors.js";
 import {
   resolveServingGrant,
@@ -61,36 +61,12 @@ interface LiveSession {
   readonly summary: SupervisorSession;
   readonly identityKey: string;
   readonly createdAt: string;
-  readonly server: ManagedStaticSessionServer;
-}
-
-interface ManagedStaticSessionServer extends StaticSessionServer {
-  close(): Promise<void>;
+  readonly scope: Scope.Closeable;
 }
 
 type StartSessionServer = (
   grant: ServingGrant,
-) => Promise<ManagedStaticSessionServer>;
-
-async function acquireStaticServer(
-  grant: ServingGrant,
-): Promise<ManagedStaticSessionServer> {
-  const scope = await Effect.runPromise(Scope.make());
-  try {
-    const server = await Effect.runPromise(
-      startStaticServer(grant).pipe(Effect.provideService(Scope.Scope, scope)),
-    );
-    let closePromise: Promise<void> | undefined;
-    return {
-      ...server,
-      close: () =>
-        (closePromise ??= Effect.runPromise(Scope.close(scope, Exit.void))),
-    };
-  } catch (error) {
-    await Effect.runPromise(Scope.close(scope, Exit.void));
-    throw error;
-  }
-}
+) => Effect.Effect<StaticSessionServer, ContentListenerError, Scope.Scope>;
 
 export interface RunningSupervisor {
   readonly controlAddress: string;
@@ -231,8 +207,8 @@ function closeServer(
 function verifyReady(
   session: StaticSessionServer,
   entryUrlPath: string,
-): Promise<void> {
-  return new Promise((resolve, reject) => {
+): Effect.Effect<void, ContentListenerError> {
+  return Effect.callback<void, ContentListenerError>((resume) => {
     const operation = httpRequest(
       {
         hostname: "127.0.0.1",
@@ -244,11 +220,17 @@ function verifyReady(
       },
       (response) => {
         response.resume();
-        if (response.statusCode === 200) resolve();
+        if (response.statusCode === 200) resume(Effect.void);
         else
-          reject(
-            new Error(
-              `Content readiness returned HTTP ${response.statusCode ?? 0}`,
+          resume(
+            Effect.fail(
+              new ContentListenerError({
+                code: "http.readiness_failed",
+                message: "The content listener did not become ready",
+                cause: new Error(
+                  `Content readiness returned HTTP ${response.statusCode ?? 0}`,
+                ),
+              }),
             ),
           );
       },
@@ -256,15 +238,27 @@ function verifyReady(
     operation.once("timeout", () =>
       operation.destroy(new Error("Content readiness timed out")),
     );
-    operation.once("error", reject);
+    operation.once("error", (cause) =>
+      resume(
+        Effect.fail(
+          new ContentListenerError({
+            code: "http.readiness_failed",
+            message: "The content listener did not become ready",
+            cause,
+          }),
+        ),
+      ),
+    );
     operation.end();
+    return Effect.sync(() => operation.destroy());
   });
 }
 
 class SessionRegistry {
   readonly #sessions = new Map<string, LiveSession>();
   readonly #identity = new Map<string, string>();
-  #mutationTail: Promise<void> = Promise.resolve();
+  readonly #mutations = Semaphore.makeUnsafe(1);
+  readonly #scope = Scope.makeUnsafe("parallel");
   #closing = false;
 
   constructor(
@@ -284,92 +278,94 @@ class SessionRegistry {
       }));
   }
 
-  async serve(grant: ServingGrant): Promise<ServeControlResult> {
-    return this.#mutate(async () => {
-      if (this.#closing)
-        throw new ControlError({
-          code: "control.shutting_down",
-          message: "Invalid control request",
-        });
-      const key = `${grant.routeEntry}\0${grant.root}`;
-      const existingId = this.#identity.get(key);
-      if (existingId !== undefined) {
-        const existing = this.#sessions.get(existingId);
-        if (existing !== undefined)
-          return { session: existing.summary, reused: true };
-      }
-      if (this.#sessions.size >= this.maximumSessions)
-        throw new ControlError({
-          code: "control.session_limit",
-          message: `Concurrent session limit of ${this.maximumSessions} reached`,
-        });
-      const live = await this.#create(grant, key);
-      return { session: live.summary, reused: false };
-    });
+  serve(
+    grant: ServingGrant,
+  ): Effect.Effect<ServeControlResult, ControlError | ContentListenerError> {
+    return this.#mutations.withPermit(
+      Effect.gen({ self: this }, function* () {
+        if (this.#closing)
+          return yield* new ControlError({
+            code: "control.shutting_down",
+            message: "Invalid control request",
+          });
+        const key = `${grant.routeEntry}\0${grant.root}`;
+        const existingId = this.#identity.get(key);
+        if (existingId !== undefined) {
+          const existing = this.#sessions.get(existingId);
+          if (existing !== undefined)
+            return { session: existing.summary, reused: true };
+        }
+        if (this.#sessions.size >= this.maximumSessions)
+          return yield* new ControlError({
+            code: "control.session_limit",
+            message: `Concurrent session limit of ${this.maximumSessions} reached`,
+          });
+        const live = yield* this.#create(grant, key);
+        return { session: live.summary, reused: false };
+      }),
+    );
   }
 
-  async #create(grant: ServingGrant, key: string): Promise<LiveSession> {
-    let server: ManagedStaticSessionServer;
-    try {
-      server = await this.startServer(grant);
-    } catch (error) {
-      if (error instanceof ContentListenerError) throw error;
-      throw new ContentListenerError({
-        code: "http.start_failed",
-        message: "The loopback content listener could not start",
-        cause: error,
+  #create(
+    grant: ServingGrant,
+    key: string,
+  ): Effect.Effect<LiveSession, ContentListenerError> {
+    return Effect.gen({ self: this }, function* () {
+      const scope = yield* Scope.fork(this.#scope, "parallel");
+      const create = Effect.gen({ self: this }, function* () {
+        const server = yield* Scope.provide(scope)(this.startServer(grant));
+        yield* verifyReady(server, grant.entryUrlPath);
+        let id: string;
+        do id = randomBytes(6).toString("base64url");
+        while (this.#sessions.has(id));
+        const summary: SupervisorSession = {
+          id,
+          status: "ready",
+          url: server.url,
+          entry: grant.routeEntry,
+          root: grant.root,
+        };
+        const live = {
+          summary,
+          identityKey: key,
+          createdAt: new Date(yield* Clock.currentTimeMillis).toISOString(),
+          scope,
+        };
+        this.#sessions.set(id, live);
+        this.#identity.set(key, id);
+        return live;
       });
-    }
-    try {
-      await verifyReady(server, grant.entryUrlPath);
-    } catch (error) {
-      await server.close().catch(() => undefined);
-      throw new ContentListenerError({
-        code: "http.readiness_failed",
-        message: "The content listener did not become ready",
-        cause: error,
-      });
-    }
-    let id: string;
-    do id = randomBytes(6).toString("base64url");
-    while (this.#sessions.has(id));
-    const summary: SupervisorSession = {
-      id,
-      status: "ready",
-      url: server.url,
-      entry: grant.routeEntry,
-      root: grant.root,
-    };
-    const live = {
-      summary,
-      identityKey: key,
-      createdAt: new Date().toISOString(),
-      server,
-    };
-    this.#sessions.set(id, live);
-    this.#identity.set(key, id);
-    return live;
-  }
-
-  async stop(sessionId: string): Promise<TargetedStopControlResult> {
-    return this.#mutate(async () => {
-      const live = this.#sessions.get(sessionId);
-      if (live === undefined) return { stopped: 0 };
-      this.#sessions.delete(sessionId);
-      this.#identity.delete(live.identityKey);
-      await live.server.close();
-      return { stopped: 1 };
+      return yield* create.pipe(
+        Effect.onExit((exit) =>
+          Exit.isSuccess(exit) ? Effect.void : Scope.close(scope, exit),
+        ),
+      );
     });
   }
 
-  async stopAll(): Promise<StopControlResult> {
-    return this.#mutate(async () => {
-      const sessions = [...this.#sessions.values()];
-      this.#sessions.clear();
-      this.#identity.clear();
-      await Promise.all(sessions.map(({ server }) => server.close()));
-      return { stopped: sessions.length };
-    });
+  stop(sessionId: string): Effect.Effect<TargetedStopControlResult> {
+    return this.#mutations.withPermit(
+      Effect.gen({ self: this }, function* () {
+        const live = this.#sessions.get(sessionId);
+        if (live === undefined) return { stopped: 0 };
+        this.#sessions.delete(sessionId);
+        this.#identity.delete(live.identityKey);
+        yield* Scope.close(live.scope, Exit.void);
+        return { stopped: 1 };
+      }),
+    );
+  }
+
+  stopAll(): Effect.Effect<StopControlResult> {
+    return this.#mutations.withPermit(
+      Effect.gen({ self: this }, function* () {
+        const stopped = this.#sessions.size;
+        this.#sessions.clear();
+        this.#identity.clear();
+        yield* Scope.close(this.#scope, Exit.void);
+        return { stopped };
+      }),
+    );
   }
 
   get size(): number {
@@ -378,20 +374,6 @@ class SessionRegistry {
 
   beginShutdown(): void {
     this.#closing = true;
-  }
-
-  async #mutate<T>(operation: () => Promise<T>): Promise<T> {
-    const previous = this.#mutationTail;
-    let release = (): void => undefined;
-    this.#mutationTail = new Promise<void>((resolve) => {
-      release = resolve;
-    });
-    await previous;
-    try {
-      return await operation();
-    } finally {
-      release();
-    }
   }
 }
 
@@ -412,7 +394,7 @@ export async function startSupervisor(
   await Effect.runPromise(ensurePrivateStateDirectory(paths));
   const instanceId = randomUUID();
   const sessions = new SessionRegistry(
-    options.startSessionServer ?? acquireStaticServer,
+    options.startSessionServer ?? startStaticServer,
     options.maximumSessions ?? maximumConcurrentSessions,
   );
   const resolveGrantBase = options.resolveGrant ?? resolveServingGrant;
@@ -530,7 +512,9 @@ export async function startSupervisor(
         json(
           response,
           200,
-          encodeServeControlResult(await sessions.serve(grant)),
+          encodeServeControlResult(
+            await Effect.runPromise(sessions.serve(grant)),
+          ),
         );
       } else if (
         request.method === "POST" &&
@@ -543,7 +527,7 @@ export async function startSupervisor(
           response,
           200,
           encodeTargetedStopControlResult(
-            await sessions.stop(body.success.session),
+            await Effect.runPromise(sessions.stop(body.success.session)),
           ),
         );
       } else if (
@@ -557,7 +541,11 @@ export async function startSupervisor(
         sessions.beginShutdown();
         cancelIdleShutdown();
         response.once("finish", () => setImmediate(() => void close()));
-        json(response, 200, encodeStopControlResult(await sessions.stopAll()));
+        json(
+          response,
+          200,
+          encodeStopControlResult(await Effect.runPromise(sessions.stopAll())),
+        );
       } else {
         const error = new ControlError({
           code: "control.not_found",
@@ -643,9 +631,25 @@ export async function startSupervisor(
       closing = true;
       sessions.beginShutdown();
       cancelIdleShutdown();
-      await sessions.stopAll();
-      await closeServer(control, shutdownGraceMilliseconds);
-      await Effect.runPromise(Scope.close(ownershipScope, Exit.void));
+      const failures: unknown[] = [];
+      try {
+        await Effect.runPromise(sessions.stopAll());
+      } catch (error) {
+        failures.push(error);
+      }
+      try {
+        await closeServer(control, shutdownGraceMilliseconds);
+      } catch (error) {
+        failures.push(error);
+      }
+      try {
+        await Effect.runPromise(Scope.close(ownershipScope, Exit.void));
+      } catch (error) {
+        failures.push(error);
+      }
+      if (failures.length === 1) throw failures[0];
+      if (failures.length > 1)
+        throw new AggregateError(failures, "Supervisor shutdown failed");
     })();
     return closePromise;
   }

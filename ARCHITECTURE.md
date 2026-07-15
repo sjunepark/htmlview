@@ -225,9 +225,12 @@ never caller-selected. Each content listener owns a scoped request-fiber set;
 listener shutdown closes active connections and interrupts any remaining
 request work before the session scope is released.
 
-The registry permits at most 32 live sessions. Listing selects optional fields
-at the control seam, keeping complete enumeration within the bounded response
-contract without pagination.
+The registry permits at most 32 live sessions. A FIFO single-permit Effect
+semaphore keeps reuse, capacity, listener readiness, and registry commit atomic.
+Each pending session owns a child scope that is closed on failed readiness,
+targeted stop, or registry shutdown. Listing selects optional fields at the
+control seam, keeping complete enumeration within the bounded response contract
+without pagination.
 
 Session mutations are serialized inside the supervisor. Static file reads do
 not require registry-wide locking after a session snapshot has been validated.

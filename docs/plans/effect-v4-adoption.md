@@ -1,6 +1,6 @@
 # Effect v4 Adoption Plan
 
-- Status: In progress; Phase 4 complete
+- Status: In progress; Phase 5 registry migration
 - Updated: 2026-07-15
 - Parent plan: [`PLAN.md`](../../PLAN.md)
 - Decision scope: migrate htmlview's fallible asynchronous execution and
@@ -327,18 +327,18 @@ Do not retain two TypeScript unit-test runners after the migration.
 
 ## Phase status
 
-| Phase                                | Status   | Exit summary                                           |
-| ------------------------------------ | -------- | ------------------------------------------------------ |
-| 0. Baseline and API verification     | Complete | Green baseline and recorded v4/package decisions       |
-| 1. Decision records and toolchain    | Complete | Exact dependencies, diagnostics, build/test skeleton   |
-| 2. Errors and protocol schemas       | Complete | Shared runtime-validated control contract              |
-| 3. Runtime-state and lock lifecycle  | Complete | Typed, interruption-safe private state operations      |
-| 4. Grant and raw-server resources    | Complete | Scoped serving resources with byte fidelity intact     |
-| 5. Supervisor registry and server    | Pending  | Scoped sessions and deterministic shutdown             |
-| 6. Supervisor client                 | Pending  | Schedule-driven, schema-decoded client lifecycle       |
-| 7. App services and entry points     | Pending  | One Effect runtime path for both executables           |
-| 8. Test-suite migration              | Pending  | Effect-aware TypeScript tests and deterministic clocks |
-| 9. Packaging, docs, and release gate | Pending  | Full validation and release-ready artifact             |
+| Phase                                | Status      | Exit summary                                           |
+| ------------------------------------ | ----------- | ------------------------------------------------------ |
+| 0. Baseline and API verification     | Complete    | Green baseline and recorded v4/package decisions       |
+| 1. Decision records and toolchain    | Complete    | Exact dependencies, diagnostics, build/test skeleton   |
+| 2. Errors and protocol schemas       | Complete    | Shared runtime-validated control contract              |
+| 3. Runtime-state and lock lifecycle  | Complete    | Typed, interruption-safe private state operations      |
+| 4. Grant and raw-server resources    | Complete    | Scoped serving resources with byte fidelity intact     |
+| 5. Supervisor registry and server    | In progress | Scoped sessions and deterministic shutdown             |
+| 6. Supervisor client                 | Pending     | Schedule-driven, schema-decoded client lifecycle       |
+| 7. App services and entry points     | Pending     | One Effect runtime path for both executables           |
+| 8. Test-suite migration              | Pending     | Effect-aware TypeScript tests and deterministic clocks |
+| 9. Packaging, docs, and release gate | Pending     | Full validation and release-ready artifact             |
 
 ## Phase 0: Baseline and API verification
 
@@ -723,11 +723,35 @@ Keep this table current; replace `Pending` when a gate is resolved.
 
 ## Next action
 
-Replace the supervisor's Promise-tail registry with Effect synchronization and
-child session scopes, then make control, idle, and shutdown lifecycles one
-deterministic ownership tree.
+Scope the control listener and request fibers, replace the idle timer with a
+supervised Clock-driven fiber, and converge explicit, signal, and idle shutdown
+on one idempotent Effect.
 
 ## Progress log
+
+### 2026-07-15 — Phase 5 in progress
+
+- Replaced the Promise-tail registry with Effect's FIFO single-permit
+  semaphore. Reuse, capacity checks, listener acquisition, readiness, and map
+  commit remain one atomic mutation; ordinary static requests never take the
+  permit.
+- Each pending session now forks a child scope from the registry scope.
+  Listener start and cancellable readiness run inside it, failed creation closes
+  it before any map commit, and targeted/all-session stop closes the owned
+  scope. Session start injection now uses the same scoped Effect contract as
+  production.
+- Added direct readiness-failure and finalizer-defect tests. Shutdown continues
+  through session, control, and ownership cleanup before surfacing single or
+  aggregate failures; tests prove the content listener, control socket, and
+  ownership lock are gone. Review found no diet issue; production interruption
+  remains the next control-handler slice.
+- Strict diagnostics, lint, 39 focused supervisor/state tests, and
+  `git diff --check` pass. The full `pnpm run check` gate passed with 102
+  TypeScript tests, eight Effect tests, E2E, seven Playwright checks, docs,
+  build, and package lifecycle validation.
+- Next: scope the control listener and handler fibers, replace the idle timer
+  with a supervised Clock-driven fiber, and converge all shutdown triggers on
+  one idempotent Effect.
 
 ### 2026-07-15 — Phase 4 complete
 

@@ -19,11 +19,9 @@ import { homedir, tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, it } from "node:test";
 import { Effect, Exit, Scope } from "effect";
+import { ContentListenerError } from "../src/errors.js";
 import { resolveServingGrant } from "../src/serving/grant.js";
-import {
-  startStaticServer,
-  type StaticSessionServer,
-} from "../src/serving/http.js";
+import { startStaticServer } from "../src/serving/http.js";
 import { SupervisorClient } from "../src/supervisor/client.js";
 import {
   controlHost,
@@ -44,24 +42,6 @@ import { htmlviewVersion } from "../src/version.js";
 
 const temporaryDirectories: string[] = [];
 const supervisors: RunningSupervisor[] = [];
-
-async function acquireTestStaticServer(
-  grant: Parameters<typeof startStaticServer>[0],
-): Promise<StaticSessionServer & { close(): Promise<void> }> {
-  const scope = await Effect.runPromise(Scope.make());
-  try {
-    const session = await Effect.runPromise(
-      startStaticServer(grant).pipe(Effect.provideService(Scope.Scope, scope)),
-    );
-    return {
-      ...session,
-      close: () => Effect.runPromise(Scope.close(scope, Exit.void)),
-    };
-  } catch (error) {
-    await Effect.runPromise(Scope.close(scope, Exit.void));
-    throw error;
-  }
-}
 
 async function acquireTestLock(
   paths: StatePaths,
@@ -873,10 +853,13 @@ describe("supervisor lifecycle", () => {
           yield* Effect.promise(() => grantGate);
           return yield* resolveServingGrant(...arguments_);
         }),
-      startSessionServer: async (sessionGrant) => {
-        contentStarts += 1;
-        return acquireTestStaticServer(sessionGrant);
-      },
+      startSessionServer: (sessionGrant) =>
+        Effect.gen(function* () {
+          yield* Effect.sync(() => {
+            contentStarts += 1;
+          });
+          return yield* startStaticServer(sessionGrant);
+        }),
     });
     supervisors.push(supervisor);
     const operation = controlRequest(paths, "POST", "/sessions", {
@@ -961,22 +944,27 @@ describe("supervisor lifecycle", () => {
     for (const [expected, startSessionServer] of [
       [
         "http.start_failed",
-        async () => {
-          throw Object.assign(new Error("bind failed"), {
-            code: "EADDRNOTAVAIL",
-          });
-        },
+        () =>
+          Effect.fail(
+            new ContentListenerError({
+              code: "http.start_failed",
+              message: "The loopback content listener could not start",
+              cause: Object.assign(new Error("bind failed"), {
+                code: "EADDRNOTAVAIL",
+              }),
+            }),
+          ),
       ],
       [
         "http.readiness_failed",
-        async () => ({
-          bindAddress: "127.0.0.1" as const,
-          hostname: "h-unready.localhost",
-          port: 9,
-          origin: "http://h-unready.localhost:9",
-          url: "http://h-unready.localhost:9/report.html",
-          close: async () => undefined,
-        }),
+        () =>
+          Effect.succeed({
+            bindAddress: "127.0.0.1" as const,
+            hostname: "h-unready.localhost",
+            port: 9,
+            origin: "http://h-unready.localhost:9",
+            url: "http://h-unready.localhost:9/report.html",
+          }),
       ],
     ] as const) {
       const parent = await temporaryDirectory("hv-fail-");
@@ -998,6 +986,69 @@ describe("supervisor lifecycle", () => {
       await supervisor.close();
       supervisors.pop();
     }
+  });
+
+  it("closes a pending session scope when readiness fails", async () => {
+    const parent = await temporaryDirectory("hv-readiness-scope-");
+    const paths = statePaths({
+      HTMLVIEW_STATE_DIR: path.join(parent, "state"),
+    });
+    const root = await temporaryDirectory("hv-readiness-entry-");
+    const entry = path.join(root, "report.html");
+    await writeFile(entry, "<!doctype html>");
+    let finalized = 0;
+    const supervisor = await startSupervisor({
+      paths,
+      idleMilliseconds: 10_000,
+      startSessionServer: () =>
+        Effect.gen(function* () {
+          yield* Effect.addFinalizer(() =>
+            Effect.sync(() => {
+              finalized += 1;
+            }),
+          );
+          return {
+            bindAddress: "127.0.0.1" as const,
+            hostname: "h-unready.localhost",
+            port: 9,
+            origin: "http://h-unready.localhost:9",
+            url: "http://h-unready.localhost:9/report.html",
+          };
+        }),
+    });
+    supervisors.push(supervisor);
+    await assert.rejects(new SupervisorClient(paths).serve(entry, root), {
+      code: "http.readiness_failed",
+    });
+    assert.equal(finalized, 1);
+  });
+
+  it("continues supervisor shutdown after a session finalizer defect", async () => {
+    const parent = await temporaryDirectory("hv-finalizer-defect-");
+    const paths = statePaths({
+      HTMLVIEW_STATE_DIR: path.join(parent, "state"),
+    });
+    const root = await temporaryDirectory("hv-finalizer-entry-");
+    const entry = path.join(root, "report.html");
+    await writeFile(entry, "<!doctype html>");
+    const defect = new Error("session finalizer defect");
+    const supervisor = await startSupervisor({
+      paths,
+      idleMilliseconds: 10_000,
+      startSessionServer: (grant) =>
+        Effect.gen(function* () {
+          const server = yield* startStaticServer(grant);
+          yield* Effect.addFinalizer(() => Effect.die(defect));
+          return server;
+        }),
+    });
+    supervisors.push(supervisor);
+    const served = await new SupervisorClient(paths).serve(entry, root);
+    supervisors.pop();
+    await assert.rejects(supervisor.close());
+    assert.equal(await socketExists(paths), false);
+    await assert.rejects(lstat(paths.supervisorLock));
+    await assert.rejects(fetch(served.session.url));
   });
 });
 
