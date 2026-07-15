@@ -20,8 +20,10 @@ caller.
   for existing automation.
 - Browser validation uses Playwright and independently installed
   `agent-browser`; neither is a runtime dependency.
-- The next action is Milestone 0 foundation using Node.js/TypeScript and the
-  maintained reference TOON encoder, pending the recorded packaging checks.
+- Milestone 0 is complete: ADR 0005 selects Node.js 22.13+, TypeScript, npm,
+  and `@toon-format/toon`; the CLI foundation and pinned v3.3 conformance tests
+  are in place.
+- The next action is Milestone 1 faithful static serving.
 
 Update this document in place. Keep completed work, current validation,
 blockers, decisions, and the single next action concise; do not append session
@@ -60,6 +62,9 @@ Acceptance:
   shape in a public contract.
 
 ## Milestone 0: Foundation
+
+Status: Complete. The implementation is recorded in ADR 0005 and the
+start-here code map in `ARCHITECTURE.md`.
 
 - Select an implementation language and packaging method using these criteria:
   easy global or one-shot CLI installation, reliable background-process
@@ -222,16 +227,16 @@ annotation transport before a working second use case requires it.
 
 ## Validation matrix
 
-| Layer | Required evidence |
-| --- | --- |
-| CLI | parsing, AXI home/help/errors, exit codes, TOON/JSON equivalence, channel separation |
-| Paths | explicit root grants, in-root disclosure, Unicode, traversal, symlink escape |
-| HTTP | methods, MIME, bytes, cache validators, missing resources |
+| Layer     | Required evidence                                                                     |
+| --------- | ------------------------------------------------------------------------------------- |
+| CLI       | parsing, AXI home/help/errors, exit codes, TOON/JSON equivalence, channel separation  |
+| Paths     | explicit root grants, in-root disclosure, Unicode, traversal, symlink escape          |
+| HTTP      | methods, MIME, bytes, cache validators, missing resources                             |
 | Lifecycle | readiness, concurrency, idempotency, recovery, browser-state isolation, idle shutdown |
-| Browser | direct-file comparison and complete fixture interaction through two external tools |
-| Security | host validation, control authentication, output encoding, permissions, limits |
+| Browser   | direct-file comparison and complete fixture interaction through two external tools    |
+| Security  | host validation, control authentication, output encoding, permissions, limits         |
 
 ## Next action
 
-Complete Milestone 0 foundation and record the Node.js/npm runtime and package
-channel decision with pinned TOON v3.3 conformance coverage.
+Complete Milestone 1 faithful static serving with in-process HTTP integration
+and adversarial path-confinement tests.

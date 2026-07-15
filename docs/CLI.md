@@ -43,9 +43,13 @@ encoder is selected only at the stdout boundary:
 - `--json` emits the same logical value as JSON.
 - Both formats use the same field names, value meanings, error codes, and exit
   codes.
+- Contextual command strings may differ only to retain an explicit `--json`
+  choice in the next command; the surrounding result schema and domain values
+  remain equivalent.
 - Contract tests decode both representations and compare their logical values.
 
-The implementation must use a maintained encoder rather than interpolate
+The implementation uses `@toon-format/toon` 2.3.0 and validates it against all
+official `@toon-format/spec` 3.3.0 fixtures rather than interpolate
 paths, errors, or other untrusted values into either format. The selected TOON
 implementation and conformance fixtures are pinned with the runtime during the
 foundation milestone.

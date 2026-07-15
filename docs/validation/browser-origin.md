@@ -6,13 +6,13 @@ URL; neither supplies serving behavior to `htmlview`.
 
 ## Direct-file fixture matrix
 
-| Case | Direct `file://` | Loopback HTTP |
-| --- | --- | --- |
-| Root-relative stylesheet | Missing (`file:///assets/...`) | Loaded from the granted root |
-| JavaScript dynamic module | Blocked by file-origin CORS | Loaded with JavaScript MIME |
-| Relative `fetch` with a space | Rejected for the file scheme | `200` JSON response |
-| Space and Unicode entry/module paths | Entry opens; module is blocked | Both paths load |
-| Unreferenced hidden in-root file | File-scheme fetch rejected | Readable by same-origin page code |
+| Case                                 | Direct `file://`               | Loopback HTTP                     |
+| ------------------------------------ | ------------------------------ | --------------------------------- |
+| Root-relative stylesheet             | Missing (`file:///assets/...`) | Loaded from the granted root      |
+| JavaScript dynamic module            | Blocked by file-origin CORS    | Loaded with JavaScript MIME       |
+| Relative `fetch` with a space        | Rejected for the file scheme   | `200` JSON response               |
+| Space and Unicode entry/module paths | Entry opens; module is blocked | Both paths load                   |
+| Unreferenced hidden in-root file     | File-scheme fetch rejected     | Readable by same-origin page code |
 
 The last row proves that the selected root, not the entry or its authored
 references, is the disclosure boundary.

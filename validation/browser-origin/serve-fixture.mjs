@@ -8,7 +8,10 @@ const server = await listenFixture({
   urlHost: "agent-browser.localhost",
   label: "agent-browser",
 });
-await writeFile(readyFile, JSON.stringify({ url: `${server.origin}${encodedEntryPath()}` }));
+await writeFile(
+  readyFile,
+  JSON.stringify({ url: `${server.origin}${encodedEntryPath()}` }),
+);
 
 for (const signal of ["SIGINT", "SIGTERM"]) {
   process.on(signal, async () => {

@@ -3,7 +3,9 @@ import { readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
 
-export const fixtureRoot = path.resolve(fileURLToPath(new URL("fixtures/root/", import.meta.url)));
+export const fixtureRoot = path.resolve(
+  fileURLToPath(new URL("fixtures/root/", import.meta.url)),
+);
 export const entryPath = path.join(fixtureRoot, "pages", "report space ü.html");
 
 const contentTypes = new Map([
@@ -22,7 +24,10 @@ export async function listenFixture({
 } = {}) {
   const hits = new Map();
   const server = createServer(async (request, response) => {
-    const requestUrl = new URL(request.url ?? "/", `http://${request.headers.host}`);
+    const requestUrl = new URL(
+      request.url ?? "/",
+      `http://${request.headers.host}`,
+    );
     hits.set(requestUrl.pathname, (hits.get(requestUrl.pathname) ?? 0) + 1);
 
     if (requestUrl.pathname === "/state.html") {
@@ -79,7 +84,8 @@ export async function listenFixture({
     try {
       const body = await readFile(target);
       response.writeHead(200, {
-        "content-type": contentTypes.get(path.extname(target)) ?? "application/octet-stream",
+        "content-type":
+          contentTypes.get(path.extname(target)) ?? "application/octet-stream",
         "content-length": body.length,
         "cache-control": "no-store",
       });
@@ -100,7 +106,10 @@ export async function listenFixture({
     port: address.port,
     origin: `http://${urlHost}:${address.port}`,
     hits,
-    close: () => new Promise((resolve, reject) => server.close(error => error ? reject(error) : resolve())),
+    close: () =>
+      new Promise((resolve, reject) =>
+        server.close((error) => (error ? reject(error) : resolve())),
+      ),
   };
 }
 

@@ -215,10 +215,18 @@ origin-keyed state from concurrent services and later port reuse.
 
 ## Start-here code map
 
-There is no source tree yet. The foundation milestone in `PLAN.md` must add this
-section's concrete entry points after selecting the runtime. Keep the eventual
-boundaries aligned with the components above; avoid creating a generic plugin
-or browser-adapter layer without a current second implementation.
+- `src/cli.ts` is the executable entry and process-I/O boundary.
+- `src/app.ts` dispatches parsed commands and builds format-neutral results.
+- `src/command.ts` owns strict syntax, flag, field, and usage validation.
+- `src/contracts.ts` owns JSON-compatible result and error types.
+- `src/output.ts` is the only TOON/JSON encoding boundary.
+- `test/` holds contract and TOON v3.3 conformance tests.
+- `validation/browser-origin/` holds browser behavior evidence and remains
+  outside the runtime.
+
+The serving core and supervisor will receive concrete start paths in their
+milestones. Avoid a generic plugin or browser-adapter layer without a current
+second implementation.
 
 ## Related decisions
 
@@ -226,5 +234,6 @@ or browser-adapter layer without a current second implementation.
 - [ADR 0002: Use a per-user loopback supervisor](docs/decisions/0002-per-user-loopback-supervisor.md)
 - [ADR 0003: Adopt an AXI output contract](docs/decisions/0003-adopt-an-axi-output-contract.md)
 - [ADR 0004: Treat the serving root as a disclosure grant](docs/decisions/0004-treat-the-serving-root-as-a-disclosure-grant.md)
+- [ADR 0005: Use Node.js, TypeScript, and npm packaging](docs/decisions/0005-use-node-typescript-and-npm-packaging.md)
 - [Agent-facing CLI contract](docs/CLI.md)
 - [Threat model](docs/THREAT_MODEL.md)
