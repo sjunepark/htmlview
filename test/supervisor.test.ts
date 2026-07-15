@@ -18,6 +18,7 @@ import { createServer as createNetServer } from "node:net";
 import { homedir, tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, it } from "node:test";
+import { Effect, Exit, Scope } from "effect";
 import { resolveServingGrant } from "../src/serving/grant.js";
 import { startStaticServer } from "../src/serving/http.js";
 import { SupervisorClient } from "../src/supervisor/client.js";
@@ -40,6 +41,25 @@ import { htmlviewVersion } from "../src/version.js";
 
 const temporaryDirectories: string[] = [];
 const supervisors: RunningSupervisor[] = [];
+
+async function acquireTestLock(
+  paths: StatePaths,
+  timeoutMilliseconds?: number,
+): Promise<{ readonly nonce: string; release(): Promise<void> }> {
+  const scope = await Effect.runPromise(Scope.make());
+  try {
+    const lock = await Effect.runPromise(
+      Scope.provide(scope)(acquireSupervisorLock(paths, timeoutMilliseconds)),
+    );
+    return {
+      nonce: lock.nonce,
+      release: () => Effect.runPromise(Scope.close(scope, Exit.void)),
+    };
+  } catch (error) {
+    await Effect.runPromise(Scope.close(scope, Exit.void));
+    throw error;
+  }
+}
 
 async function temporaryDirectory(prefix: string): Promise<string> {
   const directory = await mkdtemp(path.join(tmpdir(), prefix));
@@ -69,7 +89,7 @@ async function setup(
 }> {
   const state = await temporaryDirectory("htmlview-state-parent-");
   const paths = statePaths({ HTMLVIEW_STATE_DIR: path.join(state, "state") });
-  await ensurePrivateStateDirectory(paths);
+  await Effect.runPromise(ensurePrivateStateDirectory(paths));
   const supervisor = await startSupervisor({
     paths,
     idleMilliseconds: options.idleMilliseconds ?? 10_000,
@@ -234,7 +254,7 @@ describe("supervisor lifecycle", () => {
     const paths = statePaths({
       HTMLVIEW_STATE_DIR: path.join(parent, "s"),
     });
-    await ensurePrivateStateDirectory(paths);
+    await Effect.runPromise(ensurePrivateStateDirectory(paths));
     const root = await temporaryDirectory("htmlview-malformed-entry-");
     const entry = path.join(root, "report.html");
     await writeFile(entry, "<!doctype html>");
@@ -290,7 +310,7 @@ describe("supervisor lifecycle", () => {
     const paths = statePaths({
       HTMLVIEW_STATE_DIR: path.join(parent, "state"),
     });
-    await ensurePrivateStateDirectory(paths);
+    await Effect.runPromise(ensurePrivateStateDirectory(paths));
     const root = await temporaryDirectory("htmlview-invariant-entry-");
     const entry = path.join(root, "report.html");
     await writeFile(entry, "<!doctype html>");
@@ -570,7 +590,7 @@ describe("supervisor lifecycle", () => {
     const paths = statePaths({
       HTMLVIEW_STATE_DIR: path.join(parent, "state"),
     });
-    await ensurePrivateStateDirectory(paths);
+    await Effect.runPromise(ensurePrivateStateDirectory(paths));
     const foreignSockets = new Set<import("node:net").Socket>();
     const foreign = createNetServer((socket) => {
       foreignSockets.add(socket);
@@ -647,7 +667,7 @@ describe("supervisor lifecycle", () => {
     const paths = statePaths({
       HTMLVIEW_STATE_DIR: path.join(parent, "state"),
     });
-    await ensurePrivateStateDirectory(paths);
+    await Effect.runPromise(ensurePrivateStateDirectory(paths));
     const child = spawn(
       process.execPath,
       [
@@ -670,7 +690,7 @@ describe("supervisor lifecycle", () => {
     const paths = statePaths({
       HTMLVIEW_STATE_DIR: path.join(parent, "state"),
     });
-    await ensurePrivateStateDirectory(paths);
+    await Effect.runPromise(ensurePrivateStateDirectory(paths));
     const child = spawn(
       process.execPath,
       [
@@ -1008,15 +1028,17 @@ describe("supervisor state", () => {
     const paths = statePaths({
       HTMLVIEW_STATE_DIR: path.join(parent, "state"),
     });
-    await ensurePrivateStateDirectory(paths);
+    await Effect.runPromise(ensurePrivateStateDirectory(paths));
     await mkdir(paths.supervisorLock, { mode: 0o700 });
-    await writePrivateJson(path.join(paths.supervisorLock, "owner.json"), {
-      pid: process.pid,
-      nonce: "a".repeat(32),
-    });
+    await Effect.runPromise(
+      writePrivateJson(path.join(paths.supervisorLock, "owner.json"), {
+        pid: process.pid,
+        nonce: "a".repeat(32),
+      }),
+    );
     await assert.rejects(
-      acquireSupervisorLock(paths, 80),
-      /Timed out waiting for the supervisor ownership lock/,
+      Effect.runPromise(Effect.scoped(acquireSupervisorLock(paths, 80))),
+      { reason: "ownership_timeout" },
     );
   });
 
@@ -1025,10 +1047,10 @@ describe("supervisor state", () => {
     const paths = statePaths({
       HTMLVIEW_STATE_DIR: path.join(parent, "state"),
     });
-    await ensurePrivateStateDirectory(paths);
-    const oldOwner = await acquireSupervisorLock(paths);
+    await Effect.runPromise(ensurePrivateStateDirectory(paths));
+    const oldOwner = await acquireTestLock(paths);
     await rm(paths.supervisorLock, { recursive: true, force: true });
-    const replacement = await acquireSupervisorLock(paths);
+    const replacement = await acquireTestLock(paths);
     await oldOwner.release();
     assert.equal((await stat(paths.supervisorLock)).isDirectory(), true);
     await replacement.release();
@@ -1040,15 +1062,17 @@ describe("supervisor state", () => {
     const paths = statePaths({
       HTMLVIEW_STATE_DIR: path.join(parent, "state"),
     });
-    await ensurePrivateStateDirectory(paths);
+    await Effect.runPromise(ensurePrivateStateDirectory(paths));
     await mkdir(paths.supervisorLock, { mode: 0o700 });
-    await writePrivateJson(path.join(paths.supervisorLock, "owner.json"), {
-      pid: 2_147_483_647,
-      nonce: "s".repeat(32),
-    });
+    await Effect.runPromise(
+      writePrivateJson(path.join(paths.supervisorLock, "owner.json"), {
+        pid: 2_147_483_647,
+        nonce: "s".repeat(32),
+      }),
+    );
     const resolved: number[] = [];
     const contenders = [0, 1].map(async (index) => {
-      const lock = await acquireSupervisorLock(paths, 2_000);
+      const lock = await acquireTestLock(paths, 2_000);
       resolved.push(index);
       return { index, lock };
     });
@@ -1067,16 +1091,18 @@ describe("supervisor state", () => {
     const paths = statePaths({
       HTMLVIEW_STATE_DIR: path.join(parent, "state"),
     });
-    await ensurePrivateStateDirectory(paths);
+    await Effect.runPromise(ensurePrivateStateDirectory(paths));
     await mkdir(paths.supervisorLock, { mode: 0o700 });
-    await writePrivateJson(path.join(paths.supervisorLock, "owner.json"), {
-      pid: 0,
-      nonce: "m".repeat(32),
-    });
+    await Effect.runPromise(
+      writePrivateJson(path.join(paths.supervisorLock, "owner.json"), {
+        pid: 0,
+        nonce: "m".repeat(32),
+      }),
+    );
     const old = new Date(Date.now() - 20_000);
     await utimes(paths.supervisorLock, old, old);
 
-    const lock = await acquireSupervisorLock(paths, 500);
+    const lock = await acquireTestLock(paths, 500);
     await lock.release();
   });
 
@@ -1085,13 +1111,27 @@ describe("supervisor state", () => {
     const paths = statePaths({
       HTMLVIEW_STATE_DIR: path.join(parent, "state"),
     });
-    await ensurePrivateStateDirectory(paths);
+    await Effect.runPromise(ensurePrivateStateDirectory(paths));
     await assert.rejects(
-      writePrivateJson(path.join(paths.directory, "record.json"), {
-        oversized: "x".repeat(17 * 1024),
-      }),
+      Effect.runPromise(
+        writePrivateJson(path.join(paths.directory, "record.json"), {
+          oversized: "x".repeat(17 * 1024),
+        }),
+      ),
       /State record exceeds size limit/,
     );
     assert.deepEqual(await readdir(paths.directory), []);
+
+    const destination = path.join(paths.directory, "record-directory");
+    await mkdir(destination);
+    await assert.rejects(
+      Effect.runPromise(writePrivateJson(destination, { value: true })),
+      (error: unknown) => {
+        assert.equal((error as { code?: unknown }).code, "state.unavailable");
+        assert.ok((error as { cause?: unknown }).cause instanceof Error);
+        return true;
+      },
+    );
+    assert.deepEqual(await readdir(paths.directory), ["record-directory"]);
   });
 });

@@ -1,9 +1,8 @@
 #!/usr/bin/env node
-import { ensurePrivateStateDirectory, statePaths } from "./state.js";
+import { statePaths } from "./state.js";
 import { startSupervisor } from "./server.js";
 
 const paths = statePaths();
-await ensurePrivateStateDirectory(paths);
 const supervisor = await startSupervisor({
   paths,
   ...(process.env.HTMLVIEW_SUPERVISOR_LOCK_NONCE === undefined

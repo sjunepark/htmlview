@@ -206,10 +206,13 @@ failures and graceful shutdown cannot trigger an overlapping replacement.
 At most one healthy supervisor owns the deterministic per-user control socket.
 Its directory is `0700` and the socket is `0600`; there is no persisted control
 credential. An owner-fenced inter-process lock is held for the supervisor's
-full lifetime; it serializes startup and confines stale-socket removal. Health includes protocol,
-version, instance, and process identity; mismatches are never replaced
-silently. Content-listener host labels and ports belong to session state and
-are never caller-selected.
+full lifetime; it serializes startup and confines stale-socket removal. Lock
+acquisition and transfer are scoped Effect resources: 50 ms observation uses
+`Schedule`/`Clock`, owner-record replacement and finalizer registration are one
+uninterruptible transition, and release remains nonce-fenced. Health includes
+protocol, version, instance, and process identity; mismatches are never replaced
+silently. Content-listener host labels and ports belong to session state and are
+never caller-selected.
 
 The registry permits at most 32 live sessions. Listing selects optional fields
 at the control seam, keeping complete enumeration within the bounded response
@@ -245,8 +248,9 @@ origin-keyed state from concurrent services and later port reuse.
   supervisor.
 - `src/supervisor/protocol.ts` is the runtime-validated source of truth for
   control requests, responses, wire errors, identities, and session summaries.
-- `src/supervisor/state.ts` owns private socket paths and the lifetime
-  ownership lock that also serializes startup and stale recovery.
+- `src/supervisor/state.ts` owns private socket paths, bounded private records,
+  and the scoped lifetime ownership lock that serializes startup and stale
+  recovery.
 - `src/service.ts` translates CLI intent into grant and supervisor operations.
 - `test/` holds contract and TOON v3.3 conformance tests.
 - `validation/browser-origin/` holds browser behavior evidence and remains

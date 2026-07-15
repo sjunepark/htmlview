@@ -3,7 +3,7 @@ import { realpath } from "node:fs/promises";
 import { request as httpRequest } from "node:http";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { Result } from "effect";
+import { Effect, Exit, Result, Scope } from "effect";
 import {
   operationalError,
   PathError,
@@ -50,15 +50,7 @@ const supervisorShutdownTimeoutMilliseconds = 5_000;
 const supervisorOwnershipWaitMilliseconds = 10_000;
 
 async function prepareState(paths: StatePaths): Promise<void> {
-  try {
-    await ensurePrivateStateDirectory(paths);
-  } catch (cause) {
-    throw new RuntimeStateError({
-      code: "state.unavailable",
-      message: "The private htmlview runtime state directory is unavailable",
-      cause,
-    });
-  }
+  await Effect.runPromise(ensurePrivateStateDirectory(paths));
 }
 
 async function canonicalPotentialPath(candidate: string): Promise<string> {
@@ -272,6 +264,34 @@ const startDetachedSupervisor: StartSupervisorProcess = (
     });
   });
 
+interface ScopedSupervisorLock extends SupervisorLock {
+  release(): Promise<void>;
+}
+
+async function acquireScopedSupervisorLock(
+  paths: StatePaths,
+  timeoutMilliseconds?: number,
+): Promise<ScopedSupervisorLock> {
+  const scope = await Effect.runPromise(Scope.make());
+  try {
+    const lock = await Effect.runPromise(
+      Scope.provide(scope)(acquireSupervisorLock(paths, timeoutMilliseconds)),
+    );
+    let released = false;
+    return {
+      ...lock,
+      release: async () => {
+        if (released) return;
+        released = true;
+        await Effect.runPromise(Scope.close(scope, Exit.void));
+      },
+    };
+  } catch (error) {
+    await Effect.runPromise(Scope.close(scope, Exit.void));
+    throw error;
+  }
+}
+
 async function ensureSupervisor(
   paths: StatePaths,
   startProcess: StartSupervisorProcess,
@@ -298,7 +318,7 @@ async function ensureSupervisor(
       });
 
     try {
-      await removeStaleControlSocket(paths);
+      await Effect.runPromise(removeStaleControlSocket(paths));
       await startProcess(paths, lock.nonce);
     } catch (cause) {
       throw new SupervisorError({
@@ -329,7 +349,8 @@ async function ensureSupervisor(
 }
 
 function ownershipLockError(error: unknown): OperationalError {
-  return error instanceof Error && error.message.startsWith("Timed out")
+  return error instanceof RuntimeStateError &&
+    error.reason === "ownership_timeout"
     ? new SupervisorError({
         code: "supervisor.unavailable",
         message:
@@ -343,11 +364,20 @@ function ownershipLockError(error: unknown): OperationalError {
       });
 }
 
+function ownershipTimeoutError(): RuntimeStateError {
+  return new RuntimeStateError({
+    code: "state.unavailable",
+    message: "The htmlview supervisor ownership lock is unavailable",
+    reason: "ownership_timeout",
+    cause: new Error("Timed out waiting for the supervisor ownership lock"),
+  });
+}
+
 async function acquireOwnershipOrObserve(
   paths: StatePaths,
   allowVersionMismatch = false,
 ): Promise<
-  | { readonly kind: "lock"; readonly lock: SupervisorLock }
+  | { readonly kind: "lock"; readonly lock: ScopedSupervisorLock }
   | { readonly kind: "identity"; readonly identity: SupervisorIdentity }
 > {
   const deadline = Date.now() + supervisorOwnershipWaitMilliseconds;
@@ -355,10 +385,13 @@ async function acquireOwnershipOrObserve(
     try {
       return {
         kind: "lock",
-        lock: await acquireSupervisorLock(paths, 100),
+        lock: await acquireScopedSupervisorLock(paths, 100),
       };
     } catch (error) {
-      if (!(error instanceof Error) || !error.message.startsWith("Timed out"))
+      if (
+        !(error instanceof RuntimeStateError) ||
+        error.reason !== "ownership_timeout"
+      )
         throw ownershipLockError(error);
     }
 
@@ -379,9 +412,7 @@ async function acquireOwnershipOrObserve(
       });
     await delay(50);
   }
-  throw ownershipLockError(
-    new Error("Timed out waiting for the supervisor ownership lock"),
-  );
+  throw ownershipLockError(ownershipTimeoutError());
 }
 
 async function existingSupervisor(
@@ -412,7 +443,8 @@ async function existingSupervisor(
         code: "supervisor.unavailable",
         message: "The htmlview supervisor is alive but temporarily unavailable",
       });
-    if (afterLock.status === "stale") await removeStaleControlSocket(paths);
+    if (afterLock.status === "stale")
+      await Effect.runPromise(removeStaleControlSocket(paths));
     return undefined;
   } finally {
     await lock.release();
@@ -511,7 +543,7 @@ async function waitForShutdown(
     if (result.status === "absent" || result.status === "stale") {
       let lock;
       try {
-        lock = await acquireSupervisorLock(paths, 100);
+        lock = await acquireScopedSupervisorLock(paths, 100);
       } catch {
         await delay(50);
         continue;
@@ -519,7 +551,7 @@ async function waitForShutdown(
       try {
         const settled = await probeOnce(paths);
         if (settled.status === "stale") {
-          await removeStaleControlSocket(paths);
+          await Effect.runPromise(removeStaleControlSocket(paths));
           return;
         }
         if (settled.status === "absent") return;

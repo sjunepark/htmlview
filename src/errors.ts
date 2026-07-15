@@ -59,7 +59,9 @@ export class PathError extends Data.TaggedError("PathError")<
 > {}
 
 export class RuntimeStateError extends Data.TaggedError("RuntimeStateError")<
-  OperationalErrorFields<typeof RuntimeStateErrorCode.Type>
+  OperationalErrorFields<typeof RuntimeStateErrorCode.Type> & {
+    readonly reason?: "unavailable" | "ownership_timeout" | "ownership_changed";
+  }
 > {}
 
 export class ControlError extends Data.TaggedError("ControlError")<

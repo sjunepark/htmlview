@@ -7,7 +7,7 @@ import {
   type Server,
   type ServerResponse,
 } from "node:http";
-import { Result } from "effect";
+import { Effect, Exit, Result, Scope } from "effect";
 import { ContentListenerError, ControlError, PathError } from "../errors.js";
 import {
   resolveServingGrant,
@@ -382,7 +382,7 @@ export async function startSupervisor(
   } = {},
 ): Promise<RunningSupervisor> {
   const paths = options.paths ?? statePaths();
-  await ensurePrivateStateDirectory(paths);
+  await Effect.runPromise(ensurePrivateStateDirectory(paths));
   const instanceId = randomUUID();
   const sessions = new SessionRegistry(
     options.startSessionServer ?? ((grant) => startStaticServer(grant)),
@@ -558,27 +558,42 @@ export async function startSupervisor(
   control.keepAliveTimeout = 2_000;
   control.setTimeout(10_000, (socket) => socket.destroy());
 
-  const bootstrapLock =
-    options.ownershipNonce === undefined
-      ? await acquireSupervisorLock(paths)
-      : undefined;
-  let ownership: SupervisorLock;
+  let bootstrapScope: Scope.Closeable | undefined;
+  let bootstrapLock: SupervisorLock | undefined;
+  let ownershipScope: Scope.Closeable;
   try {
-    ownership = await transferSupervisorLock(
-      paths,
-      options.ownershipNonce ?? bootstrapLock?.nonce ?? "",
-      identity,
-    );
-  } catch (error) {
-    await bootstrapLock?.release();
-    throw error;
+    if (options.ownershipNonce === undefined) {
+      bootstrapScope = await Effect.runPromise(Scope.make());
+      bootstrapLock = await Effect.runPromise(
+        Scope.provide(bootstrapScope)(acquireSupervisorLock(paths)),
+      );
+    }
+    const candidateScope = await Effect.runPromise(Scope.make());
+    try {
+      await Effect.runPromise(
+        Scope.provide(candidateScope)(
+          transferSupervisorLock(
+            paths,
+            options.ownershipNonce ?? bootstrapLock?.nonce ?? "",
+            identity,
+          ),
+        ),
+      );
+      ownershipScope = candidateScope;
+    } catch (error) {
+      await Effect.runPromise(Scope.close(candidateScope, Exit.void));
+      throw error;
+    }
+  } finally {
+    if (bootstrapScope !== undefined)
+      await Effect.runPromise(Scope.close(bootstrapScope, Exit.void));
   }
 
   await new Promise<void>((resolve, reject) => {
     control.once("error", reject);
     control.listen(paths.controlSocket, resolve);
   }).catch(async (error: unknown) => {
-    await ownership.release();
+    await Effect.runPromise(Scope.close(ownershipScope, Exit.void));
     throw error;
   });
   try {
@@ -591,7 +606,7 @@ export async function startSupervisor(
       throw new Error("The htmlview control socket is not privately owned");
   } catch (error) {
     await closeServer(control);
-    await ownership.release();
+    await Effect.runPromise(Scope.close(ownershipScope, Exit.void));
     throw error;
   }
 
@@ -602,7 +617,7 @@ export async function startSupervisor(
       cancelIdleShutdown();
       await sessions.stopAll();
       await closeServer(control, shutdownGraceMilliseconds);
-      await ownership.release();
+      await Effect.runPromise(Scope.close(ownershipScope, Exit.void));
     })();
     return closePromise;
   }

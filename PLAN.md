@@ -47,6 +47,9 @@ caller.
 - Effect v4 adoption Phase 2 is complete: tagged operational errors preserve
   internal causes while projecting only stable public fields, and one strict
   Effect-schema contract now validates both sides of control communication.
+- Effect v4 adoption Phase 3 is complete: private runtime-state operations are
+  typed Effects, ownership is a scoped resource, and lock polling and transfer
+  are deterministic and interruption-safe without weakening native fencing.
 - Final validation passes `pnpm run check`, the Node 22 Linux package workflow,
   `pnpm run validate:browser-use`, and `pnpm audit` with zero vulnerabilities.
 
@@ -282,5 +285,5 @@ annotation transport before a working second use case requires it.
 
 ## Next action
 
-Execute Phase 3 of `docs/plans/effect-v4-adoption.md`; do not publish the
+Execute Phase 4 of `docs/plans/effect-v4-adoption.md`; do not publish the
 pre-migration artifact. Optional annotation work remains deferred.

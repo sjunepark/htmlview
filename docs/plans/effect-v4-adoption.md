@@ -1,6 +1,6 @@
 # Effect v4 Adoption Plan
 
-- Status: In progress; Phase 2 complete
+- Status: In progress; Phase 3 complete
 - Updated: 2026-07-15
 - Parent plan: [`PLAN.md`](../../PLAN.md)
 - Decision scope: migrate htmlview's fallible asynchronous execution and
@@ -332,7 +332,7 @@ Do not retain two TypeScript unit-test runners after the migration.
 | 0. Baseline and API verification     | Complete | Green baseline and recorded v4/package decisions       |
 | 1. Decision records and toolchain    | Complete | Exact dependencies, diagnostics, build/test skeleton   |
 | 2. Errors and protocol schemas       | Complete | Shared runtime-validated control contract              |
-| 3. Runtime-state and lock lifecycle  | Pending  | Typed, interruption-safe private state operations      |
+| 3. Runtime-state and lock lifecycle  | Complete | Typed, interruption-safe private state operations      |
 | 4. Grant and raw-server resources    | Pending  | Scoped serving resources with byte fidelity intact     |
 | 5. Supervisor registry and server    | Pending  | Scoped sessions and deterministic shutdown             |
 | 6. Supervisor client                 | Pending  | Schedule-driven, schema-decoded client lifecycle       |
@@ -723,10 +723,33 @@ Keep this table current; replace `Pending` when a gate is resolved.
 
 ## Next action
 
-Execute Phase 3: convert private runtime-state and ownership-lock operations to
-typed Effects with scoped, interruption-safe acquisition and release.
+Convert disclosure-grant filesystem operations, authorized file handles, and
+the raw session listener to typed, scoped Effects while preserving every byte,
+header, confinement, and loopback-host contract.
 
 ## Progress log
+
+### 2026-07-15 — Phase 3 complete
+
+- Converted private runtime-directory, bounded-record, stale-socket, and
+  ownership-lock operations to typed Effects without weakening native
+  `O_NOFOLLOW`, `O_NONBLOCK`, device/inode, permission, or rename fencing.
+- Replaced ownership polling with `Schedule` and `Clock`, and made lock
+  ownership a scoped resource. Owner publication and finalizer registration
+  now share one uninterruptible claim, so interruption cannot strand a
+  published lock; handoff transfers release authority to an explicit
+  authoritative scope.
+- Kept cleanup diagnostics generic and stderr-only, removed a redundant state
+  initialization path, and retained temporary explicit scopes only at the
+  Promise-based client/server orchestration seams that Phases 5 and 6 replace.
+- Added deterministic Effect tests for timeout boundaries, malformed-owner
+  grace, permissions, release after success/failure/interruption, and ownership
+  transfer. Real-filesystem supervisor tests cover temporary-file cleanup and
+  public timeout mapping. Review fixed atomic finalizer registration, entropy
+  failure cleanup, and the outer observation-timeout mapping; no Bucket II or
+  diet finding remains. The full `pnpm run check` gate passed with 100
+  TypeScript tests, six Effect tests, E2E, seven Playwright checks, docs, build,
+  and package lifecycle validation.
 
 ### 2026-07-15 — Phase 2 complete
 
