@@ -9,7 +9,7 @@ set; Linux package installation is the separate
 | ----------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------- |
 | Loopback content, private Unix control socket, and no public bind       | Fixed addresses in `src/serving/http.ts` and `src/supervisor/server.ts`; strict CLI unknown-flag tests                          |
 | Exact content and control `Host` validation                             | `test/http.integration.vitest.ts` forged-host cases and `test/supervisor.integration.vitest.ts` private-socket control requests |
-| High-entropy, never-reused session names                                | `generateSessionHostname()` uses 128 random bits; lifecycle and browser-origin tests require distinct hostnames                 |
+| Fresh, high-entropy session names                                       | `generateSessionHostname()` uses 128 random bits; lifecycle and browser-origin tests require distinct observed hostnames        |
 | No permissive CORS; foreign page cannot read content                    | response-header integration test and Playwright cross-origin fetch test                                                         |
 | Entry/root disclosure, broad-root rejection, and in-root hidden files   | `test/grant.vitest.ts`, supervisor state-overlap test, raw HTTP tests, and complete browser fixture                             |
 | Plain/encoded traversal, malformed UTF-8, controls, separators, Unicode | generated single-decode and Unicode filename cases in `test/http.integration.vitest.ts`                                         |

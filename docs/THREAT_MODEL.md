@@ -88,7 +88,8 @@ static HTTP service. It does not claim that rendered HTML is safe.
   ownership lock held by every live supervisor.
 - **Browser-state collision.** Cookies are shared across ports and exact origin
   reuse revives storage, caches, and service workers. Give every new session a
-  never-reused random `.localhost` label with at least 128 bits of entropy.
+  fresh random `.localhost` label with at least 128 bits of entropy. The
+  supervisor does not intentionally reuse labels after sessions stop.
   Accept a reused label only for an idempotent request to the same live session.
 - **Bundled dependency drift.** Pin the prerelease Effect toolchain exactly.
   Bundle only the audited dependency set, keep every external import declared

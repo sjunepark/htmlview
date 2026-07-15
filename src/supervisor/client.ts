@@ -901,8 +901,8 @@ export class SupervisorClient {
     const startProcess = this.#startProcess;
     const acquireLock = this.#acquireLock;
     return Effect.gen(function* () {
-      yield* assertStateOutsideRoot(paths, root);
       const expectedGrant = yield* expectedSessionGrant(entry, root);
+      yield* assertStateOutsideRoot(paths, expectedGrant.root);
       yield* ensureSupervisor(paths, startProcess, acquireLock);
       return yield* requiredRequest(
         paths,

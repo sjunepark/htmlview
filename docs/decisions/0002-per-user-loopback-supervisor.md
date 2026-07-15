@@ -29,17 +29,17 @@ lifecycle, stale-socket recovery, and bounded idle shutdown.
 and failure semantics; control never depends on a
 session identifier, port number, or content URL remaining secret.
 
-Each new session receives a cryptographically random, never-reused hostname
+Each new session receives a cryptographically random hostname
 under the special-use `.localhost` name and an ephemeral port, for example
 `h-<random>.localhost:<port>`. The listener still binds only to `127.0.0.1`;
 the hostname changes browser identity, not network exposure. The content
 server accepts only its exact issued hostname and port. Internal readiness
 checks use that same authority.
 
-The supervisor never reissues a session hostname after that session stops.
-Random labels carry at least 128 bits of entropy, so persistent tombstones are
-not needed to make accidental reuse negligible. A repeated `serve` reuses the
-same hostname only while the matching session is still live.
+The supervisor does not intentionally reissue a session hostname after that
+session stops. Random labels carry at least 128 bits of entropy, so accidental
+reuse remains possible but negligible without persistent tombstones. A repeated
+`serve` reuses the same hostname only while the matching session is still live.
 
 This replaces the provisional assumption that distinct numeric-loopback ports
 were sufficient. Reproducible Chromium tests described in

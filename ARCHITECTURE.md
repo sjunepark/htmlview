@@ -99,8 +99,9 @@ shutdown confirmation use named Clock-driven schedules. The bootstrap lock is
 scoped across discovery and readiness, while detached process setup is scoped
 only until a successful unref handoff.
 
-The listener binds only to `127.0.0.1`; the unique hostname isolates cookies,
-storage, caches, and service workers and is never reused after a session stops.
+The listener binds only to `127.0.0.1`; the fresh, high-entropy hostname
+isolates cookies, storage, caches, and service workers. The supervisor does not
+intentionally reuse a hostname after its session stops.
 The supervisor owns concurrency, idle shutdown, stale-socket recovery, and
 graceful termination. It must not require a project-local process manager.
 The supervisor executable also has one Node runtime boundary. Its scoped root
@@ -112,7 +113,7 @@ run the idempotent shutdown finalizer before exit.
 
 Maps a session identifier to:
 
-- the public entry route and canonical entry-file target;
+- the public entry route;
 - the canonical serving root;
 - the dedicated content-listener address;
 - lifecycle state; and

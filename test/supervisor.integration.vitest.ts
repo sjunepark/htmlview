@@ -10,6 +10,7 @@ import {
   readdir,
   rm,
   stat,
+  symlink,
   utimes,
   writeFile,
 } from "node:fs/promises";
@@ -77,9 +78,13 @@ async function temporaryDirectory(prefix: string): Promise<string> {
 }
 
 async function socketExists(paths: StatePaths): Promise<boolean> {
-  return lstat(paths.controlSocket)
-    .then(() => true)
-    .catch(() => false);
+  try {
+    await lstat(paths.controlSocket);
+    return true;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return false;
+    throw error;
+  }
 }
 
 async function setup(
@@ -541,6 +546,31 @@ describe("supervisor lifecycle", () => {
     assert.equal(starts, 0);
     await assert.rejects(lstat(paths.directory));
     assert.deepEqual(await readdir(root), ["report.html"]);
+  });
+
+  it("rejects a symlinked root that resolves over runtime state", async () => {
+    const root = await temporaryDirectory("htmlview-state-link-target-");
+    const aliases = await temporaryDirectory("htmlview-state-link-alias-");
+    const linkedRoot = path.join(aliases, "root");
+    const paths = statePaths({
+      HTMLVIEW_STATE_DIR: path.join(root, "runtime-state"),
+    });
+    const entry = path.join(root, "report.html");
+    await writeFile(entry, "<!doctype html>");
+    await symlink(root, linkedRoot, "dir");
+    let starts = 0;
+    const client = new SupervisorClient(paths, () =>
+      Effect.sync(() => (starts += 1)),
+    );
+
+    await assert.rejects(
+      runEffect(client.serve(path.join(linkedRoot, "report.html"), linkedRoot)),
+      {
+        code: "path.root_contains_state",
+      },
+    );
+    assert.equal(starts, 0);
+    await assert.rejects(lstat(paths.directory));
   });
 
   it("revalidates runtime-state overlap at the supervisor seam", async () => {

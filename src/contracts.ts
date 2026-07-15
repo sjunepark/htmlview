@@ -25,7 +25,7 @@ export function errorResult(
   help: string[] = [],
 ): JsonObject {
   const result: JsonObject = {
-    error: { code, message, ...details },
+    error: { ...details, code, message },
   };
   if (help.length > 0) result.help = help;
   return result;

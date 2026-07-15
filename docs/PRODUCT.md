@@ -57,8 +57,9 @@ contract.
 - Return the resolved root and grant meaning in a successful `serve` result.
 - Return an HTTP URL using a unique special-use `.localhost` name after the
   numeric-loopback listener is ready.
-- Give each session a fresh, never-reused automatically allocated origin and
-  retain the entry's path relative to the chosen root in the returned URL.
+- Give each session a fresh, high-entropy automatically allocated origin and
+  do not intentionally reuse it after the session stops. Retain the entry's
+  path relative to the chosen root in the returned URL.
 - Serve the entry and permitted subresources without body transformation.
 - Select correct content types, including JavaScript modules, CSS, JSON, SVG,
   images, media, and fonts.
