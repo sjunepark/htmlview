@@ -29,7 +29,10 @@ caller.
 - Milestone 2 is complete: authenticated private discovery, concurrency-safe
   detached startup, serialized idempotent sessions, readiness, stop/recovery,
   bounded idle shutdown, and graceful signals are wired through the CLI.
-- The next action is Milestone 3 agent interoperability.
+- Milestone 3 is complete: real CLI URLs pass Playwright and `agent-browser`,
+  browser-neutral handoff guidance is documented, and success/error contracts
+  are equivalent across TOON and JSON.
+- The next action is Milestone 4 security and release hardening.
 
 Update this document in place. Keep completed work, current validation,
 blockers, decisions, and the single next action concise; do not append session
@@ -177,6 +180,11 @@ Acceptance:
 
 ## Milestone 3: Agent interoperability
 
+Status: Complete. Playwright and separately installed `agent-browser` consume
+the URL emitted by the built CLI and exercise the full fixture. The Agent Skill
+evaluation is recorded in `docs/INTEROPERABILITY.md`; no skill or ambient hook
+ships in version one.
+
 - Validate the returned URL with plain HTTP clients, `agent-browser`, and at
   least one other separately installed browser controller without importing
   either controller into `htmlview`.
@@ -252,6 +260,5 @@ annotation transport before a working second use case requires it.
 
 ## Next action
 
-Complete Milestone 3 interoperability against the returned CLI URL, document
-browser-neutral copy-paste workflows, and finish dual-format runtime contract
-coverage.
+Complete Milestone 4 threat-model automation, bounded-resource checks,
+package/version verification, and install/upgrade/removal documentation.

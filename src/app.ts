@@ -6,7 +6,7 @@ import type {
   SessionSummary,
 } from "./contracts.js";
 import { errorResult } from "./contracts.js";
-import { parseCommand } from "./command.js";
+import { parseCommand, type ParsedCommand } from "./command.js";
 import { serialize } from "./output.js";
 import { OperationError, type CommandService } from "./service.js";
 
@@ -126,6 +126,28 @@ function stopHelp(): JsonObject {
   };
 }
 
+function runtimeHelp(error: OperationError, parsed: ParsedCommand): string[] {
+  const jsonSuffix = parsed.format === "json" ? " --json" : "";
+  if (error.code.startsWith("path."))
+    return [
+      `Run \`htmlview serve --help${jsonSuffix}\` to review entry and root requirements`,
+    ];
+  if (error.code === "state.unavailable")
+    return [
+      `Run \`htmlview${jsonSuffix}\` after correcting runtime-state permissions`,
+    ];
+  if (
+    parsed.kind === "serve" &&
+    (error.code.startsWith("http.") || error.code === "supervisor.start_failed")
+  ) {
+    const rootSuffix = parsed.root === undefined ? "" : " --root <directory>";
+    return [
+      `Run \`htmlview serve <entry.html>${rootSuffix}${jsonSuffix}\` to retry`,
+    ];
+  }
+  return [...error.help];
+}
+
 export async function runApp(
   argv: readonly string[],
   context: AppContext,
@@ -167,7 +189,7 @@ export async function runApp(
     const format = parsed.format;
     const failure =
       error instanceof OperationError
-        ? errorResult(error.code, error.message, {}, [...error.help])
+        ? errorResult(error.code, error.message, {}, runtimeHelp(error, parsed))
         : errorResult(
             "runtime.internal",
             "htmlview could not complete the request",

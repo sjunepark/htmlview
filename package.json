@@ -16,7 +16,7 @@
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",
-    "check": "npm run format:check && npm run lint && npm run typecheck && npm test && npm run build && npm run test:e2e && npm run validate:browser-origin",
+    "check": "npm run format:check && npm run lint && npm run typecheck && npm test && npm run build && npm run test:e2e && npm run validate:browser-origin && npm run validate:interoperability",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "lint": "eslint .",
@@ -24,7 +24,8 @@
     "test:e2e": "node --test --test-concurrency=1 test-e2e/**/*.test.mjs",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "validate:browser-origin": "npm run build --silent && playwright test --config validation/browser-origin/playwright.config.mjs",
-    "validate:agent-browser": "bash validation/browser-origin/run-agent-browser.sh"
+    "validate:interoperability": "npm run build --silent && playwright test --config validation/interoperability/playwright.config.mjs",
+    "validate:agent-browser": "npm run build --silent && bash validation/interoperability/run-agent-browser.sh"
   },
   "dependencies": {
     "@toon-format/toon": "2.3.0",

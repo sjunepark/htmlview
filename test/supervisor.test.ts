@@ -208,6 +208,40 @@ describe("supervisor lifecycle", () => {
     assert.deepEqual(await new SupervisorClient(paths).list(), []);
     await assert.rejects(readFile(paths.discovery));
   });
+
+  it("translates an unusable state location into a stable client error", async () => {
+    const parent = await temporaryDirectory("htmlview-unusable-state-");
+    const stateFile = path.join(parent, "not-a-directory");
+    await writeFile(stateFile, "blocked");
+    const client = new SupervisorClient(
+      statePaths({ HTMLVIEW_STATE_DIR: stateFile }),
+    );
+
+    await assert.rejects(client.list(), {
+      code: "state.unavailable",
+      message: "The private htmlview runtime state directory is unavailable",
+    });
+  });
+
+  it("translates detached process spawn failures without raw process errors", async () => {
+    const parent = await temporaryDirectory("htmlview-spawn-failure-");
+    const paths = statePaths({
+      HTMLVIEW_STATE_DIR: path.join(parent, "state"),
+    });
+    const root = await temporaryDirectory("htmlview-spawn-entry-");
+    const entry = path.join(root, "report.html");
+    await writeFile(entry, "<!doctype html>");
+    const client = new SupervisorClient(paths, async () => {
+      throw Object.assign(new Error("spawn resource exhausted"), {
+        code: "EAGAIN",
+      });
+    });
+
+    await assert.rejects(client.serve(entry, root), {
+      code: "supervisor.start_failed",
+      message: "The htmlview supervisor process could not start",
+    });
+  });
 });
 
 describe("supervisor state", () => {

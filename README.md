@@ -11,11 +11,14 @@ files directly; that is sufficient when file-origin behavior is acceptable.
 `htmlview` exists for the browser-neutral HTTP case and does not automate a
 browser itself.
 
+See [browser-controller interoperability](docs/INTEROPERABILITY.md) for the
+copy-paste URL handoff and independently validated controller paths.
+
 ## Status
 
 Implementation in progress. The Node.js/TypeScript CLI, confined raw serving,
-and detached supervisor lifecycle are complete; interoperability and release
-hardening remain.
+detached supervisor lifecycle, and two-controller interoperability checks are
+complete; release hardening remains.
 
 ## Product boundary
 
@@ -54,6 +57,7 @@ serving core without changing its raw response path.
 
 - [Product requirements](docs/PRODUCT.md)
 - [Agent-facing CLI contract](docs/CLI.md)
+- [Browser-controller interoperability](docs/INTEROPERABILITY.md)
 - [Architecture](ARCHITECTURE.md)
 - [Threat model](docs/THREAT_MODEL.md)
 - [Implementation plan](PLAN.md)

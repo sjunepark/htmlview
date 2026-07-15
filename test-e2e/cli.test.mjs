@@ -114,6 +114,21 @@ test("detached CLI lifecycle converges, recovers, and remains project-clean", as
   assert.equal(empty.value.count, 0);
   assert.deepEqual(empty.value.sessions, []);
 
+  const toonRuntimeError = await toonCli(["serve", "missing.html"]);
+  const jsonRuntimeError = await jsonCli(["serve", "missing.html"]);
+  assert.equal(toonRuntimeError.code, 1);
+  assert.equal(jsonRuntimeError.code, 1);
+  assert.deepEqual(
+    withoutHelp(toonRuntimeError.value),
+    withoutHelp(jsonRuntimeError.value),
+  );
+  assert.deepEqual(toonRuntimeError.value.help, [
+    "Run `htmlview serve --help` to review entry and root requirements",
+  ]);
+  assert.deepEqual(jsonRuntimeError.value.help, [
+    "Run `htmlview serve --help --json` to review entry and root requirements",
+  ]);
+
   const [firstCall, secondCall] = await Promise.all([
     jsonCli(["serve", "report.html"]),
     jsonCli(["serve", "report.html"]),

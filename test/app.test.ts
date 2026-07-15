@@ -3,26 +3,34 @@ import { describe, it } from "node:test";
 import { runApp } from "../src/app.js";
 import { decodeOutput } from "../src/output.js";
 import type { OutputFormat, SessionSummary } from "../src/contracts.js";
+import { OperationError } from "../src/service.js";
 
-async function invoke(args: string[], sessions: SessionSummary[] = []) {
+async function invoke(
+  args: string[],
+  sessions: SessionSummary[] = [],
+  serveFailure?: OperationError,
+) {
   let stdout = "";
   let stderr = "";
   const exitCode = await runApp(args, {
     executablePath: "/Users/example/.local/bin/htmlview",
     service: {
       listSessions: async () => sessions,
-      serve: async () => ({
-        session: {
-          id: "served1",
-          status: "ready",
-          url: "http://h-served.localhost:4000/report.html",
-          reused: false,
-        },
-        grant: {
-          root: "/tmp",
-          access: "read_all_regular_files_beneath_root",
-        },
-      }),
+      serve: async () => {
+        if (serveFailure !== undefined) throw serveFailure;
+        return {
+          session: {
+            id: "served1",
+            status: "ready",
+            url: "http://h-served.localhost:4000/report.html",
+            reused: false,
+          },
+          grant: {
+            root: "/tmp",
+            access: "read_all_regular_files_beneath_root",
+          },
+        };
+      },
       stop: async (session, all) => ({
         stop: {
           scope: all === true ? "all" : "session",
@@ -91,6 +99,8 @@ describe("CLI application contract", () => {
     ["--help"],
     ["serve", "--help"],
     ["stop", "--help"],
+    ["serve", "x.html"],
+    ["stop", "missing"],
     ["serve"],
     ["serve", "x.html", "--bad"],
   ]) {
@@ -106,7 +116,7 @@ describe("CLI application contract", () => {
         string,
         unknown
       >;
-      if (args.length === 0) {
+      if (args.length === 0 || (args[0] === "serve" && args.length === 2)) {
         assert.deepEqual(
           { ...toonValue, help: undefined },
           { ...jsonValue, help: undefined },
@@ -126,6 +136,55 @@ describe("CLI application contract", () => {
       unknown
     >;
     assert.deepEqual(value.help, ["Run `htmlview serve <entry.html> --json`"]);
+  });
+
+  it("emits equivalent structured runtime errors", async () => {
+    const failure = new OperationError(
+      "state.unavailable",
+      "The private htmlview runtime state directory is unavailable",
+      ["Run `htmlview` after correcting runtime-state permissions"],
+    );
+    const toon = await invoke(["serve", "x.html"], [], failure);
+    const json = await invoke(["serve", "x.html", "--json"], [], failure);
+    assert.equal(toon.exitCode, 1);
+    assert.equal(json.exitCode, 1);
+    const toonValue = decodeOutput(toon.stdout, "toon") as Record<
+      string,
+      unknown
+    >;
+    const jsonValue = decodeOutput(json.stdout, "json") as Record<
+      string,
+      unknown
+    >;
+    assert.deepEqual(
+      { ...toonValue, help: undefined },
+      { ...jsonValue, help: undefined },
+    );
+    assert.deepEqual(toonValue.help, [
+      "Run `htmlview` after correcting runtime-state permissions",
+    ]);
+    assert.deepEqual(jsonValue.help, [
+      "Run `htmlview --json` after correcting runtime-state permissions",
+    ]);
+  });
+
+  it("preserves format and explicit root choices in retry guidance", async () => {
+    const failure = new OperationError(
+      "http.start_failed",
+      "The loopback content listener could not start",
+    );
+    const result = await invoke(
+      ["serve", "x.html", "--root", "public", "--json"],
+      [],
+      failure,
+    );
+    const value = decodeOutput(result.stdout, "json") as Record<
+      string,
+      unknown
+    >;
+    assert.deepEqual(value.help, [
+      "Run `htmlview serve <entry.html> --root <directory> --json` to retry",
+    ]);
   });
 
   it("emits no format-breaking trailing newline", async () => {

@@ -159,12 +159,17 @@ class SessionRegistry {
   }
 
   async #create(grant: ServingGrant, key: string): Promise<LiveSession> {
-    const server = await startStaticServer(grant);
+    let server: StaticSessionServer;
+    try {
+      server = await startStaticServer(grant);
+    } catch {
+      throw new Error("http.start_failed");
+    }
     try {
       await verifyReady(server, grant.entryUrlPath);
     } catch (error) {
-      await server.close();
-      throw error;
+      await server.close().catch(() => undefined);
+      throw new Error("http.readiness_failed", { cause: error });
     }
     let id: string;
     do id = randomBytes(6).toString("base64url");
@@ -340,12 +345,18 @@ export async function startSupervisor(
             : message.startsWith("control.")
               ? 400
               : 500;
+        const exposed =
+          message.startsWith("control.") || message.startsWith("http.");
         json(response, status, {
           error: {
-            code: message.startsWith("control.") ? message : "control.internal",
+            code: exposed ? message : "control.internal",
             message: message.startsWith("control.")
               ? "Invalid control request"
-              : "Supervisor could not complete the request",
+              : message === "http.start_failed"
+                ? "The loopback content listener could not start"
+                : message === "http.readiness_failed"
+                  ? "The content listener did not become ready"
+                  : "Supervisor could not complete the request",
           },
         });
       }

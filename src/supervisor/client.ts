@@ -30,6 +30,17 @@ export class SupervisorClientError extends Error {
   }
 }
 
+async function prepareState(paths: StatePaths): Promise<void> {
+  try {
+    await ensurePrivateStateDirectory(paths);
+  } catch {
+    throw new SupervisorClientError(
+      "state.unavailable",
+      "The private htmlview runtime state directory is unavailable",
+    );
+  }
+}
+
 interface ControlResponse {
   readonly status: number;
   readonly value: unknown;
@@ -130,21 +141,50 @@ function supervisorEntry(): string {
   return fileURLToPath(new URL("./supervisor-main.js", import.meta.url));
 }
 
-async function ensureSupervisor(paths: StatePaths): Promise<DiscoveryRecord> {
-  await ensurePrivateStateDirectory(paths);
-  const current = await currentHealthy(paths);
-  if (current !== undefined) return current;
+export type StartSupervisorProcess = (paths: StatePaths) => Promise<void>;
 
-  const lock = await acquireStartupLock(paths);
-  try {
-    const afterLock = await currentHealthy(paths);
-    if (afterLock !== undefined) return afterLock;
+const startDetachedSupervisor: StartSupervisorProcess = (paths) =>
+  new Promise((resolve, reject) => {
     const child = spawn(process.execPath, [supervisorEntry()], {
       detached: true,
       stdio: "ignore",
       env: { ...process.env, HTMLVIEW_STATE_DIR: paths.directory },
     });
-    child.unref();
+    child.once("error", reject);
+    child.once("spawn", () => {
+      child.unref();
+      resolve();
+    });
+  });
+
+async function ensureSupervisor(
+  paths: StatePaths,
+  startProcess: StartSupervisorProcess,
+): Promise<DiscoveryRecord> {
+  await prepareState(paths);
+  const current = await currentHealthy(paths);
+  if (current !== undefined) return current;
+
+  let lock;
+  try {
+    lock = await acquireStartupLock(paths);
+  } catch {
+    throw new SupervisorClientError(
+      "state.unavailable",
+      "The htmlview supervisor startup lock is unavailable",
+    );
+  }
+  try {
+    const afterLock = await currentHealthy(paths);
+    if (afterLock !== undefined) return afterLock;
+    try {
+      await startProcess(paths);
+    } catch {
+      throw new SupervisorClientError(
+        "supervisor.start_failed",
+        "The htmlview supervisor process could not start",
+      );
+    }
 
     const deadline = Date.now() + 5_000;
     while (Date.now() < deadline) {
@@ -203,13 +243,18 @@ async function requiredRequest<T>(
 
 export class SupervisorClient {
   readonly #paths: StatePaths;
+  readonly #startProcess: StartSupervisorProcess;
 
-  constructor(paths: StatePaths = statePaths()) {
+  constructor(
+    paths: StatePaths = statePaths(),
+    startProcess: StartSupervisorProcess = startDetachedSupervisor,
+  ) {
     this.#paths = paths;
+    this.#startProcess = startProcess;
   }
 
   async list(): Promise<SupervisorSession[]> {
-    await ensurePrivateStateDirectory(this.#paths);
+    await prepareState(this.#paths);
     const discovery = await currentHealthy(this.#paths);
     if (discovery === undefined) return [];
     const result = await requiredRequest<{ sessions: SupervisorSession[] }>(
@@ -221,7 +266,7 @@ export class SupervisorClient {
   }
 
   async serve(entry: string, root: string): Promise<ServeControlResult> {
-    const discovery = await ensureSupervisor(this.#paths);
+    const discovery = await ensureSupervisor(this.#paths, this.#startProcess);
     return requiredRequest<ServeControlResult>(discovery, "POST", "/sessions", {
       entry,
       root,
@@ -229,7 +274,7 @@ export class SupervisorClient {
   }
 
   async stop(session?: string, all = false): Promise<StopControlResult> {
-    await ensurePrivateStateDirectory(this.#paths);
+    await prepareState(this.#paths);
     const discovery = await currentHealthy(this.#paths);
     if (discovery === undefined) return { stopped: 0 };
     return requiredRequest<StopControlResult>(

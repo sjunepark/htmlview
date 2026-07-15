@@ -33,17 +33,34 @@ function encodeRelativePath(relativePath: string): string {
   return `/${relativePath.split(path.sep).map(encodeURIComponent).join("/")}`;
 }
 
+function permissionDenied(error: unknown): boolean {
+  const code = (error as NodeJS.ErrnoException).code;
+  return code === "EACCES" || code === "EPERM";
+}
+
 async function canonicalDirectory(candidate: string): Promise<string> {
   let canonical: string;
   try {
     canonical = await realpath(candidate);
-  } catch {
+  } catch (error) {
     throw new GrantError(
-      "path.root_not_found",
-      `Serving root does not exist: ${candidate}`,
+      permissionDenied(error) ? "path.root_unreadable" : "path.root_not_found",
+      permissionDenied(error)
+        ? `Serving root is not accessible: ${candidate}`
+        : `Serving root does not exist: ${candidate}`,
     );
   }
-  const metadata = await stat(canonical);
+  let metadata;
+  try {
+    metadata = await stat(canonical);
+  } catch (error) {
+    throw new GrantError(
+      permissionDenied(error) ? "path.root_unreadable" : "path.root_not_found",
+      permissionDenied(error)
+        ? `Serving root is not accessible: ${candidate}`
+        : `Serving root does not exist: ${candidate}`,
+    );
+  }
   if (!metadata.isDirectory()) {
     throw new GrantError(
       "path.root_not_directory",
@@ -76,20 +93,28 @@ export async function resolveServingGrant(
   let canonicalEntry: string;
   try {
     canonicalEntry = await realpath(suppliedEntry);
-  } catch {
+  } catch (error) {
     throw new GrantError(
-      "path.entry_not_found",
-      `Entry file does not exist: ${entryArgument}`,
+      permissionDenied(error)
+        ? "path.entry_unreadable"
+        : "path.entry_not_found",
+      permissionDenied(error)
+        ? `Entry file is not accessible: ${entryArgument}`
+        : `Entry file does not exist: ${entryArgument}`,
     );
   }
 
   let entryMetadata;
   try {
     entryMetadata = await stat(canonicalEntry);
-  } catch {
+  } catch (error) {
     throw new GrantError(
-      "path.entry_not_found",
-      `Entry file does not exist: ${entryArgument}`,
+      permissionDenied(error)
+        ? "path.entry_unreadable"
+        : "path.entry_not_found",
+      permissionDenied(error)
+        ? `Entry file is not accessible: ${entryArgument}`
+        : `Entry file does not exist: ${entryArgument}`,
     );
   }
   if (!entryMetadata.isFile()) {

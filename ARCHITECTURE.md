@@ -234,6 +234,8 @@ origin-keyed state from concurrent services and later port reuse.
 - `test/` holds contract and TOON v3.3 conformance tests.
 - `validation/browser-origin/` holds browser behavior evidence and remains
   outside the runtime.
+- `validation/interoperability/` passes real CLI-returned URLs to independent
+  browser controllers without adding them to the runtime.
 
 Avoid a generic plugin or browser-adapter layer without a current second
 implementation.

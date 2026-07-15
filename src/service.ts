@@ -26,7 +26,11 @@ export class HtmlviewService implements CommandService {
   constructor(private readonly supervisor = new SupervisorClient()) {}
 
   async listSessions(): Promise<readonly SessionSummary[]> {
-    return this.supervisor.list();
+    try {
+      return await this.supervisor.list();
+    } catch (error) {
+      throw translate(error);
+    }
   }
 
   async serve(entry: string, root?: string): Promise<JsonObject> {
@@ -73,10 +77,7 @@ export class HtmlviewService implements CommandService {
 function translate(error: unknown): OperationError {
   if (error instanceof OperationError) return error;
   if (error instanceof GrantError || error instanceof SupervisorClientError) {
-    const help = error.code.startsWith("path.")
-      ? ["Run `htmlview serve --help` to review entry and root requirements"]
-      : [];
-    return new OperationError(error.code, error.message, help);
+    return new OperationError(error.code, error.message);
   }
   return new OperationError(
     "runtime.internal",

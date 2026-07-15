@@ -66,6 +66,13 @@ foundation milestone.
 Raw dependency messages, stack traces, and progress text must never appear on
 stdout.
 
+Runtime failures use stable code families: `path.*` for entry/root filesystem
+validation, `state.unavailable` for private discovery or startup-lock access,
+`supervisor.*` for lifecycle availability, `http.*` for content-listener start
+or readiness, and `control.*` for the authenticated local protocol. Messages
+may include the failed path, but credentials and raw dependency errors are
+never emitted.
+
 ## Home view
 
 With no command, show identity and live state rather than a help dump. Collapse
