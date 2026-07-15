@@ -7,8 +7,8 @@ cleanup() { rm -rf "$temporary"; }
 trap cleanup EXIT
 
 cd "$repo_root"
-npm run build --silent
-npm pack --pack-destination "$temporary" --silent >/dev/null
+pnpm --silent run build
+pnpm pack --pack-destination "$temporary" --silent >/dev/null
 version="$(node -p 'require("./package.json").version')"
 
 docker run --rm \

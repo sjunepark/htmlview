@@ -1,9 +1,9 @@
 # Security validation evidence
 
 This matrix maps the required checks in [THREAT_MODEL.md](THREAT_MODEL.md) to
-repeatable evidence. `npm run check` runs the automated macOS/current-platform
+repeatable evidence. `pnpm run check` runs the automated macOS/current-platform
 set; Linux package installation is the separate
-`npm run validate:package:linux` release check.
+`pnpm run validate:package:linux` release check.
 
 | Control or adversarial case                                             | Evidence                                                                                                        |
 | ----------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------- |

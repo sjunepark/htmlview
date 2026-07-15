@@ -20,9 +20,9 @@ caller.
   for existing automation.
 - Browser validation uses Playwright and independently installed Browser Use;
   neither is a runtime dependency.
-- Milestone 0 is complete: ADR 0005 selects Node.js 22.13+, TypeScript, npm,
-  and `@toon-format/toon`; the CLI foundation and pinned v3.3 conformance tests
-  are in place.
+- Milestone 0 is complete: ADR 0005 selects Node.js 22.13+, TypeScript, pnpm,
+  npm-registry distribution, and `@toon-format/toon`; the CLI foundation and
+  pinned v3.3 conformance tests are in place.
 - Milestone 1 is complete: canonical disclosure grants, byte-faithful GET/HEAD,
   MIME and conditional responses, exact Host checks, and adversarial
   confinement tests are implemented independently of lifecycle.
@@ -38,8 +38,8 @@ caller.
   macOS/Linux package lifecycle checks pass for `@sejunpark/htmlview`.
 - The `0.1.0` artifact is ready for release review but has not been published.
   Optional annotation work has not started.
-- Final validation passes `npm run check`, the Node 22 Linux package workflow,
-  `npm run validate:browser-use`, and `npm audit` with zero vulnerabilities.
+- Final validation passes `pnpm run check`, the Node 22 Linux package workflow,
+  `pnpm run validate:browser-use`, and `pnpm audit` with zero vulnerabilities.
 
 Update this document in place. Keep completed work, current validation,
 blockers, decisions, and the single next action concise; do not append session

@@ -41,7 +41,15 @@ const environment = {
 delete environment.NO_COLOR;
 delete environment.FORCE_COLOR;
 
-async function npm(args, cwd = repository) {
+async function packageManager(args, cwd = repository) {
+  return execute("pnpm", args, {
+    cwd,
+    env: environment,
+    maxBuffer: 10 * 1024 * 1024,
+  });
+}
+
+async function consumerNpm(args, cwd = repository) {
   return execute("npm", args, {
     cwd,
     env: environment,
@@ -99,11 +107,11 @@ await writeFile(
 );
 
 try {
-  const packed = await npm(
+  const packed = await packageManager(
     ["pack", "--json", "--pack-destination", artifacts],
     source,
   );
-  const packResult = JSON.parse(packed.stdout)[0];
+  const packResult = JSON.parse(packed.stdout);
   assert.equal(packResult.name, packageMetadata.name);
   assert.equal(packResult.version, packageMetadata.version);
   const paths = new Set(packResult.files.map(({ path: file }) => file));
@@ -119,19 +127,21 @@ try {
     [...paths].some((file) => file.startsWith("validation/")),
     false,
   );
-  const tarball = path.join(artifacts, packResult.filename);
+  const tarball = path.resolve(artifacts, packResult.filename);
   const repeatedPack = JSON.parse(
     (
-      await npm(
+      await packageManager(
         ["pack", "--json", "--pack-destination", repeatedArtifacts],
         source,
       )
     ).stdout,
-  )[0];
-  assert.equal(repeatedPack.integrity, packResult.integrity);
-  assert.equal(repeatedPack.shasum, packResult.shasum);
+  );
+  assert.deepEqual(
+    await readFile(path.resolve(repeatedArtifacts, repeatedPack.filename)),
+    await readFile(tarball),
+  );
 
-  await npm(["install", "--global", tarball, "--prefix", prefix]);
+  await consumerNpm(["install", "--global", tarball, "--prefix", prefix]);
   const version = await installed(["--version", "--json"]);
   assert.equal(version.stderr, "");
   assert.deepEqual(JSON.parse(version.stdout), {
@@ -159,13 +169,13 @@ try {
   await installed(["stop", "--all", "--json"]);
   await waitForSupervisorExit();
 
-  await npm(["install", "--global", tarball, "--prefix", prefix]);
+  await consumerNpm(["install", "--global", tarball, "--prefix", prefix]);
   assert.equal(
     JSON.parse((await installed(["--version", "--json"])).stdout).version,
     packageMetadata.version,
   );
 
-  await npm([
+  await consumerNpm([
     "uninstall",
     "--global",
     packageMetadata.name,

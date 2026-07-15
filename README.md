@@ -68,5 +68,5 @@ serving core without changing its raw response path.
 - [Supervisor decision](docs/decisions/0002-per-user-loopback-supervisor.md)
 - [AXI output decision](docs/decisions/0003-adopt-an-axi-output-contract.md)
 - [Serving-root grant decision](docs/decisions/0004-treat-the-serving-root-as-a-disclosure-grant.md)
-- [Runtime and packaging decision](docs/decisions/0005-use-node-typescript-and-npm-packaging.md)
+- [Runtime and packaging decision](docs/decisions/0005-use-node-typescript-pnpm-and-the-npm-registry.md)
 - [Private control-socket decision](docs/decisions/0006-use-a-private-control-socket.md)

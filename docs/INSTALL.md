@@ -68,8 +68,8 @@ runtime directory and retry.
 
 ## Release validation
 
-`npm run validate:package` packs the current tree, installs it into a clean
+`pnpm run validate:package` packs the current tree, installs it into a clean
 temporary prefix, serves a fixture, repeats the same-artifact install, checks
 the structured version against `package.json`, and uninstalls it. The same
 tarball workflow runs in `node:22-bookworm` with
-`npm run validate:package:linux`.
+`pnpm run validate:package:linux`.

@@ -261,7 +261,7 @@ implementation.
 - [ADR 0002: Use a per-user loopback supervisor](docs/decisions/0002-per-user-loopback-supervisor.md)
 - [ADR 0003: Adopt an AXI output contract](docs/decisions/0003-adopt-an-axi-output-contract.md)
 - [ADR 0004: Treat the serving root as a disclosure grant](docs/decisions/0004-treat-the-serving-root-as-a-disclosure-grant.md)
-- [ADR 0005: Use Node.js, TypeScript, and npm packaging](docs/decisions/0005-use-node-typescript-and-npm-packaging.md)
+- [ADR 0005: Use Node.js, TypeScript, pnpm, and the npm registry](docs/decisions/0005-use-node-typescript-pnpm-and-the-npm-registry.md)
 - [ADR 0006: Use a private Unix-domain control socket](docs/decisions/0006-use-a-private-control-socket.md)
 - [Agent-facing CLI contract](docs/CLI.md)
 - [Threat model](docs/THREAT_MODEL.md)

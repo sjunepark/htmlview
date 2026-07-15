@@ -2,11 +2,12 @@
 
 ## Current state
 
-- Install dependencies with `npm ci`. Run the current-platform suite with
-  `npm run check`; browser checks require Playwright Chromium to be installed.
-  Release validation also runs `npm run validate:browser-use` with the external
+- Install dependencies with `pnpm install --frozen-lockfile`. Run the
+  current-platform suite with `pnpm run check`; browser checks require
+  Playwright Chromium to be installed. Release validation also runs
+  `pnpm run validate:browser-use` with the external
   executable and a Chrome remote-debugging connection, plus
-  `npm run validate:package:linux` with Docker.
+  `pnpm run validate:package:linux` with Docker.
 - Read `docs/PRODUCT.md`, `docs/CLI.md`, `ARCHITECTURE.md`,
   `docs/THREAT_MODEL.md`, and `PLAN.md` before implementation work.
 - Keep `PLAN.md` current as milestones, validation, blockers, and the next
@@ -61,5 +62,5 @@
 - Update `docs/CLI.md` and its contract tests when commands, fields, formats,
   errors, or exit behavior change.
 - Add or amend an ADR in `docs/decisions/` when changing a recorded decision.
-- Validate documentation-only changes with `npm run validate:docs` and
-  `git diff --check`; run `npm run check` for implementation changes.
+- Validate documentation-only changes with `pnpm run validate:docs` and
+  `git diff --check`; run `pnpm run check` for implementation changes.

@@ -32,5 +32,5 @@ references, is the disclosure boundary.
   `127.0.0.2` with `EADDRNOTAVAIL` unless the machine's loopback interface is
   mutated, so per-session numeric addresses were rejected.
 
-Run `npm run validate:browser-origin` for the state and direct-file matrix and
-`npm run validate:browser-use` for the second-controller HTTP check.
+Run `pnpm run validate:browser-origin` for the state and direct-file matrix and
+`pnpm run validate:browser-use` for the second-controller HTTP check.

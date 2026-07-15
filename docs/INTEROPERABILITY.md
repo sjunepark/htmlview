@@ -55,8 +55,8 @@ htmlview stop "$session" --json
 Release validation passes a CLI-returned URL through two independently
 installed controllers:
 
-- `npm run validate:interoperability` uses Playwright Chromium.
-- `npm run validate:browser-use` uses the separately installed `browser-use`
+- `pnpm run validate:interoperability` uses Playwright Chromium.
+- `pnpm run validate:browser-use` uses the separately installed `browser-use`
   executable and its default connection to a running Chrome instance.
 
 Neither controller is imported by the runtime or included in the published

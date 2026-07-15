@@ -1,6 +1,7 @@
 {
   "name": "@sejunpark/htmlview",
   "version": "0.1.0",
+  "packageManager": "pnpm@11.13.0",
   "description": "Serve local HTML through confined loopback HTTP",
   "type": "module",
   "bin": {
@@ -22,19 +23,19 @@
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",
-    "check": "npm run format:check && npm run lint && npm run typecheck && npm test && npm run validate:docs && npm run build && npm run test:e2e && npm run validate:browser-origin && npm run validate:interoperability && npm run validate:package",
+    "check": "pnpm run format:check && pnpm run lint && pnpm run typecheck && pnpm test && pnpm run validate:docs && pnpm run build && pnpm run test:e2e && pnpm run validate:browser-origin && pnpm run validate:interoperability && pnpm run validate:package",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "lint": "eslint .",
-    "prepack": "npm run build",
+    "prepack": "pnpm run build",
     "test": "tsx --test test/**/*.test.ts",
     "test:e2e": "node --test --test-concurrency=1 test-e2e/**/*.test.mjs",
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.test.json",
-    "validate:browser-origin": "npm run build --silent && playwright test --config validation/browser-origin/playwright.config.mjs",
+    "validate:browser-origin": "pnpm --silent run build && playwright test --config validation/browser-origin/playwright.config.mjs",
     "validate:docs": "node validation/docs/check-links.mjs",
-    "validate:interoperability": "npm run build --silent && playwright test --config validation/interoperability/playwright.config.mjs",
-    "validate:browser-use": "npm run build --silent && bash validation/interoperability/run-browser-use.sh",
-    "validate:package": "npm run build --silent && node validation/package/install-smoke.mjs",
+    "validate:interoperability": "pnpm --silent run build && playwright test --config validation/interoperability/playwright.config.mjs",
+    "validate:browser-use": "pnpm --silent run build && bash validation/interoperability/run-browser-use.sh",
+    "validate:package": "pnpm --silent run build && node validation/package/install-smoke.mjs",
     "validate:package:linux": "bash validation/package/run-linux.sh"
   },
   "dependencies": {
