@@ -42,14 +42,13 @@ not needed to make accidental reuse negligible. A repeated `serve` reuses the
 same hostname only while the matching session is still live.
 
 This replaces the provisional assumption that distinct numeric-loopback ports
-were sufficient. Reproducible Chromium tests in
-[`validation/browser-origin/origin.spec.mjs`](../../validation/browser-origin/origin.spec.mjs)
-show that cookies cross ports on one numeric host and that exact origin reuse
+were sufficient. Reproducible Chromium tests described in
+[`docs/validation/browser-origin.md`](../validation/browser-origin.md) show
+that cookies cross ports on one numeric host and that exact origin reuse
 revives local storage, cached responses, and a service worker. A fresh
 `.localhost` label isolates all four even when the port is reused; a cookie
 attempting `Domain=localhost` is rejected. The same fixture loads through both
-Playwright and Browser Use. The complete fixture matrix is recorded in
-[`docs/validation/browser-origin.md`](../validation/browser-origin.md).
+Playwright and Browser Use.
 
 ## Consequences
 

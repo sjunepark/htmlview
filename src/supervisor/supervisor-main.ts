@@ -1,10 +1,10 @@
 #!/usr/bin/env node
 import { runMain } from "@effect/platform-node/NodeRuntime";
-import { Effect, Layer } from "effect";
+import { Effect } from "effect";
 import { runSupervisor } from "./server.js";
 import { statePaths } from "./state.js";
 
-const SupervisorLive = Layer.effectDiscard(
+const program = Effect.scoped(
   runSupervisor({
     paths: statePaths(),
     ...(process.env.HTMLVIEW_SUPERVISOR_LOCK_NONCE === undefined
@@ -15,4 +15,4 @@ const SupervisorLive = Layer.effectDiscard(
   }),
 );
 
-runMain(Effect.void.pipe(Effect.provide(SupervisorLive)));
+runMain(program);

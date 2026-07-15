@@ -212,8 +212,7 @@ describe("supervisor lifecycle", () => {
   });
 
   it("creates one private control socket and reuses matching sessions", async () => {
-    const { client, root, entry, supervisor, paths } = await setup();
-    assert.equal(supervisor.controlAddress, paths.controlSocket);
+    const { client, root, entry, paths } = await setup();
     const socketMetadata = await lstat(paths.controlSocket);
     assert.equal(socketMetadata.isSocket(), true);
     assert.equal(socketMetadata.mode & 0o777, 0o600);

@@ -5,7 +5,11 @@ import path from "node:path";
 import { expect, it } from "@effect/vitest";
 import { Effect, Exit, Fiber, FiberSet, Scope } from "effect";
 import { TestClock } from "effect/testing";
-import { runSupervisor, startSupervisor } from "../src/supervisor/server.js";
+import {
+  generateSessionId,
+  runSupervisor,
+  startSupervisor,
+} from "../src/supervisor/server.js";
 import { controlHost } from "../src/supervisor/protocol.js";
 import {
   acquireSupervisorLock,
@@ -63,6 +67,17 @@ function healthStatus(socketPath: string): Promise<number> {
     operation.end();
   });
 }
+
+it("never returns a session identifier that parses as a flag", () => {
+  const candidates = [
+    Buffer.from([0xf8, 0, 0, 0, 0, 0]),
+    Buffer.from([0, 0, 0, 0, 0, 0]),
+  ];
+  expect(candidates[0]?.toString("base64url").startsWith("-")).toBe(true);
+  const id = generateSessionId(() => candidates.shift() ?? Buffer.alloc(6));
+  expect(id).toBe("AAAAAAAA");
+  expect(id.startsWith("-")).toBe(false);
+});
 
 it.effect("uses the test clock for idle supervisor shutdown", () =>
   Effect.acquireUseRelease(

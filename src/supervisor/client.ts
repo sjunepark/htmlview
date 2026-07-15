@@ -58,12 +58,6 @@ type AcquireSupervisorLock = (
   timeoutMilliseconds?: number,
 ) => Effect.Effect<SupervisorLock, RuntimeStateError, Scope.Scope>;
 
-function prepareState(
-  paths: StatePaths,
-): Effect.Effect<void, RuntimeStateError> {
-  return ensurePrivateStateDirectory(paths);
-}
-
 class CanonicalPathError extends Data.TaggedError("CanonicalPathError")<{
   readonly cause: unknown;
 }> {}
@@ -518,7 +512,7 @@ function ensureSupervisor(
 ): Effect.Effect<SupervisorIdentity, OperationalError> {
   return Effect.scoped(
     Effect.gen(function* () {
-      yield* prepareState(paths);
+      yield* ensurePrivateStateDirectory(paths);
       const current = yield* currentSupervisor(paths);
       if (current !== undefined) return current;
 
@@ -871,7 +865,7 @@ export class SupervisorClient {
     const paths = this.#paths;
     const acquireLock = this.#acquireLock;
     return Effect.gen(function* () {
-      yield* prepareState(paths);
+      yield* ensurePrivateStateDirectory(paths);
       const identity = yield* existingSupervisor(paths, false, acquireLock);
       if (identity === undefined) return [];
       const query =
@@ -933,7 +927,7 @@ export class SupervisorClient {
     const paths = this.#paths;
     const acquireLock = this.#acquireLock;
     return Effect.gen(function* () {
-      yield* prepareState(paths);
+      yield* ensurePrivateStateDirectory(paths);
       const identity = yield* existingSupervisor(paths, false, acquireLock);
       if (identity === undefined) return { stopped: 0 };
       return yield* requiredRequest(
@@ -950,7 +944,7 @@ export class SupervisorClient {
     const paths = this.#paths;
     const acquireLock = this.#acquireLock;
     return Effect.gen(function* () {
-      yield* prepareState(paths);
+      yield* ensurePrivateStateDirectory(paths);
       const identity = yield* existingSupervisor(paths, true, acquireLock);
       if (identity === undefined) return { stopped: 0 };
       const result = yield* requiredRequest(

@@ -27,6 +27,8 @@ const state = path.join(temporary, "state");
 const fixture = path.join(temporary, "fixture");
 const source = path.join(temporary, "source");
 const binary = path.join(prefix, "bin", "htmlview");
+const controlSocket = path.join(state, "control.sock");
+const supervisorLock = path.join(state, "supervisor.lock");
 const installedPackage = path.join(
   prefix,
   "lib",
@@ -65,17 +67,30 @@ async function installed(args) {
   });
 }
 
-async function waitForSupervisorExit() {
-  const controlSocket = path.join(state, "control.sock");
+async function waitForSupervisorExit(pid) {
   const deadline = Date.now() + 2_000;
   while (Date.now() < deadline) {
-    const present = await access(controlSocket)
+    const socketPresent = await access(controlSocket)
       .then(() => true)
       .catch(() => false);
-    if (!present) return;
+    const lockPresent = await access(supervisorLock)
+      .then(() => true)
+      .catch(() => false);
+    let processPresent = false;
+    if (pid !== undefined) {
+      try {
+        process.kill(pid, 0);
+        processPresent = true;
+      } catch {
+        processPresent = false;
+      }
+    }
+    if (!socketPresent && !lockPresent && !processPresent) return;
     await new Promise((resolve) => setTimeout(resolve, 20));
   }
-  throw new Error("Installed supervisor did not exit after stop --all");
+  throw new Error(
+    "Installed supervisor retained its process, socket, or lock after stop --all",
+  );
 }
 
 await Promise.all([
@@ -106,6 +121,7 @@ await writeFile(
   "<!doctype html><p>installed package</p>",
 );
 
+let supervisorPid;
 try {
   const packed = await packageManager(
     ["pack", "--json", "--pack-destination", artifacts],
@@ -118,19 +134,61 @@ try {
   for (const required of [
     "dist/cli.js",
     "dist/cli.js.map",
-    "dist/cli.d.ts",
     "dist/supervisor-main.js",
     "dist/supervisor-main.js.map",
-    "dist/supervisor/supervisor-main.d.ts",
     "docs/INSTALL.md",
     "LICENSE",
     "README.md",
+    "THIRD_PARTY_NOTICES.md",
   ])
     assert.equal(paths.has(required), true, `package is missing ${required}`);
-  assert.equal(
-    [...paths].some((file) => file.startsWith("validation/")),
-    false,
-  );
+  const exactFiles = new Set([
+    "ARCHITECTURE.md",
+    "LICENSE",
+    "README.md",
+    "THIRD_PARTY_NOTICES.md",
+    "dist/cli.js",
+    "dist/cli.js.map",
+    "dist/supervisor-main.js",
+    "dist/supervisor-main.js.map",
+    "docs/CLI.md",
+    "docs/decisions/0001-separate-serving-from-browser-control.md",
+    "docs/decisions/0002-per-user-loopback-supervisor.md",
+    "docs/decisions/0003-adopt-an-axi-output-contract.md",
+    "docs/decisions/0004-treat-the-serving-root-as-a-disclosure-grant.md",
+    "docs/decisions/0005-use-node-typescript-pnpm-and-the-npm-registry.md",
+    "docs/decisions/0006-use-a-private-control-socket.md",
+    "docs/decisions/0007-adopt-effect-v4.md",
+    "docs/INSTALL.md",
+    "docs/INTEROPERABILITY.md",
+    "docs/PRODUCT.md",
+    "docs/SECURITY_VALIDATION.md",
+    "docs/THREAT_MODEL.md",
+    "docs/validation/browser-origin.md",
+    "package.json",
+  ]);
+  for (const file of paths)
+    assert.equal(
+      exactFiles.has(file),
+      true,
+      `package contains unexpected file ${file}`,
+    );
+  assert.equal(paths.size, exactFiles.size, "package file set is incomplete");
+  for (const sourceMap of ["dist/cli.js.map", "dist/supervisor-main.js.map"])
+    assert.equal(
+      Object.hasOwn(
+        JSON.parse(await readFile(path.join(source, sourceMap), "utf8")),
+        "sourcesContent",
+      ),
+      false,
+      `${sourceMap} embeds source content`,
+    );
+  for (const executable of ["dist/cli.js", "dist/supervisor-main.js"])
+    assert.match(
+      await readFile(path.join(source, executable), "utf8"),
+      /\/\/# sourceMappingURL=[^\n]+\.js\.map\s*$/,
+      `${executable} does not link its external source map`,
+    );
   const tarball = path.resolve(artifacts, packResult.filename);
   const repeatedPack = JSON.parse(
     (
@@ -158,6 +216,9 @@ try {
   const served = JSON.parse(
     (await installed(["serve", "report.html", "--json"])).stdout,
   );
+  supervisorPid = JSON.parse(
+    await readFile(path.join(supervisorLock, "owner.json"), "utf8"),
+  ).pid;
   assert.equal(
     new URL(served.session.url).hostname.endsWith(".localhost"),
     true,
@@ -171,7 +232,7 @@ try {
     "<!doctype html><p>installed package</p>",
   );
   await installed(["stop", "--all", "--json"]);
-  await waitForSupervisorExit();
+  await waitForSupervisorExit(supervisorPid);
 
   await consumerNpm(["install", "--global", tarball, "--prefix", prefix]);
   assert.equal(
@@ -193,6 +254,6 @@ try {
   );
 } finally {
   await installed(["stop", "--all", "--json"]).catch(() => undefined);
-  await waitForSupervisorExit().catch(() => undefined);
+  await waitForSupervisorExit(supervisorPid).catch(() => undefined);
   await rm(temporary, { recursive: true, force: true });
 }

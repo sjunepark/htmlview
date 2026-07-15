@@ -20,7 +20,7 @@ const ResponseString = Schema.String.check(
 );
 const ResponsePath = ResponseString.check(Schema.isNonEmpty());
 const SessionIdentifier = Schema.String.check(
-  Schema.isPattern(/^[A-Za-z0-9_-]{8}$/),
+  Schema.isPattern(/^[A-Za-z0-9_][A-Za-z0-9_-]{7}$/),
 );
 const SessionSelector = RequestString;
 const SessionUrl = ResponseString.check(

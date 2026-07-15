@@ -12,6 +12,7 @@ mkdir /tmp/htmlview-fixture
 printf '<!doctype html><p>linux package</p>' >/tmp/htmlview-fixture/report.html
 cd /tmp/htmlview-fixture
 result="$(htmlview serve report.html --json)"
+supervisor_pid="$(node -e 'process.stdout.write(String(JSON.parse(require("fs").readFileSync(process.env.HTMLVIEW_STATE_DIR+"/supervisor.lock/owner.json","utf8")).pid))')"
 url="$(node -e 'const v=JSON.parse(process.argv[1]); process.stdout.write(v.session.url)' "$result")"
 node -e '
 const http=require("http");
@@ -25,7 +26,20 @@ http.get({hostname:"127.0.0.1",port:url.port,path:url.pathname,headers:{host:url
 }).on("error", error => { console.error(error); process.exit(1); });
 ' "$url"
 htmlview stop --all --json >/dev/null
-sleep 0.2
+for _ in $(seq 1 100); do
+  if ! kill -0 "$supervisor_pid" 2>/dev/null &&
+    [[ ! -e "$HTMLVIEW_STATE_DIR/control.sock" ]] &&
+    [[ ! -e "$HTMLVIEW_STATE_DIR/supervisor.lock" ]]; then
+    break
+  fi
+  sleep 0.02
+done
+if kill -0 "$supervisor_pid" 2>/dev/null ||
+  [[ -e "$HTMLVIEW_STATE_DIR/control.sock" ]] ||
+  [[ -e "$HTMLVIEW_STATE_DIR/supervisor.lock" ]]; then
+  echo "htmlview supervisor remained after stop --all" >&2
+  exit 1
+fi
 
 npm install --global "${tarball[0]}" >/dev/null
 htmlview --version --json >/dev/null

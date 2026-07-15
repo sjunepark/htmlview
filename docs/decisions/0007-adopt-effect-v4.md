@@ -1,6 +1,6 @@
 # ADR 0007: Adopt Effect v4 as the execution model
 
-- Status: Accepted
+- Status: Accepted and implemented
 - Date: 2026-07-15
 - Supersedes: ADR 0005's TypeScript test runner and emitted-package details
 
@@ -42,12 +42,16 @@ raw byte-serving and confinement behavior is security-sensitive. Use only
 `@effect/platform-node/NodeRuntime` from the Node platform package; do not adopt
 Effect CLI or an Effect HTTP data plane in this migration.
 
-Publish two tree-shaken ESM bundles, `dist/cli.js` and
-`dist/supervisor-main.js`, plus declarations and external source maps. Bundle
-Effect and the Node runtime integration so a global or one-shot install does
-not carry Effect's full source package. Keep `@toon-format/toon` and
-`mime-types` external as declared runtime dependencies. The flat supervisor
-bundle path is part of detached-process discovery inside the CLI bundle.
+Publish two minified, tree-shaken ESM bundles, `dist/cli.js` and
+`dist/supervisor-main.js`, plus linked external source maps without embedded
+source content. This is a bin-only package with no supported module or type
+export, so do not ship declarations for internal modules. Bundle Effect and
+the Node runtime integration so a global or one-shot install does not carry
+Effect's full source package. Keep `@toon-format/toon` and `mime-types`
+external as declared runtime dependencies. The flat supervisor bundle path is
+part of detached-process discovery inside the CLI bundle. Ship notices for
+every bundled dependency and fail the build if that set or the external import
+contract drifts.
 
 Use Vitest with `@effect/vitest` for TypeScript unit and integration tests so
 scoped tests and `TestClock` are first-class. Keep black-box `.mjs` lifecycle
@@ -69,6 +73,9 @@ installation.
 - Bundling adds a build step and bundled license/source-map obligations, but
   keeps the installed runtime dependency surface and executable startup
   practical.
+- The bundle duplicates the runtime between two standalone executables and is
+  materially larger than the Promise artifact; this preserves detached
+  discovery without adding a shared-chunk installation contract.
 - Internal modules are no longer available as emitted JavaScript artifacts;
   validation must exercise source-level seams or the built CLI rather than
   importing undocumented files from `dist`.

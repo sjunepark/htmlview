@@ -128,6 +128,7 @@ describe("control protocol schemas", () => {
       { sessions: "not-an-array" },
       { sessions: [], extra: true },
       { sessions: [{ ...session, id: "bad" }] },
+      { sessions: [{ ...session, id: "-B3_-xYz" }] },
       { sessions: [{ ...session, status: "starting" }] },
       { sessions: [{ ...session, url: "http://example.com/report.html" }] },
       {

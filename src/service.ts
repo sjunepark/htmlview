@@ -27,9 +27,8 @@ export class CommandService extends Context.Service<
   CommandServiceShape
 >()("htmlview/CommandService") {}
 
-export function makeCommandService(
-  supervisor = new SupervisorClient(),
-): CommandServiceShape {
+export function makeCommandService(): CommandServiceShape {
+  const supervisor = new SupervisorClient();
   return {
     listSessions: (fields = []) => supervisor.list(fields),
     serve: (entry, root) =>

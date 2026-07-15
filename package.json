@@ -3,6 +3,7 @@
   "version": "0.1.0",
   "packageManager": "pnpm@11.13.0",
   "description": "Serve local HTML through confined loopback HTTP",
+  "license": "MIT",
   "type": "module",
   "bin": {
     "htmlview": "dist/cli.js"
@@ -11,18 +12,28 @@
     "access": "public"
   },
   "files": [
-    "dist",
-    "docs",
+    "dist/cli.js",
+    "dist/cli.js.map",
+    "dist/supervisor-main.js",
+    "dist/supervisor-main.js.map",
+    "docs/CLI.md",
+    "docs/INSTALL.md",
+    "docs/INTEROPERABILITY.md",
+    "docs/PRODUCT.md",
+    "docs/SECURITY_VALIDATION.md",
+    "docs/THREAT_MODEL.md",
+    "docs/decisions",
+    "docs/validation",
     "README.md",
     "ARCHITECTURE.md",
-    "PLAN.md",
-    "LICENSE"
+    "LICENSE",
+    "THIRD_PARTY_NOTICES.md"
   ],
   "engines": {
     "node": ">=22.13"
   },
   "scripts": {
-    "build": "node scripts/build.mjs",
+    "build": "tsc -p tsconfig.json && node scripts/build.mjs",
     "check": "pnpm run format:check && pnpm run lint && pnpm run typecheck && pnpm test && pnpm run validate:docs && pnpm run build && pnpm run test:e2e && pnpm run validate:browser-origin && pnpm run validate:interoperability && pnpm run validate:package",
     "format": "prettier --write .",
     "format:check": "prettier --check .",

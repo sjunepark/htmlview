@@ -69,6 +69,15 @@ import { htmlviewVersion } from "../version.js";
 const defaultIdleMilliseconds = 30_000;
 const defaultShutdownGraceMilliseconds = 2_000;
 
+export function generateSessionId(
+  random: (size: number) => Buffer = randomBytes,
+): string {
+  let id: string;
+  do id = random(6).toString("base64url");
+  while (id.startsWith("-"));
+  return id;
+}
+
 interface LiveSession {
   readonly summary: SupervisorSession;
   readonly identityKey: string;
@@ -88,7 +97,6 @@ class ControlListenError extends Data.TaggedError("ControlListenError")<{
 
 export interface RunningSupervisor {
   readonly close: Effect.Effect<void, SupervisorLifecycleError>;
-  readonly controlAddress: string;
   readonly closed: Effect.Effect<void, SupervisorLifecycleError>;
   readonly identity: SupervisorIdentity;
   readonly paths: StatePaths;
@@ -411,7 +419,7 @@ class SessionRegistry {
         const server = yield* Scope.provide(scope)(this.startServer(grant));
         yield* verifyReady(server, grant.entryUrlPath);
         let id: string;
-        do id = randomBytes(6).toString("base64url");
+        do id = generateSessionId();
         while (this.#sessions.has(id));
         const summary: SupervisorSession = {
           id,
@@ -887,7 +895,6 @@ async function startSupervisorPromise(
       catch: (cause) =>
         new SupervisorLifecycleError({ phase: "shutdown", cause }),
     }),
-    controlAddress: paths.controlSocket,
     closed: Deferred.await(closedSignal),
     identity,
     paths,
