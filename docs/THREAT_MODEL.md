@@ -74,7 +74,8 @@ static HTTP service. It does not claim that rendered HTML is safe.
   generated files, or annotations under the serving root.
 - **Resource exhaustion.** Bound headers, request concurrency, request
   duration, file streaming resources, state size, startup waits, and idle
-  lifetime.
+  lifetime. Make waits and body reads cancellable, and scope listeners,
+  request fibers, files, ownership, and timers so interruption releases them.
 - **Information in logs.** Keep normal output minimal; avoid logging control
   credentials and avoid canonical paths unless explicitly requested.
 - **Structured-output injection.** Encode result values with conforming TOON
@@ -89,6 +90,10 @@ static HTTP service. It does not claim that rendered HTML is safe.
   reuse revives storage, caches, and service workers. Give every new session a
   never-reused random `.localhost` label with at least 128 bits of entropy.
   Accept a reused label only for an idempotent request to the same live session.
+- **Bundled dependency drift.** Pin the prerelease Effect toolchain exactly.
+  Bundle only the audited dependency set, keep every external import declared
+  as a runtime dependency, ship the bundled licenses, exclude embedded source
+  content, and rerun the audit and full release gate for every update.
 
 ## Malicious-content risk
 
@@ -134,6 +139,8 @@ maintained in [Security validation evidence](SECURITY_VALIDATION.md).
   calls over the private socket
 - Concurrent first startup, malformed or occupied socket paths, stale sockets,
   version mismatch, and supervisor crashes
+- Interruption during ownership acquisition, listener readiness, request body
+  reads, streaming, and shutdown, including a finalizer that fails
 - Very large files, slow readers, excessive connections, and aborted requests
 - Files outside an explicit root and symlinks resolving to them
 - Concurrent sessions and an unrelated loopback service setting overlapping
@@ -164,3 +171,6 @@ maintained in [Security validation evidence](SECURITY_VALIDATION.md).
   hostname-to-loopback resolution.
 - Browser execution of untrusted authored code remains dangerous by design and
   is mitigated operationally with an isolated browser environment.
+- Effect v4 is a pinned prerelease dependency. Exact pins and bundled-package
+  checks prevent silent drift, but each deliberate update still requires
+  source/API inspection, audit, and the complete release validation matrix.

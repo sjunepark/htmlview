@@ -20,7 +20,7 @@ The selected root is both the HTTP origin root and the read-disclosure grant.
 Every permitted file beneath it is available to same-origin page code; only
 resolved targets outside it are forbidden.
 
-## Target system shape
+## System shape
 
 ```text
 agent
@@ -103,10 +103,10 @@ The listener binds only to `127.0.0.1`; the unique hostname isolates cookies,
 storage, caches, and service workers and is never reused after a session stops.
 The supervisor owns concurrency, idle shutdown, stale-socket recovery, and
 graceful termination. It must not require a project-local process manager.
-The supervisor executable also has one Node runtime boundary. Its scoped Layer
-awaits an explicit server-closed signal, so idle and control-request shutdowns
-end the root program while SIGINT or SIGTERM interrupt that same root and run
-the idempotent shutdown finalizer before exit.
+The supervisor executable also has one Node runtime boundary. Its scoped root
+program awaits an explicit server-closed signal, so idle and control-request
+shutdowns end the program while SIGINT or SIGTERM interrupt that same root and
+run the idempotent shutdown finalizer before exit.
 
 ### Session registry
 
@@ -146,6 +146,69 @@ on the same origin.
 
 The raw service does not parse HTML in order to modify it. File changes become
 visible on a later request or reload without requiring a new session.
+
+## Effect execution and ownership
+
+The service graph has two executable roots and one production service seam:
+
+```text
+cli NodeRuntime
+  runApp
+    CommandService Layer
+      resolveServingGrant
+      SupervisorClient
+        state / ownership
+        Unix control transport
+
+supervisor NodeRuntime
+  scoped runSupervisor
+    ownership + control + registry
+      startStaticServer per session
+```
+
+Pure parsing, containment calculations, output assembly, and HTTP header logic
+remain ordinary functions. Effect owns fallible asynchronous execution,
+cancellation, typed operational failures, schedules, and resource lifetime.
+Native Node filesystem, HTTP, socket, stream, and process APIs remain narrow
+leaf adapters because their exact security and byte-stream behavior matters.
+
+The logical ownership tree is closed from the leaves upward:
+
+```text
+supervisor root scope
+  lifetime ownership lock
+  control-listener scope
+    control request fibers
+  idle-shutdown fiber scope
+  session-registry scope
+    session child scope
+      content listener + request-fiber set
+        request scope
+          authorized file handle -> native auto-closing stream
+```
+
+Session creation commits to the registry only after listener readiness. Failed
+or interrupted acquisition closes the pending child scope. Stop, idle expiry,
+signals, and control shutdown converge on the same idempotent cleanup path;
+cleanup attempts every owned branch even when one finalizer fails.
+
+## Error flow and test seams
+
+Expected filesystem, state, content-listener, control, and supervisor failures
+use tagged Effect error channels. The private protocol schemas validate both
+requests and responses, and the supervisor sends only stable wire codes and
+safe messages. `runApp` exhaustively projects expected failures to structured
+stdout with exit code 1. Syntax failures use exit code 2. Unknown defects are
+sanitized as `runtime.internal` on stdout while diagnostic detail stays on
+stderr. Interruption is not converted into an operational error.
+
+The `CommandService` Layer is the CLI orchestration seam. Supervisor tests use
+the client constructor's process/lock adapters and `SupervisorOptions` for
+native failure injection; raw-server tests acquire listeners directly in a
+scope. Vitest and `@effect/vitest` cover typed programs, scoped finalization,
+and deterministic `TestClock` policies. Real Unix sockets and processes remain
+in integration and black-box E2E tests, while Playwright, Browser Use, and
+clean installed-package workflows validate only the public artifact.
 
 ## Runtime flows
 
@@ -289,13 +352,19 @@ origin-keyed state from concurrent services and later port reuse.
   and the scoped lifetime ownership lock that serializes startup and stale
   recovery.
 - `src/service.ts` translates CLI intent into grant and supervisor operations.
-- `test/` holds contract and TOON v3.3 conformance tests.
+- `test/` holds Vitest unit and integration coverage, including Effect scopes,
+  clocks, schemas, native HTTP, and TOON v3.3 conformance.
+- `test-e2e/` holds black-box executable and detached-process lifecycle tests.
+- `scripts/build.mjs` emits the two minified executable bundles and external
+  source maps, and rejects undeclared external imports or unlicensed bundled
+  dependency drift.
 - `validation/browser-origin/` holds browser behavior evidence and remains
   outside the runtime.
 - `validation/interoperability/` passes real CLI-returned URLs to independent
   browser controllers without adding them to the runtime.
 - `validation/package/` verifies reproducible pack/install/reinstall/uninstall
-  behavior on macOS/current platform and Node 22 Linux.
+  behavior, exact package contents, and detached cleanup on macOS/current
+  platform and Node 22 Linux.
 
 Avoid a generic plugin or browser-adapter layer without a current second
 implementation.
@@ -308,5 +377,6 @@ implementation.
 - [ADR 0004: Treat the serving root as a disclosure grant](docs/decisions/0004-treat-the-serving-root-as-a-disclosure-grant.md)
 - [ADR 0005: Use Node.js, TypeScript, pnpm, and the npm registry](docs/decisions/0005-use-node-typescript-pnpm-and-the-npm-registry.md)
 - [ADR 0006: Use a private Unix-domain control socket](docs/decisions/0006-use-a-private-control-socket.md)
+- [ADR 0007: Adopt Effect v4 as the execution model](docs/decisions/0007-adopt-effect-v4.md)
 - [Agent-facing CLI contract](docs/CLI.md)
 - [Threat model](docs/THREAT_MODEL.md)

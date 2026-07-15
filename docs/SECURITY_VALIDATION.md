@@ -20,10 +20,14 @@ set; Linux package installation is the separate
 | Authoritative ownership and safe stale recovery                         | list/serve transient-health preservation, live foreign owner, killed-owner recovery, mismatch, and lock fencing                 |
 | Concurrent startup, sessions, crashes, and idempotent cleanup           | detached E2E plus supervisor concurrency, SIGKILL, SIGTERM, and stop no-op tests                                                |
 | Header, connection, request, and shutdown bounds                        | server configuration plus oversized-body, FIFO, growing/large-file, held-request, and aborted-reader tests                      |
+| Cancellation and acquisition cleanup                                    | interruption tests for ownership, listener acquisition/readiness, transport/body reads, streams, and supervisor root scope      |
+| Finalizer failure isolation                                             | injected session-scope finalizer defect plus failure/interruption cleanup for files, listeners, control, and ownership          |
 | Browser cookies, storage, cache, and service-worker isolation           | five-case Playwright origin suite in `validation/browser-origin/`                                                               |
 | Structured-output injection and shape preservation                      | official TOON v3.3 fixtures plus 500 generated hostile-value round trips through TOON and JSON                                  |
 | Browser-controller separation                                           | real CLI URL checks under `validation/interoperability/`; package contents reject `validation/` files                           |
 | Reproducible package version and lifecycle                              | clean-prefix pack/install/serve/reinstall/uninstall checks on the current platform and Node 22 Debian                           |
+| Bundle dependency, license, and map policy                              | exact Effect pins, build-time import/license-set checks, third-party notices, linked maps without embedded source content       |
+| Distribution size and process cost                                      | Phase 9 installed-artifact comparison records packed/install size, file counts, cold commands, readiness, and empty-daemon RSS  |
 
 ## Explicit residual risks
 
@@ -51,6 +55,10 @@ set; Linux package installation is the separate
 - Each supervisor permits at most 32 sessions. Every session still consumes a
   listener and file-descriptor set, so operating-system exhaustion below that
   cap remains possible on an already constrained machine.
+- The Effect runtime increases the installed artifact and empty-supervisor
+  memory compared with the Promise baseline. Release measurements quantify
+  that cost; the package remains two self-contained executables with only TOON
+  and MIME lookup installed as runtime dependencies.
 - Faithfully rendered HTML can read all files in its granted root, contact the
   network, and access capabilities of its browser profile. Isolated roots and
   disposable browser profiles remain operational requirements for untrusted
