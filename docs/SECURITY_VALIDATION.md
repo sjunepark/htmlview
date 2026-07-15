@@ -5,25 +5,25 @@ repeatable evidence. `pnpm run check` runs the automated macOS/current-platform
 set; Linux package installation is the separate
 `pnpm run validate:package:linux` release check.
 
-| Control or adversarial case                                             | Evidence                                                                                                        |
-| ----------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------- |
-| Loopback content, private Unix control socket, and no public bind       | Fixed addresses in `src/serving/http.ts` and `src/supervisor/server.ts`; strict CLI unknown-flag tests          |
-| Exact content and control `Host` validation                             | `test/http.test.ts` forged-host cases and `test/supervisor.test.ts` private-socket control requests             |
-| High-entropy, never-reused session names                                | `generateSessionHostname()` uses 128 random bits; lifecycle and browser-origin tests require distinct hostnames |
-| No permissive CORS; foreign page cannot read content                    | response-header integration test and Playwright cross-origin fetch test                                         |
-| Entry/root disclosure, broad-root rejection, and in-root hidden files   | `test/grant.test.ts`, supervisor state-overlap test, raw HTTP tests, and complete browser fixture               |
-| Plain/encoded traversal, malformed UTF-8, controls, separators, Unicode | generated single-decode and Unicode filename cases in `test/http.test.ts`                                       |
-| Root containment and entry escape                                       | 500 generated containment shapes plus default/explicit grant tests                                              |
-| Symlink escape and replacement during concurrent requests               | fixed escape and 80 concurrent swap/request cases in `test/http.test.ts`                                        |
-| Read-only source behavior and no project-local state                    | project-clean detached E2E, fixture directory assertions, and external state-path tests                         |
-| Private socket authorization and bounded bodies                         | `0700`/`0600`, wrong-Host, 65 KiB body, and non-portable socket-path tests                                      |
-| Authoritative ownership and safe stale recovery                         | list/serve transient-health preservation, live foreign owner, killed-owner recovery, mismatch, and lock fencing |
-| Concurrent startup, sessions, crashes, and idempotent cleanup           | detached E2E plus supervisor concurrency, SIGKILL, SIGTERM, and stop no-op tests                                |
-| Header, connection, request, and shutdown bounds                        | server configuration plus oversized-body, FIFO, growing/large-file, held-request, and aborted-reader tests      |
-| Browser cookies, storage, cache, and service-worker isolation           | five-case Playwright origin suite in `validation/browser-origin/`                                               |
-| Structured-output injection and shape preservation                      | official TOON v3.3 fixtures plus 500 generated hostile-value round trips through TOON and JSON                  |
-| Browser-controller separation                                           | real CLI URL checks under `validation/interoperability/`; package contents reject `validation/` files           |
-| Reproducible package version and lifecycle                              | clean-prefix pack/install/serve/reinstall/uninstall checks on the current platform and Node 22 Debian           |
+| Control or adversarial case                                             | Evidence                                                                                                                        |
+| ----------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------- |
+| Loopback content, private Unix control socket, and no public bind       | Fixed addresses in `src/serving/http.ts` and `src/supervisor/server.ts`; strict CLI unknown-flag tests                          |
+| Exact content and control `Host` validation                             | `test/http.integration.vitest.ts` forged-host cases and `test/supervisor.integration.vitest.ts` private-socket control requests |
+| High-entropy, never-reused session names                                | `generateSessionHostname()` uses 128 random bits; lifecycle and browser-origin tests require distinct hostnames                 |
+| No permissive CORS; foreign page cannot read content                    | response-header integration test and Playwright cross-origin fetch test                                                         |
+| Entry/root disclosure, broad-root rejection, and in-root hidden files   | `test/grant.vitest.ts`, supervisor state-overlap test, raw HTTP tests, and complete browser fixture                             |
+| Plain/encoded traversal, malformed UTF-8, controls, separators, Unicode | generated single-decode and Unicode filename cases in `test/http.integration.vitest.ts`                                         |
+| Root containment and entry escape                                       | 500 generated containment shapes plus default/explicit grant tests                                                              |
+| Symlink escape and replacement during concurrent requests               | fixed escape and 80 concurrent swap/request cases in `test/http.integration.vitest.ts`                                          |
+| Read-only source behavior and no project-local state                    | project-clean detached E2E, fixture directory assertions, and external state-path tests                                         |
+| Private socket authorization and bounded bodies                         | `0700`/`0600`, wrong-Host, 65 KiB body, and non-portable socket-path tests                                                      |
+| Authoritative ownership and safe stale recovery                         | list/serve transient-health preservation, live foreign owner, killed-owner recovery, mismatch, and lock fencing                 |
+| Concurrent startup, sessions, crashes, and idempotent cleanup           | detached E2E plus supervisor concurrency, SIGKILL, SIGTERM, and stop no-op tests                                                |
+| Header, connection, request, and shutdown bounds                        | server configuration plus oversized-body, FIFO, growing/large-file, held-request, and aborted-reader tests                      |
+| Browser cookies, storage, cache, and service-worker isolation           | five-case Playwright origin suite in `validation/browser-origin/`                                                               |
+| Structured-output injection and shape preservation                      | official TOON v3.3 fixtures plus 500 generated hostile-value round trips through TOON and JSON                                  |
+| Browser-controller separation                                           | real CLI URL checks under `validation/interoperability/`; package contents reject `validation/` files                           |
+| Reproducible package version and lifecycle                              | clean-prefix pack/install/serve/reinstall/uninstall checks on the current platform and Node 22 Debian                           |
 
 ## Explicit residual risks
 

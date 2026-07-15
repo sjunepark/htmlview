@@ -28,8 +28,7 @@
     "format:check": "prettier --check .",
     "lint": "eslint .",
     "prepack": "pnpm run build",
-    "test": "tsx --test test/**/*.test.ts && pnpm run test:effect",
-    "test:effect": "vitest run --config vitest.config.ts",
+    "test": "vitest run --config vitest.config.ts",
     "test:e2e": "node --test --test-concurrency=1 test-e2e/**/*.test.mjs",
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.test.json && effect-language-service diagnostics --project tsconfig.test.json --strict",
     "validate:browser-origin": "pnpm --silent run build && playwright test --config validation/browser-origin/playwright.config.mjs",
@@ -57,7 +56,6 @@
     "eslint": "10.7.0",
     "globals": "17.7.0",
     "prettier": "3.9.5",
-    "tsx": "4.20.6",
     "typescript": "6.0.3",
     "typescript-eslint": "8.64.0",
     "vitest": "4.1.10"

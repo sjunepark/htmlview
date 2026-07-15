@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { describe, it } from "node:test";
+import { describe, it } from "vitest";
 import { Effect, Exit, Fiber, Layer } from "effect";
 import { runApp } from "../src/app.js";
 import { decodeOutput } from "../src/output.js";

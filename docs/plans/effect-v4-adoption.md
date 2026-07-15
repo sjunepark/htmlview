@@ -1,6 +1,6 @@
 # Effect v4 Adoption Plan
 
-- Status: In progress; Phase 7 complete
+- Status: In progress; Phase 8 complete
 - Updated: 2026-07-15
 - Parent plan: [`PLAN.md`](../../PLAN.md)
 - Decision scope: migrate htmlview's fallible asynchronous execution and
@@ -316,7 +316,7 @@ fibers to outlive listener shutdown.
 
 ### Testing topology
 
-Use Vitest plus `@effect/vitest` for `test/**/*.test.ts`. Use `it.effect` or
+Use Vitest plus `@effect/vitest` for `test/**/*.vitest.ts`. Use `it.effect` or
 `it.scoped` for Effect programs and test Layers for replaceable leaf services.
 Use `TestClock` for schedule, retry, idle-shutdown, and timeout policy tests
 that do not need real sockets. Keep real time for black-box process/socket tests
@@ -337,7 +337,7 @@ Do not retain two TypeScript unit-test runners after the migration.
 | 5. Supervisor registry and server    | Complete | Scoped sessions, control work, and idle shutdown       |
 | 6. Supervisor client                 | Complete | Cancellable, scheduled, scope-safe client lifecycle    |
 | 7. App services and entry points     | Complete | One Effect runtime path for both executables           |
-| 8. Test-suite migration              | Pending  | Effect-aware TypeScript tests and deterministic clocks |
+| 8. Test-suite migration              | Complete | One Effect-aware runner and deterministic policy tests |
 | 9. Packaging, docs, and release gate | Pending  | Full validation and release-ready artifact             |
 
 ## Phase 0: Baseline and API verification
@@ -614,7 +614,8 @@ compatible where required.
 
 ### Work
 
-- Convert all `test/**/*.test.ts` files from Node's test runner to Vitest.
+- Move all TypeScript tests from Node's test runner to Vitest and use the
+  `test/**/*.vitest.ts` naming convention.
 - Use `@effect/vitest` for Effect programs and scoped fixtures.
 - Replace injectable callback options with test Layers where the dependency is
   a real service boundary; keep direct function injection for pure algorithms.
@@ -723,11 +724,35 @@ Keep this table current; replace `Pending` when a gate is resolved.
 
 ## Next action
 
-Execute Phase 8: migrate the remaining TypeScript Node tests to the existing
-Effect-aware Vitest runner, replace service callbacks with focused Layers, and
-remove the temporary Promise test adapters and second TypeScript runner.
+Execute Phase 9: finalize the package and security/architecture documentation,
+compare the release artifact with the Phase 0 baseline, remove migration-only
+surface, and run every current-platform and Linux/external release gate.
 
 ## Progress log
+
+### 2026-07-15 — Phase 8 complete
+
+- Renamed all TypeScript tests to the `.vitest.ts` convention and moved Node
+  unit/integration suites onto the existing Vitest configuration. `pnpm test`
+  now invokes one runner for the complete suite; the obsolete `tsx` runner and
+  Phase 1 smoke test are gone.
+- Removed the Promise-shaped supervisor-client test class. Real socket/process
+  integration tests execute Effects explicitly only at their test boundary,
+  while policy and scope tests use `@effect/vitest` programs directly.
+- Replaced the exported Promise supervisor start/close transition with typed
+  Effect APIs. Native Promise orchestration remains private inside the server;
+  production and test modules now share the same Effect surface.
+- Added acquisition-time interruption coverage proving an uninterruptible
+  startup finishes and immediately finalizes without orphaning the socket or
+  ownership lock. Shutdown-defect coverage now also asserts the public closed
+  signal fails after all owned state is released.
+- The 122-test suite passes twice consecutively and again with files/tests
+  shuffled under seed `7152026`; focused supervisor integration and strict
+  Effect diagnostics also pass.
+- Final `pnpm run check` passes with the unified suite, two E2E lifecycle tests,
+  seven Playwright checks, docs, build, and package lifecycle validation.
+- Next: perform the Phase 9 artifact comparison, documentation compression,
+  final diet review, and complete release gate without publishing.
 
 ### 2026-07-15 — Phase 7 complete
 

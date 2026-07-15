@@ -62,6 +62,9 @@ caller.
 - Effect v4 adoption Phase 7 is complete: command orchestration uses one Effect
   service Layer, and both executables use one signal-aware Node runtime boundary
   with structured error-channel separation and scoped supervisor completion.
+- Effect v4 adoption Phase 8 is complete: all TypeScript tests run once under
+  Vitest/@effect-vitest, Effect service fixtures use Layers, lifecycle policies
+  use deterministic clocks where appropriate, and Promise test facades are gone.
 - Final validation passes `pnpm run check`, the Node 22 Linux package workflow,
   `pnpm run validate:browser-use`, and `pnpm audit` with zero vulnerabilities.
 
@@ -145,7 +148,8 @@ Acceptance:
 ## Milestone 1: Faithful static serving
 
 Status: Complete. `src/serving/` owns grant validation and the in-process raw
-handler; integration and generic-browser coverage are in `test/http.test.ts`
+handler; integration and generic-browser coverage are in
+`test/http.integration.vitest.ts`
 and `validation/browser-origin/htmlview-serving.spec.mjs`.
 
 - Validate and canonicalize an HTML entry file and its serving root.
@@ -297,5 +301,5 @@ annotation transport before a working second use case requires it.
 
 ## Next action
 
-Execute Phase 8 of `docs/plans/effect-v4-adoption.md`; do not publish the
+Execute Phase 9 of `docs/plans/effect-v4-adoption.md`; do not publish the
 pre-migration artifact. Optional annotation work remains deferred.

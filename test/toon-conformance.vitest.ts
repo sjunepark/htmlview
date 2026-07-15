@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { readdir, readFile } from "node:fs/promises";
 import path from "node:path";
-import { describe, it } from "node:test";
+import { describe, it } from "vitest";
 import { decode, encode } from "@toon-format/toon";
 import { decodeOutput, serialize } from "../src/output.js";
 import type { JsonObject, OutputFormat } from "../src/contracts.js";

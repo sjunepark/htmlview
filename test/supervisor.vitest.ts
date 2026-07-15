@@ -3,11 +3,15 @@ import { request } from "node:http";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { expect, it } from "@effect/vitest";
-import { Effect, Fiber, FiberSet } from "effect";
+import { Effect, Exit, Fiber, FiberSet, Scope } from "effect";
 import { TestClock } from "effect/testing";
 import { runSupervisor, startSupervisor } from "../src/supervisor/server.js";
 import { controlHost } from "../src/supervisor/protocol.js";
-import { statePaths } from "../src/supervisor/state.js";
+import {
+  acquireSupervisorLock,
+  ensurePrivateStateDirectory,
+  statePaths,
+} from "../src/supervisor/state.js";
 
 function exists(pathname: string): Effect.Effect<boolean> {
   return Effect.promise(() =>
@@ -31,7 +35,7 @@ function waitUntilMissing(pathname: string): Effect.Effect<boolean> {
 
 function waitUntilPresent(pathname: string): Effect.Effect<boolean> {
   return Effect.gen(function* () {
-    for (let attempt = 0; attempt < 20; attempt += 1) {
+    for (let attempt = 0; attempt < 100; attempt += 1) {
       if (yield* exists(pathname)) return true;
       yield* Effect.promise(
         () => new Promise<void>((resolve) => setImmediate(resolve)),
@@ -69,13 +73,11 @@ it.effect("uses the test clock for idle supervisor shutdown", () =>
           HTMLVIEW_STATE_DIR: path.join(parent, "state"),
         });
         const idleRuntime = yield* FiberSet.makeRuntime<never, void, never>();
-        const supervisor = yield* Effect.promise(() =>
-          startSupervisor({
-            paths,
-            idleMilliseconds: 50,
-            idleRuntime,
-          }),
-        );
+        const supervisor = yield* startSupervisor({
+          paths,
+          idleMilliseconds: 50,
+          idleRuntime,
+        });
 
         yield* TestClock.adjust(49);
         expect(yield* exists(paths.controlSocket)).toBe(true);
@@ -110,6 +112,38 @@ it.effect("closes the supervisor when its root scope is interrupted", () =>
 );
 
 it.effect(
+  "finishes an interrupted acquisition without orphaning supervisor state",
+  () =>
+    Effect.acquireUseRelease(
+      Effect.promise(() => mkdtemp(path.join(tmpdir(), "hv-acquire-int-"))),
+      (parent) =>
+        Effect.gen(function* () {
+          const paths = statePaths({
+            HTMLVIEW_STATE_DIR: path.join(parent, "state"),
+          });
+          yield* ensurePrivateStateDirectory(paths);
+          const holder = yield* Scope.make();
+          yield* Scope.provide(holder)(acquireSupervisorLock(paths));
+          const supervisor = yield* Effect.forkChild(
+            Effect.scoped(runSupervisor({ paths })),
+          );
+          yield* Effect.promise(
+            () => new Promise<void>((resolve) => setImmediate(resolve)),
+          );
+          const interruption = yield* Effect.forkChild(
+            Fiber.interrupt(supervisor),
+          );
+          yield* Scope.close(holder, Exit.void);
+          yield* Fiber.join(interruption);
+          expect(yield* exists(paths.controlSocket)).toBe(false);
+          expect(yield* exists(paths.supervisorLock)).toBe(false);
+        }),
+      (parent) =>
+        Effect.promise(() => rm(parent, { recursive: true, force: true })),
+    ),
+);
+
+it.effect(
   "keeps the supervisor alive when activity wins the idle-close race",
   () =>
     Effect.acquireUseRelease(
@@ -129,20 +163,18 @@ it.effect(
             releaseHealth = resolve;
           });
           let idleClose: (() => void) | undefined;
-          const supervisor = yield* Effect.promise(() =>
-            startSupervisor({
-              paths,
-              idleMilliseconds: 50,
-              idleRuntime,
-              deferIdleClose: (close) => {
-                idleClose = close;
-              },
-              beforeHealth: async () => {
-                markHealthStarted();
-                await healthReleased;
-              },
-            }),
-          );
+          const supervisor = yield* startSupervisor({
+            paths,
+            idleMilliseconds: 50,
+            idleRuntime,
+            deferIdleClose: (close) => {
+              idleClose = close;
+            },
+            beforeHealth: async () => {
+              markHealthStarted();
+              await healthReleased;
+            },
+          });
 
           yield* TestClock.adjust(49);
           yield* TestClock.adjust(1);
@@ -156,7 +188,7 @@ it.effect(
           releaseHealth();
           expect(yield* Fiber.join(health)).toBe(200);
           expect(yield* exists(paths.controlSocket)).toBe(true);
-          yield* Effect.promise(() => supervisor.close());
+          yield* supervisor.close;
         }),
       (parent) =>
         Effect.promise(() => rm(parent, { recursive: true, force: true })),

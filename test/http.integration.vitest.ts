@@ -16,7 +16,7 @@ import { request } from "node:http";
 import { connect } from "node:net";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { afterEach, beforeEach, describe, it } from "node:test";
+import { afterEach, beforeEach, describe, it } from "vitest";
 import { promisify } from "node:util";
 import { Effect, Exit, Scope } from "effect";
 import {

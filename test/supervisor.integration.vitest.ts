@@ -17,21 +17,19 @@ import { createServer as createHttpServer, request } from "node:http";
 import { createServer as createNetServer } from "node:net";
 import { homedir, tmpdir } from "node:os";
 import path from "node:path";
-import { afterEach, describe, it } from "node:test";
+import { afterEach, describe, it } from "vitest";
 import { Effect, Exit, Scope } from "effect";
 import { ContentListenerError } from "../src/errors.js";
 import { resolveServingGrant } from "../src/serving/grant.js";
 import { startStaticServer } from "../src/serving/http.js";
 import {
   ProcessStartError,
-  SupervisorClient as EffectSupervisorClient,
-  type StartSupervisorProcess,
+  SupervisorClient,
 } from "../src/supervisor/client.js";
 import {
   controlHost,
   maximumControlResponseBytes,
   maximumConcurrentSessions,
-  type OptionalSessionField,
 } from "../src/supervisor/protocol.js";
 import {
   startSupervisor,
@@ -49,31 +47,8 @@ import { htmlviewVersion } from "../src/version.js";
 const temporaryDirectories: string[] = [];
 const supervisors: RunningSupervisor[] = [];
 
-class SupervisorClient {
-  readonly #client: EffectSupervisorClient;
-
-  constructor(
-    paths: StatePaths = statePaths(),
-    startProcess?: StartSupervisorProcess,
-  ) {
-    this.#client = new EffectSupervisorClient(paths, startProcess);
-  }
-
-  list(fields: readonly OptionalSessionField[] = []) {
-    return Effect.runPromise(this.#client.list(fields));
-  }
-
-  serve(entry: string, root: string) {
-    return Effect.runPromise(this.#client.serve(entry, root));
-  }
-
-  stopSession(session: string) {
-    return Effect.runPromise(this.#client.stopSession(session));
-  }
-
-  stopAll() {
-    return Effect.runPromise(this.#client.stopAll());
-  }
+function runEffect<A, E>(effect: Effect.Effect<A, E>): Promise<A> {
+  return Effect.runPromise(effect);
 }
 
 async function acquireTestLock(
@@ -124,17 +99,19 @@ async function setup(
   const state = await temporaryDirectory("htmlview-state-parent-");
   const paths = statePaths({ HTMLVIEW_STATE_DIR: path.join(state, "state") });
   await Effect.runPromise(ensurePrivateStateDirectory(paths));
-  const supervisor = await startSupervisor({
-    paths,
-    idleMilliseconds: options.idleMilliseconds ?? 10_000,
-    ...(options.maximumSessions === undefined
-      ? {}
-      : { maximumSessions: options.maximumSessions }),
-    ...(options.version === undefined ? {} : { version: options.version }),
-    ...(options.beforeHealth === undefined
-      ? {}
-      : { beforeHealth: options.beforeHealth }),
-  });
+  const supervisor = await runEffect(
+    startSupervisor({
+      paths,
+      idleMilliseconds: options.idleMilliseconds ?? 10_000,
+      ...(options.maximumSessions === undefined
+        ? {}
+        : { maximumSessions: options.maximumSessions }),
+      ...(options.version === undefined ? {} : { version: options.version }),
+      ...(options.beforeHealth === undefined
+        ? {}
+        : { beforeHealth: options.beforeHealth }),
+    }),
+  );
   supervisors.push(supervisor);
   const root = await temporaryDirectory("htmlview-session-");
   const entry = path.join(root, "report.html");
@@ -193,7 +170,7 @@ function controlRequest(
 
 afterEach(async () => {
   await Promise.all(
-    supervisors.splice(0).map((supervisor) => supervisor.close()),
+    supervisors.splice(0).map((supervisor) => runEffect(supervisor.close)),
   );
   await Promise.all(
     temporaryDirectories
@@ -216,7 +193,9 @@ describe("supervisor lifecycle", () => {
       Effect.tryPromise({
         try: async () => {
           starts += 1;
-          supervisors.push(await startSupervisor({ paths, ownershipNonce }));
+          supervisors.push(
+            await runEffect(startSupervisor({ paths, ownershipNonce })),
+          );
         },
         catch: (cause) => new ProcessStartError({ cause }),
       });
@@ -224,12 +203,12 @@ describe("supervisor lifecycle", () => {
     const secondClient = new SupervisorClient(paths, start);
 
     const [first, second] = await Promise.all([
-      firstClient.serve(entry, root),
-      secondClient.serve(entry, root),
+      runEffect(firstClient.serve(entry, root)),
+      runEffect(secondClient.serve(entry, root)),
     ]);
     assert.equal(starts, 1);
     assert.equal(first.session.id, second.session.id);
-    assert.equal((await secondClient.list()).length, 1);
+    assert.equal((await runEffect(secondClient.list())).length, 1);
   });
 
   it("creates one private control socket and reuses matching sessions", async () => {
@@ -241,14 +220,14 @@ describe("supervisor lifecycle", () => {
     assert.equal((await stat(paths.directory)).mode & 0o777, 0o700);
 
     const results = await Promise.all([
-      client.serve(entry, root),
-      client.serve(entry, root),
-      client.serve(entry, root),
+      runEffect(client.serve(entry, root)),
+      runEffect(client.serve(entry, root)),
+      runEffect(client.serve(entry, root)),
     ]);
     assert.equal(new Set(results.map((result) => result.session.id)).size, 1);
     assert.equal(new Set(results.map((result) => result.session.url)).size, 1);
     assert.equal(results.filter((result) => result.reused).length, 2);
-    assert.equal((await client.list()).length, 1);
+    assert.equal((await runEffect(client.list())).length, 1);
     assert.equal(
       await fetch(results[0]?.session.url ?? "").then((value) => value.text()),
       "<!doctype html><p>session</p>",
@@ -261,16 +240,22 @@ describe("supervisor lifecycle", () => {
     const otherEntry = path.join(otherRoot, "other.html");
     await writeFile(otherEntry, "other");
     const [first, second] = await Promise.all([
-      client.serve(entry, root),
-      client.serve(otherEntry, otherRoot),
+      runEffect(client.serve(entry, root)),
+      runEffect(client.serve(otherEntry, otherRoot)),
     ]);
     assert.notEqual(first.session.id, second.session.id);
-    assert.equal((await client.stopSession(first.session.id)).stopped, 1);
-    assert.equal((await client.stopSession(first.session.id)).stopped, 0);
-    assert.equal((await client.stopAll()).stopped, 1);
+    assert.equal(
+      (await runEffect(client.stopSession(first.session.id))).stopped,
+      1,
+    );
+    assert.equal(
+      (await runEffect(client.stopSession(first.session.id))).stopped,
+      0,
+    );
+    assert.equal((await runEffect(client.stopAll())).stopped, 1);
     assert.equal(await socketExists(paths), false);
     await assert.rejects(fetch(second.session.url));
-    assert.equal((await client.stopAll()).stopped, 0);
+    assert.equal((await runEffect(client.stopAll())).stopped, 0);
   });
 
   it("uses the private socket directory for authorization", async () => {
@@ -332,7 +317,7 @@ describe("supervisor lifecycle", () => {
       message: "The htmlview supervisor returned an invalid response",
     };
     try {
-      await assert.rejects(client.list(), (error: unknown) => {
+      await assert.rejects(runEffect(client.list()), (error: unknown) => {
         assert.deepEqual(
           {
             code: (error as { readonly code?: unknown }).code,
@@ -347,9 +332,12 @@ describe("supervisor lifecycle", () => {
         );
         return true;
       });
-      await assert.rejects(client.serve(entry, await realpath(root)), expected);
-      await assert.rejects(client.stopSession("missing"), expected);
-      await assert.rejects(client.stopAll(), expected);
+      await assert.rejects(
+        runEffect(client.serve(entry, await realpath(root))),
+        expected,
+      );
+      await assert.rejects(runEffect(client.stopSession("missing")), expected);
+      await assert.rejects(runEffect(client.stopAll()), expected);
     } finally {
       await new Promise<void>((resolve, reject) =>
         fake.close((error) => (error ? reject(error) : resolve())),
@@ -392,9 +380,13 @@ describe("supervisor lifecycle", () => {
 
     try {
       const client = new SupervisorClient(paths);
-      await assert.rejects(client.list(), { code: "supervisor.unavailable" });
+      await assert.rejects(runEffect(client.list()), {
+        code: "supervisor.unavailable",
+      });
       oversized = true;
-      await assert.rejects(client.list(), { code: "supervisor.unavailable" });
+      await assert.rejects(runEffect(client.list()), {
+        code: "supervisor.unavailable",
+      });
     } finally {
       await new Promise<void>((resolve, reject) =>
         fake.close((error) => (error ? reject(error) : resolve())),
@@ -447,16 +439,16 @@ describe("supervisor lifecycle", () => {
       message: "The htmlview supervisor returned an invalid response",
     };
     try {
-      await assert.rejects(client.list(["root"]), expected);
+      await assert.rejects(runEffect(client.list(["root"])), expected);
       value = { sessions: [{ ...session, entry }] };
-      await assert.rejects(client.list(), expected);
+      await assert.rejects(runEffect(client.list()), expected);
       value = {
         session: { ...session, entry: `${entry}.different`, root },
         reused: false,
       };
-      await assert.rejects(client.serve(entry, root), expected);
+      await assert.rejects(runEffect(client.serve(entry, root)), expected);
       value = { stopped: 2 };
-      await assert.rejects(client.stopSession("missing"), expected);
+      await assert.rejects(runEffect(client.stopSession("missing")), expected);
     } finally {
       await new Promise<void>((resolve, reject) =>
         fake.close((error) => (error ? reject(error) : resolve())),
@@ -525,7 +517,7 @@ describe("supervisor lifecycle", () => {
 
   it("keeps control state outside an ordinary served root", async () => {
     const { paths, client, root, entry } = await setup();
-    await client.serve(entry, root);
+    await runEffect(client.serve(entry, root));
     assert.deepEqual(await readdir(root), ["report.html"]);
     assert.deepEqual((await readdir(paths.directory)).sort(), [
       "control.sock",
@@ -544,7 +536,7 @@ describe("supervisor lifecycle", () => {
     const client = new SupervisorClient(paths, () =>
       Effect.sync(() => (starts += 1)),
     );
-    await assert.rejects(client.serve(entry, await realpath(root)), {
+    await assert.rejects(runEffect(client.serve(entry, await realpath(root))), {
       code: "path.root_contains_state",
     });
     assert.equal(starts, 0);
@@ -559,7 +551,7 @@ describe("supervisor lifecycle", () => {
     });
     const entry = path.join(root, "report.html");
     await writeFile(entry, "<!doctype html>");
-    const supervisor = await startSupervisor({ paths });
+    const supervisor = await runEffect(startSupervisor({ paths }));
     supervisors.push(supervisor);
     const response = await controlRequest(paths, "POST", "/sessions", {
       entry,
@@ -622,12 +614,14 @@ describe("supervisor lifecycle", () => {
     const { paths } = await setup();
     const current = supervisors.pop();
     assert.notEqual(current, undefined);
-    await current?.close();
-    const bounded = await startSupervisor({
-      paths,
-      idleMilliseconds: 10_000,
-      shutdownGraceMilliseconds: 50,
-    });
+    if (current !== undefined) await runEffect(current.close);
+    const bounded = await runEffect(
+      startSupervisor({
+        paths,
+        idleMilliseconds: 10_000,
+        shutdownGraceMilliseconds: 50,
+      }),
+    );
     supervisors.push(bounded);
     const operation = request({
       socketPath: paths.controlSocket,
@@ -640,7 +634,7 @@ describe("supervisor lifecycle", () => {
     await new Promise((resolve) => setTimeout(resolve, 20));
 
     const started = Date.now();
-    await bounded.close();
+    await runEffect(bounded.close);
     assert.ok(Date.now() - started < 500);
     operation.destroy();
   });
@@ -660,17 +654,17 @@ describe("supervisor lifecycle", () => {
         }
       },
     });
-    const served = await client.serve(entry, root);
+    const served = await runEffect(client.serve(entry, root));
     let replacementStarts = 0;
     const guardedClient = new SupervisorClient(paths, () =>
       Effect.sync(() => (replacementStarts += 1)),
     );
     stallHealth = true;
 
-    await assert.rejects(guardedClient.list(), {
+    await assert.rejects(runEffect(guardedClient.list()), {
       code: "supervisor.unavailable",
     });
-    await assert.rejects(guardedClient.serve(entry, root), {
+    await assert.rejects(runEffect(guardedClient.serve(entry, root)), {
       code: "supervisor.unavailable",
     });
     assert.equal(stalledHealthRequests, 6);
@@ -684,7 +678,7 @@ describe("supervisor lifecycle", () => {
     stallHealth = false;
     releaseHealth();
     await new Promise((resolve) => setTimeout(resolve, 50));
-    assert.equal((await client.stopAll()).stopped, 1);
+    assert.equal((await runEffect(client.stopAll())).stopped, 1);
   });
 
   it("does not replace a live foreign owner of the control socket", async () => {
@@ -715,8 +709,10 @@ describe("supervisor lifecycle", () => {
     await writeFile(entry, "foreign owner remains");
 
     try {
-      await assert.rejects(client.list(), { code: "supervisor.unavailable" });
-      await assert.rejects(client.serve(entry, root), {
+      await assert.rejects(runEffect(client.list()), {
+        code: "supervisor.unavailable",
+      });
+      await assert.rejects(runEffect(client.serve(entry, root)), {
         code: "supervisor.unavailable",
       });
       const current = await lstat(paths.controlSocket);
@@ -744,22 +740,24 @@ describe("supervisor lifecycle", () => {
     held.write('{"entry":"unfinished');
     await new Promise((resolve) => setTimeout(resolve, 20));
 
-    const closing = supervisor.close();
+    const closing = runEffect(supervisor.close);
     const replacementClient = new SupervisorClient(paths, (_, ownershipNonce) =>
       Effect.tryPromise({
         try: async () => {
-          supervisors.push(await startSupervisor({ paths, ownershipNonce }));
+          supervisors.push(
+            await runEffect(startSupervisor({ paths, ownershipNonce })),
+          );
         },
         catch: (cause) => new ProcessStartError({ cause }),
       }),
     );
-    const replacement = replacementClient.serve(entry, root);
+    const replacement = runEffect(replacementClient.serve(entry, root));
     await closing;
     held.destroy();
     const served = await replacement;
 
     assert.equal(await socketExists(paths), true);
-    assert.equal((await replacementClient.list()).length, 1);
+    assert.equal((await runEffect(replacementClient.list())).length, 1);
     assert.equal(
       await fetch(served.session.url).then((response) => response.status),
       200,
@@ -784,7 +782,10 @@ describe("supervisor lifecycle", () => {
     child.kill("SIGKILL");
     await once(child, "exit");
 
-    assert.equal((await new SupervisorClient(paths).stopAll()).stopped, 0);
+    assert.equal(
+      (await runEffect(new SupervisorClient(paths).stopAll())).stopped,
+      0,
+    );
     assert.equal(await socketExists(paths), false);
     await assert.rejects(lstat(paths.supervisorLock));
   });
@@ -814,12 +815,14 @@ describe("supervisor lifecycle", () => {
     const client = new SupervisorClient(paths, (_, ownershipNonce) =>
       Effect.tryPromise({
         try: async () => {
-          supervisors.push(await startSupervisor({ paths, ownershipNonce }));
+          supervisors.push(
+            await runEffect(startSupervisor({ paths, ownershipNonce })),
+          );
         },
         catch: (cause) => new ProcessStartError({ cause }),
       }),
     );
-    const result = await client.serve(entry, root);
+    const result = await runEffect(client.serve(entry, root));
     assert.equal(
       await fetch(result.session.url).then((value) => value.text()),
       "recovered",
@@ -837,36 +840,43 @@ describe("supervisor lifecycle", () => {
     await symlink(target, path.join(root, "a", "index.html"));
     await symlink(target, path.join(root, "b", "index.html"));
 
-    const first = await client.serve(path.join(root, "a", "index.html"), root);
-    const second = await client.serve(path.join(root, "b", "index.html"), root);
+    const first = await runEffect(
+      client.serve(path.join(root, "a", "index.html"), root),
+    );
+    const second = await runEffect(
+      client.serve(path.join(root, "b", "index.html"), root),
+    );
     assert.notEqual(first.session.id, second.session.id);
     assert.equal(new URL(first.session.url).pathname, "/a/index.html");
     assert.equal(new URL(second.session.url).pathname, "/b/index.html");
     assert.equal(
-      (await client.serve(path.join(root, "a", "index.html"), root)).session.id,
+      (await runEffect(client.serve(path.join(root, "a", "index.html"), root)))
+        .session.id,
       first.session.id,
     );
-    await client.stopSession(first.session.id);
+    await runEffect(client.stopSession(first.session.id));
     assert.equal(
-      (await client.serve(path.join(root, "b", "index.html"), root)).session.id,
+      (await runEffect(client.serve(path.join(root, "b", "index.html"), root)))
+        .session.id,
       second.session.id,
     );
     assert.notEqual(
-      (await client.serve(path.join(root, "a", "index.html"), root)).session.id,
+      (await runEffect(client.serve(path.join(root, "a", "index.html"), root)))
+        .session.id,
       first.session.id,
     );
   });
 
   it("selects list fields at the control seam", async () => {
     const { client, root, entry, paths } = await setup();
-    await client.serve(entry, root);
-    const minimal = await client.list();
+    await runEffect(client.serve(entry, root));
+    const minimal = await runEffect(client.list());
     assert.deepEqual(Object.keys(minimal[0] ?? {}).sort(), [
       "id",
       "status",
       "url",
     ]);
-    const expanded = await client.list(["entry", "root"]);
+    const expanded = await runEffect(client.list(["entry", "root"]));
     assert.deepEqual(Object.keys(expanded[0] ?? {}).sort(), [
       "entry",
       "id",
@@ -895,16 +905,19 @@ describe("supervisor lifecycle", () => {
 
   it("caps new sessions while allowing reuse and capacity recovery", async () => {
     const { client, root, entry } = await setup({ maximumSessions: 1 });
-    const first = await client.serve(entry, root);
-    assert.equal((await client.serve(entry, root)).reused, true);
+    const first = await runEffect(client.serve(entry, root));
+    assert.equal((await runEffect(client.serve(entry, root))).reused, true);
     const otherRoot = await temporaryDirectory("htmlview-limit-");
     const otherEntry = path.join(otherRoot, "other.html");
     await writeFile(otherEntry, "other");
-    await assert.rejects(client.serve(otherEntry, otherRoot), {
+    await assert.rejects(runEffect(client.serve(otherEntry, otherRoot)), {
       code: "control.session_limit",
     });
-    await client.stopSession(first.session.id);
-    assert.equal((await client.serve(otherEntry, otherRoot)).reused, false);
+    await runEffect(client.stopSession(first.session.id));
+    assert.equal(
+      (await runEffect(client.serve(otherEntry, otherRoot))).reused,
+      false,
+    );
   });
 
   it("enumerates the production session cap and rejects the next session", async () => {
@@ -912,25 +925,25 @@ describe("supervisor lifecycle", () => {
     for (let index = 0; index < maximumConcurrentSessions; index += 1) {
       const entry = path.join(root, `report-${index}.html`);
       await writeFile(entry, String(index));
-      await client.serve(entry, root);
+      await runEffect(client.serve(entry, root));
     }
-    const sessions = await client.list(["entry", "root"]);
+    const sessions = await runEffect(client.list(["entry", "root"]));
     assert.equal(sessions.length, maximumConcurrentSessions);
     assert.ok(sessions.every((session) => session.entry && session.root));
 
     const overflow = path.join(root, "overflow.html");
     await writeFile(overflow, "overflow");
-    await assert.rejects(client.serve(overflow, root), {
+    await assert.rejects(runEffect(client.serve(overflow, root)), {
       code: "control.session_limit",
     });
   });
 
   it("rejects incompatible versions but lets stop-all shut them down", async () => {
     const { client, paths } = await setup({ version: "9.9.9" });
-    await assert.rejects(client.list(), {
+    await assert.rejects(runEffect(client.list()), {
       code: "supervisor.incompatible",
     });
-    assert.equal((await client.stopAll()).stopped, 0);
+    assert.equal((await runEffect(client.stopAll())).stopped, 0);
     assert.equal(await socketExists(paths), false);
   });
 
@@ -951,31 +964,33 @@ describe("supervisor lifecycle", () => {
       grantStarted = resolve;
     });
     let contentStarts = 0;
-    const supervisor = await startSupervisor({
-      paths,
-      idleMilliseconds: 10_000,
-      shutdownGraceMilliseconds: 50,
-      resolveGrant: (...arguments_) =>
-        Effect.gen(function* () {
-          yield* Effect.sync(grantStarted);
-          yield* Effect.promise(() => grantGate);
-          return yield* resolveServingGrant(...arguments_);
-        }),
-      startSessionServer: (sessionGrant) =>
-        Effect.gen(function* () {
-          yield* Effect.sync(() => {
-            contentStarts += 1;
-          });
-          return yield* startStaticServer(sessionGrant);
-        }),
-    });
+    const supervisor = await runEffect(
+      startSupervisor({
+        paths,
+        idleMilliseconds: 10_000,
+        shutdownGraceMilliseconds: 50,
+        resolveGrant: (...arguments_) =>
+          Effect.gen(function* () {
+            yield* Effect.sync(grantStarted);
+            yield* Effect.promise(() => grantGate);
+            return yield* resolveServingGrant(...arguments_);
+          }),
+        startSessionServer: (sessionGrant) =>
+          Effect.gen(function* () {
+            yield* Effect.sync(() => {
+              contentStarts += 1;
+            });
+            return yield* startStaticServer(sessionGrant);
+          }),
+      }),
+    );
     supervisors.push(supervisor);
     const operation = controlRequest(paths, "POST", "/sessions", {
       entry,
       root,
     }).catch(() => undefined);
     await started;
-    await supervisor.close();
+    await runEffect(supervisor.close);
     releaseGrant();
     await operation;
     assert.equal(contentStarts, 0);
@@ -1001,37 +1016,41 @@ describe("supervisor lifecycle", () => {
     });
     const address = stalled.address();
     assert.ok(address !== null && typeof address !== "string");
-    const supervisor = await startSupervisor({
-      paths,
-      idleMilliseconds: 10_000,
-      shutdownGraceMilliseconds: 50,
-      startSessionServer: () =>
-        Effect.gen(function* () {
-          yield* Effect.addFinalizer(() =>
-            Effect.callback<void>((resume) => {
-              stalled.close((error) => {
-                finalized += 1;
-                resume(error === undefined ? Effect.void : Effect.die(error));
-              });
-              stalled.closeAllConnections();
-            }),
-          );
-          return {
-            bindAddress: "127.0.0.1" as const,
-            hostname: "h-stalled.localhost",
-            port: address.port,
-            origin: `http://h-stalled.localhost:${address.port}`,
-            url: `http://h-stalled.localhost:${address.port}/report.html`,
-          };
-        }),
-    });
+    const supervisor = await runEffect(
+      startSupervisor({
+        paths,
+        idleMilliseconds: 10_000,
+        shutdownGraceMilliseconds: 50,
+        startSessionServer: () =>
+          Effect.gen(function* () {
+            yield* Effect.addFinalizer(() =>
+              Effect.callback<void>((resume) => {
+                stalled.close((error) => {
+                  finalized += 1;
+                  resume(error === undefined ? Effect.void : Effect.die(error));
+                });
+                stalled.closeAllConnections();
+              }),
+            );
+            return {
+              bindAddress: "127.0.0.1" as const,
+              hostname: "h-stalled.localhost",
+              port: address.port,
+              origin: `http://h-stalled.localhost:${address.port}`,
+              url: `http://h-stalled.localhost:${address.port}/report.html`,
+            };
+          }),
+      }),
+    );
     supervisors.push(supervisor);
-    const serve = new SupervisorClient(paths).serve(entry, root).then(
+    const serve = runEffect(
+      new SupervisorClient(paths).serve(entry, root),
+    ).then(
       () => undefined,
       (error: unknown) => error,
     );
     await started;
-    await supervisor.close();
+    await runEffect(supervisor.close);
     supervisors.pop();
     assert.equal(
       ((await serve) as { readonly code?: unknown }).code,
@@ -1048,7 +1067,7 @@ describe("supervisor lifecycle", () => {
     const client = new SupervisorClient(
       statePaths({ HTMLVIEW_STATE_DIR: stateFile }),
     );
-    await assert.rejects(client.list(), (error: unknown) => {
+    await assert.rejects(runEffect(client.list()), (error: unknown) => {
       assert.equal((error as { code?: unknown }).code, "state.unavailable");
       assert.equal(
         (error as { message?: unknown }).message,
@@ -1070,7 +1089,9 @@ describe("supervisor lifecycle", () => {
       Effect.sync(() => (starts += 1)),
     );
     await assert.rejects(
-      client.serve(path.join(missingRoot, "report.html"), missingRoot),
+      runEffect(
+        client.serve(path.join(missingRoot, "report.html"), missingRoot),
+      ),
       (error: unknown) => {
         assert.equal((error as { code?: unknown }).code, "path.root_not_found");
         assert.ok((error as { cause?: unknown }).cause instanceof Error);
@@ -1094,18 +1115,21 @@ describe("supervisor lifecycle", () => {
     const client = new SupervisorClient(paths, () =>
       Effect.fail(new ProcessStartError({ cause })),
     );
-    await assert.rejects(client.serve(entry, root), (error: unknown) => {
-      assert.equal(
-        (error as { code?: unknown }).code,
-        "supervisor.start_failed",
-      );
-      assert.equal(
-        (error as { message?: unknown }).message,
-        "The htmlview supervisor process could not start",
-      );
-      assert.equal((error as { cause?: unknown }).cause, cause);
-      return true;
-    });
+    await assert.rejects(
+      runEffect(client.serve(entry, root)),
+      (error: unknown) => {
+        assert.equal(
+          (error as { code?: unknown }).code,
+          "supervisor.start_failed",
+        );
+        assert.equal(
+          (error as { message?: unknown }).message,
+          "The htmlview supervisor process could not start",
+        );
+        assert.equal((error as { cause?: unknown }).cause, cause);
+        return true;
+      },
+    );
   });
 
   it("exposes stable content start and readiness failures", async () => {
@@ -1142,16 +1166,21 @@ describe("supervisor lifecycle", () => {
       const root = await temporaryDirectory("hv-fail-entry-");
       const entry = path.join(root, "report.html");
       await writeFile(entry, "<!doctype html>");
-      const supervisor = await startSupervisor({
-        paths,
-        idleMilliseconds: 10_000,
-        startSessionServer,
-      });
+      const supervisor = await runEffect(
+        startSupervisor({
+          paths,
+          idleMilliseconds: 10_000,
+          startSessionServer,
+        }),
+      );
       supervisors.push(supervisor);
-      await assert.rejects(new SupervisorClient(paths).serve(entry, root), {
-        code: expected,
-      });
-      await supervisor.close();
+      await assert.rejects(
+        runEffect(new SupervisorClient(paths).serve(entry, root)),
+        {
+          code: expected,
+        },
+      );
+      await runEffect(supervisor.close);
       supervisors.pop();
     }
   });
@@ -1165,29 +1194,34 @@ describe("supervisor lifecycle", () => {
     const entry = path.join(root, "report.html");
     await writeFile(entry, "<!doctype html>");
     let finalized = 0;
-    const supervisor = await startSupervisor({
-      paths,
-      idleMilliseconds: 10_000,
-      startSessionServer: () =>
-        Effect.gen(function* () {
-          yield* Effect.addFinalizer(() =>
-            Effect.sync(() => {
-              finalized += 1;
-            }),
-          );
-          return {
-            bindAddress: "127.0.0.1" as const,
-            hostname: "h-unready.localhost",
-            port: 9,
-            origin: "http://h-unready.localhost:9",
-            url: "http://h-unready.localhost:9/report.html",
-          };
-        }),
-    });
+    const supervisor = await runEffect(
+      startSupervisor({
+        paths,
+        idleMilliseconds: 10_000,
+        startSessionServer: () =>
+          Effect.gen(function* () {
+            yield* Effect.addFinalizer(() =>
+              Effect.sync(() => {
+                finalized += 1;
+              }),
+            );
+            return {
+              bindAddress: "127.0.0.1" as const,
+              hostname: "h-unready.localhost",
+              port: 9,
+              origin: "http://h-unready.localhost:9",
+              url: "http://h-unready.localhost:9/report.html",
+            };
+          }),
+      }),
+    );
     supervisors.push(supervisor);
-    await assert.rejects(new SupervisorClient(paths).serve(entry, root), {
-      code: "http.readiness_failed",
-    });
+    await assert.rejects(
+      runEffect(new SupervisorClient(paths).serve(entry, root)),
+      {
+        code: "http.readiness_failed",
+      },
+    );
     assert.equal(finalized, 1);
   });
 
@@ -1200,20 +1234,29 @@ describe("supervisor lifecycle", () => {
     const entry = path.join(root, "report.html");
     await writeFile(entry, "<!doctype html>");
     const defect = new Error("session finalizer defect");
-    const supervisor = await startSupervisor({
-      paths,
-      idleMilliseconds: 10_000,
-      startSessionServer: (grant) =>
-        Effect.gen(function* () {
-          const server = yield* startStaticServer(grant);
-          yield* Effect.addFinalizer(() => Effect.die(defect));
-          return server;
-        }),
-    });
+    const supervisor = await runEffect(
+      startSupervisor({
+        paths,
+        idleMilliseconds: 10_000,
+        startSessionServer: (grant) =>
+          Effect.gen(function* () {
+            const server = yield* startStaticServer(grant);
+            yield* Effect.addFinalizer(() => Effect.die(defect));
+            return server;
+          }),
+      }),
+    );
     supervisors.push(supervisor);
-    const served = await new SupervisorClient(paths).serve(entry, root);
+    const served = await runEffect(
+      new SupervisorClient(paths).serve(entry, root),
+    );
     supervisors.pop();
-    await assert.rejects(supervisor.close());
+    const closed = assert.rejects(runEffect(supervisor.closed), {
+      _tag: "SupervisorLifecycleError",
+      phase: "shutdown",
+    });
+    await assert.rejects(runEffect(supervisor.close));
+    await closed;
     assert.equal(await socketExists(paths), false);
     await assert.rejects(lstat(paths.supervisorLock));
     await assert.rejects(fetch(served.session.url));
@@ -1234,7 +1277,7 @@ describe("supervisor state", () => {
       relative.configurationError,
       "HTMLVIEW_STATE_DIR must be an absolute path",
     );
-    await assert.rejects(new SupervisorClient(relative).list(), {
+    await assert.rejects(runEffect(new SupervisorClient(relative).list()), {
       code: "state.unavailable",
     });
     assert.equal(
@@ -1259,7 +1302,7 @@ describe("supervisor state", () => {
     const paths = statePaths({
       HTMLVIEW_STATE_DIR: path.join("/tmp", "x".repeat(110)),
     });
-    await assert.rejects(new SupervisorClient(paths).list(), {
+    await assert.rejects(runEffect(new SupervisorClient(paths).list()), {
       code: "state.unavailable",
     });
   });

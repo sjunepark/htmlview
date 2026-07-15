@@ -87,11 +87,11 @@ class ControlListenError extends Data.TaggedError("ControlListenError")<{
 }> {}
 
 export interface RunningSupervisor {
+  readonly close: Effect.Effect<void, SupervisorLifecycleError>;
   readonly controlAddress: string;
   readonly closed: Effect.Effect<void, SupervisorLifecycleError>;
   readonly identity: SupervisorIdentity;
   readonly paths: StatePaths;
-  close(): Promise<void>;
 }
 
 export class SupervisorLifecycleError extends Data.TaggedError(
@@ -475,7 +475,7 @@ class SessionRegistry {
   }
 }
 
-export async function startSupervisor(
+async function startSupervisorPromise(
   options: SupervisorOptions = {},
 ): Promise<RunningSupervisor> {
   const paths = options.paths ?? statePaths();
@@ -882,12 +882,25 @@ export async function startSupervisor(
   scheduleIdleShutdown();
 
   return {
+    close: Effect.tryPromise({
+      try: close,
+      catch: (cause) =>
+        new SupervisorLifecycleError({ phase: "shutdown", cause }),
+    }),
     controlAddress: paths.controlSocket,
     closed: Deferred.await(closedSignal),
     identity,
     paths,
-    close,
   };
+}
+
+export function startSupervisor(
+  options: SupervisorOptions = {},
+): Effect.Effect<RunningSupervisor, SupervisorLifecycleError> {
+  return Effect.tryPromise({
+    try: () => startSupervisorPromise(options),
+    catch: (cause) => new SupervisorLifecycleError({ phase: "startup", cause }),
+  });
 }
 
 export function runSupervisor(
@@ -895,17 +908,8 @@ export function runSupervisor(
 ): Effect.Effect<void, SupervisorLifecycleError, Scope.Scope> {
   return Effect.gen(function* () {
     const supervisor = yield* Effect.acquireRelease(
-      Effect.tryPromise({
-        try: () => startSupervisor(options),
-        catch: (cause) =>
-          new SupervisorLifecycleError({ phase: "startup", cause }),
-      }),
-      (running) =>
-        Effect.tryPromise({
-          try: () => running.close(),
-          catch: (cause) =>
-            new SupervisorLifecycleError({ phase: "shutdown", cause }),
-        }).pipe(Effect.orDie),
+      startSupervisor(options),
+      (running) => running.close.pipe(Effect.orDie),
     );
     yield* supervisor.closed;
   });
