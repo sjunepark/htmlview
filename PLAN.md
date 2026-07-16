@@ -28,6 +28,8 @@ complete. The `0.1.0` artifact has not been published.
 - The package is two minified standalone ESM executables with external source
   maps, exact consumer documentation, bundled-dependency notices, and only
   TOON/MIME runtime dependencies.
+- Committed examples exercise standalone, relative-asset, and explicit-root
+  workflows through source-checkout scripts and the black-box E2E suite.
 - The Effect migration comparison and final implementation details are in
   [`docs/plans/effect-v4-adoption.md`](docs/plans/effect-v4-adoption.md).
 

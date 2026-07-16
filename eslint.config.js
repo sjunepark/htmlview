@@ -16,4 +16,8 @@ export default tseslint.config(
     files: ["validation/**/*.spec.mjs"],
     languageOptions: { globals: { ...globals.node, ...globals.browser } },
   },
+  {
+    files: ["examples/**/*.js"],
+    languageOptions: { globals: globals.browser },
+  },
 );

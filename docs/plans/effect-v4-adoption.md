@@ -121,9 +121,9 @@ measured empty-daemon memory increase is retained as a release reference.
 | Distribution            | Exact/reproducible pack, install/reinstall/uninstall, size/startup evidence |
 | Beta upgrade safety     | Exact pins, source/API inspection, audit and full validation on each update |
 
-The complete current-platform repository gate passes with 123 Vitest tests,
-two black-box E2E tests, seven Playwright checks, strict Effect diagnostics,
-documentation validation, build validation, and clean package lifecycle. The
+The complete current-platform repository gate passes its Vitest and black-box
+E2E suites, seven Playwright checks, strict Effect diagnostics, documentation
+validation, build validation, and clean package lifecycle. The
 Node 22 Linux lifecycle check passes with complete PID/socket/lock cleanup, and
 `pnpm audit` reports no known vulnerabilities. Browser Use 0.1.5 consumes the
 installed CLI URL and passes the complete interoperability fixture through the

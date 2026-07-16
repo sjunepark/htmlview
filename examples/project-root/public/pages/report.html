@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>htmlview explicit-root example</title>
+    <link rel="stylesheet" href="/assets/report.css" />
+  </head>
+  <body>
+    <header>
+      <p>Explicit <code>--root</code> fixture</p>
+      <h1>Root-relative assets resolve from the granted directory</h1>
+    </header>
+    <main>
+      <p>
+        The entry lives at <code>/public/pages/report.html</code>, while its
+        CSS, module, and data live outside the entry's parent but inside the
+        explicit serving root.
+      </p>
+      <output id="status">Loading <code>/data/status.json</code>…</output>
+    </main>
+    <script type="module" src="/assets/report.js"></script>
+  </body>
+</html>

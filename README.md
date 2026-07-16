@@ -14,6 +14,12 @@ browser itself.
 See [browser-controller interoperability](docs/INTEROPERABILITY.md) for the
 copy-paste URL handoff and independently validated controller paths.
 
+To exercise a source checkout immediately, run `pnpm example:standalone`,
+`pnpm example:relative`, or `pnpm example:root`. The committed
+[examples](https://github.com/sjunepark/htmlview/tree/main/examples) cover
+single-file, relative-asset, and explicit serving-root workflows and are also
+used by the black-box E2E suite.
+
 ## Status
 
 The version-one raw-serving implementation and broad validation suite are in
@@ -57,6 +63,7 @@ serving core without changing its raw response path.
 ## Start here
 
 - [Install, upgrade, and remove](docs/INSTALL.md)
+- [Runnable examples](https://github.com/sjunepark/htmlview/tree/main/examples)
 - [Product requirements](docs/PRODUCT.md)
 - [Agent-facing CLI contract](docs/CLI.md)
 - [Browser-controller interoperability](docs/INTEROPERABILITY.md)
