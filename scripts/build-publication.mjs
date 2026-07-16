@@ -26,7 +26,7 @@ async function generationId(directory) {
   return hash.digest("hex");
 }
 
-async function validatePublishedGeneration(directory, identifier) {
+async function validateGeneration(directory, identifier) {
   const entries = (await readdir(directory)).sort();
   const expected = [...generationArtifacts].sort();
   if (
@@ -35,7 +35,7 @@ async function validatePublishedGeneration(directory, identifier) {
     (await generationId(directory)) !== identifier
   )
     throw new Error(
-      `Published htmlview generation ${identifier} does not match its content address`,
+      `htmlview generation ${identifier} does not match its content address`,
     );
 }
 
@@ -54,7 +54,7 @@ async function installGeneration(
       (error.code !== "EEXIST" && error.code !== "ENOTEMPTY")
     )
       throw error;
-    await validatePublishedGeneration(publishedGeneration, identifier);
+    await validateGeneration(publishedGeneration, identifier);
   }
 }
 
@@ -73,18 +73,24 @@ async function activateGeneration(outputDirectory, identifier) {
   }
 }
 
-async function validatePackageGenerationSet(
-  generationsDirectory,
+async function validatePackageOutput(
+  outputDirectory,
   identifier,
   requireInstalled,
 ) {
-  const entries = await readdir(generationsDirectory);
+  const outputEntries = await readdir(outputDirectory);
+  const allowedOutputEntries = new Set(["cli.js", "generations"]);
+  const generationsDirectory = path.join(outputDirectory, "generations");
+  const generationEntries = await readdir(generationsDirectory);
   if (
-    entries.some((entry) => entry !== identifier) ||
-    (requireInstalled && entries.length !== 1)
+    outputEntries.some((entry) => !allowedOutputEntries.has(entry)) ||
+    generationEntries.some((entry) => entry !== identifier) ||
+    (requireInstalled &&
+      (outputEntries.length !== allowedOutputEntries.size ||
+        generationEntries.length !== 1))
   )
     throw new Error(
-      "Package builds require a clean checkout with no inactive htmlview generations",
+      "Package builds require clean output containing only the active htmlview generation",
     );
 }
 
@@ -101,21 +107,14 @@ export function makeGenerationPublisher({
     const generationsDirectory = path.join(outputDirectory, "generations");
     await mkdir(generationsDirectory, { recursive: true });
     const identifier = await generationId(stagedGeneration);
+    await validateGeneration(stagedGeneration, identifier);
     if (packageBuild)
-      await validatePackageGenerationSet(
-        generationsDirectory,
-        identifier,
-        false,
-      );
+      await validatePackageOutput(outputDirectory, identifier, false);
     await installGeneration(generationsDirectory, stagedGeneration, identifier);
     await beforeActivation();
     await activateGeneration(outputDirectory, identifier);
     if (packageBuild)
-      await validatePackageGenerationSet(
-        generationsDirectory,
-        identifier,
-        true,
-      );
+      await validatePackageOutput(outputDirectory, identifier, true);
     return identifier;
   };
 }

@@ -219,7 +219,7 @@ try {
       ["pack", "--json", "--pack-destination", repeatedArtifacts],
       source,
     ),
-    /Package builds require a clean checkout with no inactive htmlview generations/,
+    /Package builds require clean output containing only the active htmlview generation/,
   );
   assert.deepEqual(
     await readFile(path.join(source, "dist", "cli.js")),

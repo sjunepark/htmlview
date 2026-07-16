@@ -186,3 +186,57 @@ test("tampered generation reuse fails without changing a valid launcher", () =>
     assert.equal(await activeIdentifier(outputDirectory), baseline);
     await assertGenerationComplete(outputDirectory, baseline);
   }));
+
+test("fresh generations reject unexpected artifacts before activation", () =>
+  withWorkspace(async (workspace, outputDirectory) => {
+    const stagedGeneration = await stageGeneration(workspace, "unexpected");
+    await writeFile(path.join(stagedGeneration, "unexpected.txt"), "extra\n");
+
+    await assert.rejects(
+      publishGeneration({ stagedGeneration, outputDirectory }),
+      /does not match its content address/,
+    );
+    assert.deepEqual(
+      await readdir(path.join(outputDirectory, "generations")),
+      [],
+    );
+    await assert.rejects(readFile(path.join(outputDirectory, "cli.js")), {
+      code: "ENOENT",
+    });
+  }));
+
+test("package publication rejects stale flat output artifacts", () =>
+  withWorkspace(async (workspace, outputDirectory) => {
+    const baseline = await publishGeneration({
+      stagedGeneration: await stageGeneration(workspace, "baseline"),
+      outputDirectory,
+      packageBuild: true,
+    });
+    const previousLauncher = await readFile(
+      path.join(outputDirectory, "cli.js"),
+    );
+    await Promise.all(
+      ["cli.js.map", "supervisor-main.js", "supervisor-main.js.map"].map(
+        (artifact) =>
+          writeFile(path.join(outputDirectory, artifact), "stale\n"),
+      ),
+    );
+
+    await assert.rejects(
+      publishGeneration({
+        stagedGeneration: await stageGeneration(
+          workspace,
+          "baseline-retry",
+          "baseline",
+        ),
+        outputDirectory,
+        packageBuild: true,
+      }),
+      /clean output containing only the active htmlview generation/,
+    );
+    assert.deepEqual(
+      await readFile(path.join(outputDirectory, "cli.js")),
+      previousLauncher,
+    );
+    assert.equal(await activeIdentifier(outputDirectory), baseline);
+  }));

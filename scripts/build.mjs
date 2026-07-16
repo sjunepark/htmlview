@@ -88,7 +88,7 @@ const stagingDirectory = await mkdtemp(path.join(root, ".dist-build-"));
 const stagedGeneration = path.join(stagingDirectory, "generations", "pending");
 try {
   await mkdir(stagedGeneration, { recursive: true });
-  const results = await Promise.all([
+  const builds = await Promise.allSettled([
     build({
       ...sharedOptions,
       entryPoints: [path.join(root, "src", "cli.ts")],
@@ -100,7 +100,9 @@ try {
       outfile: path.join(stagedGeneration, "supervisor-main.js"),
     }),
   ]);
-  await validateBundles(results);
+  const failed = builds.find(({ status }) => status === "rejected");
+  if (failed !== undefined) throw failed.reason;
+  await validateBundles(builds.map(({ value }) => value));
   await publishGeneration({ stagedGeneration, outputDirectory, packageBuild });
 } finally {
   await rm(stagingDirectory, { recursive: true, force: true });
