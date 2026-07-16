@@ -24,7 +24,12 @@ import {
 } from "effect";
 import type { Fiber as EffectFiber } from "effect/Fiber";
 import { logDiagnostic } from "../diagnostics.js";
-import { ContentListenerError, ControlError, PathError } from "../errors.js";
+import {
+  ContentListenerError,
+  ControlError,
+  PathError,
+  ReviewError,
+} from "../errors.js";
 import {
   canonicalTreesOverlap,
   resolveServingGrant,
@@ -35,6 +40,11 @@ import {
   type StaticSessionServer,
 } from "../serving/http.js";
 import {
+  startReviewOriginServer,
+  type ReviewOriginRole,
+  type ReviewOriginServer,
+} from "../serving/review.js";
+import {
   acquireSupervisorLock,
   ensurePrivateStateDirectory,
   statePaths,
@@ -44,13 +54,16 @@ import {
 } from "./state.js";
 import {
   controlHost,
+  decodeCreateReviewRequest,
   decodeCreateSessionRequest,
   decodeSessionFieldSelection,
   decodeShutdownRequest,
   decodeStopSessionRequest,
   encodeControlError,
+  encodeReviewControlResult,
   encodeServeControlResult,
   encodeSessionListResult,
+  encodeSupervisorStateResult,
   encodeStopControlResult,
   encodeTargetedStopControlResult,
   encodeSupervisorIdentity,
@@ -58,9 +71,13 @@ import {
   maximumControlBodyBytes,
   maximumConcurrentSessions,
   maximumControlResponseBytes,
+  maximumRetainedReviews,
   supervisorProtocol,
   type CurrentSupervisorIdentity,
   type OptionalSessionField,
+  type ReviewControlResult,
+  type ReviewStatus,
+  type ReviewSummary,
   type ServeControlResult,
   type SessionSummary,
   type StopControlResult,
@@ -72,6 +89,7 @@ import { htmlviewVersion } from "../version.js";
 
 const defaultIdleMilliseconds = 30_000;
 const defaultShutdownGraceMilliseconds = 2_000;
+const reviewOriginReadyTimeoutMilliseconds = 2_000;
 
 export function generateSessionId(
   random: (size: number) => Buffer = randomBytes,
@@ -82,16 +100,44 @@ export function generateSessionId(
   return id;
 }
 
+export function generateReviewId(
+  random: (size: number) => Buffer = randomBytes,
+): string {
+  return `rv_${random(16).toString("base64url")}`;
+}
+
 interface LiveSession {
   readonly summary: SupervisorSession;
+  readonly grant: ServingGrant;
   readonly identityKey: string;
   readonly createdAt: string;
   readonly scope: Scope.Closeable;
 }
 
+interface LiveReview {
+  readonly scope: Scope.Closeable;
+  readonly shell: ReviewOriginServer;
+  readonly content: ReviewOriginServer;
+}
+
+interface ReviewRecord {
+  readonly id: string;
+  readonly identityKey: string;
+  readonly createdAt: string;
+  status: ReviewStatus;
+  session: string;
+  drafts: number;
+  unacknowledged: number;
+  live: LiveReview | undefined;
+}
+
 type StartSessionServer = (
   grant: ServingGrant,
 ) => Effect.Effect<StaticSessionServer, ContentListenerError, Scope.Scope>;
+
+type StartReviewOriginServer = (
+  role: ReviewOriginRole,
+) => Effect.Effect<ReviewOriginServer, ContentListenerError, Scope.Scope>;
 
 type IdleRuntime = (effect: Effect.Effect<void>) => EffectFiber<void, never>;
 
@@ -119,8 +165,10 @@ export interface SupervisorOptions {
   readonly shutdownGraceMilliseconds?: number;
   readonly resolveGrant?: typeof resolveServingGrant;
   readonly startSessionServer?: StartSessionServer;
+  readonly startReviewOriginServer?: StartReviewOriginServer;
   readonly version?: string;
   readonly maximumSessions?: number;
+  readonly maximumReviews?: number;
   readonly beforeHealth?: () => Promise<void>;
   readonly ownershipNonce?: string;
   readonly idleRuntime?: IdleRuntime;
@@ -152,10 +200,16 @@ function json(response: ServerResponse, status: number, value: unknown): void {
 }
 
 function authorized(request: IncomingMessage): boolean {
-  return request.headers.host === controlHost;
+  const hosts: string[] = [];
+  for (let index = 0; index < request.rawHeaders.length; index += 2) {
+    if (request.rawHeaders[index]?.toLowerCase() === "host")
+      hosts.push(request.rawHeaders[index + 1] ?? "");
+  }
+  return hosts.length === 1 && hosts[0] === controlHost;
 }
 
-type ServerControlError = PathError | ControlError | ContentListenerError;
+type ServerControlError =
+  PathError | ControlError | ContentListenerError | ReviewError;
 
 function invalidControlRequest(): ControlError {
   return new ControlError({
@@ -170,6 +224,8 @@ function controlStatus(error: ServerControlError): number {
       return 400;
     case "ContentListenerError":
       return 500;
+    case "ReviewError":
+      return error.code === "review.session_not_found" ? 404 : 409;
     case "ControlError":
       switch (error.code) {
         case "control.unauthorized":
@@ -311,23 +367,24 @@ function listenControlServer(
   });
 }
 
-function verifyReady(
-  session: StaticSessionServer,
-  entryUrlPath: string,
+function verifyListenerReady(
+  listener: { readonly hostname: string; readonly port: number },
+  requestPath: string,
+  expectedStatus: number,
 ): Effect.Effect<void, ContentListenerError> {
   return Effect.callback<void, ContentListenerError>((resume) => {
     const operation = httpRequest(
       {
         hostname: "127.0.0.1",
-        port: session.port,
+        port: listener.port,
         method: "HEAD",
-        path: entryUrlPath,
-        headers: { host: `${session.hostname}:${session.port}` },
+        path: requestPath,
+        headers: { host: `${listener.hostname}:${listener.port}` },
         timeout: 2_000,
       },
       (response) => {
         response.resume();
-        if (response.statusCode === 200) resume(Effect.void);
+        if (response.statusCode === expectedStatus) resume(Effect.void);
         else
           resume(
             Effect.fail(
@@ -361,16 +418,46 @@ function verifyReady(
   });
 }
 
+function closeScopeFailures(
+  scopes: readonly Scope.Closeable[],
+): Effect.Effect<unknown[]> {
+  return Effect.forEach(
+    scopes,
+    (scope) => Effect.exit(Scope.close(scope, Exit.void)),
+    { concurrency: "unbounded" },
+  ).pipe(
+    Effect.map((exits) =>
+      exits.flatMap((exit) =>
+        Exit.isFailure(exit) ? [Cause.squash(exit.cause)] : [],
+      ),
+    ),
+  );
+}
+
+function failCleanup(failures: readonly unknown[]): Effect.Effect<void> {
+  if (failures.length === 0) return Effect.void;
+  return Effect.die(
+    failures.length === 1
+      ? failures[0]
+      : new AggregateError(failures, "Listener cleanup failed"),
+  );
+}
+
 class SessionRegistry {
   readonly #sessions = new Map<string, LiveSession>();
   readonly #identity = new Map<string, string>();
+  readonly #reviews = new Map<string, ReviewRecord>();
+  readonly #openReview = new Map<string, string>();
+  readonly #pendingScopes = new Set<Scope.Closeable>();
   readonly #mutations = Semaphore.makeUnsafe(1);
   readonly #scope = Scope.makeUnsafe("parallel");
   #closing = false;
 
   constructor(
     private readonly startServer: StartSessionServer,
+    private readonly startReviewOrigin: StartReviewOriginServer,
     private readonly maximumSessions: number,
+    private readonly maximumReviews: number,
   ) {}
 
   list(fields: readonly OptionalSessionField[]): SessionSummary[] {
@@ -383,6 +470,24 @@ class SessionRegistry {
         ...(fields.includes("entry") ? { entry: summary.entry } : {}),
         ...(fields.includes("root") ? { root: summary.root } : {}),
       }));
+  }
+
+  state(fields: readonly OptionalSessionField[]): {
+    readonly sessions: SessionSummary[];
+    readonly reviews: ReviewSummary[];
+  } {
+    return {
+      sessions: this.list(fields),
+      reviews: [...this.#reviews.values()]
+        .sort((left, right) => left.createdAt.localeCompare(right.createdAt))
+        .map((record) => ({
+          id: record.id,
+          status: record.status,
+          session: record.session,
+          drafts: record.drafts,
+          unacknowledged: record.unacknowledged,
+        })),
+    };
   }
 
   serve(
@@ -419,9 +524,10 @@ class SessionRegistry {
   ): Effect.Effect<LiveSession, ContentListenerError> {
     return Effect.gen({ self: this }, function* () {
       const scope = yield* Scope.fork(this.#scope, "parallel");
+      this.#pendingScopes.add(scope);
       const create = Effect.gen({ self: this }, function* () {
         const server = yield* Scope.provide(scope)(this.startServer(grant));
-        yield* verifyReady(server, grant.entryUrlPath);
+        yield* verifyListenerReady(server, grant.entryUrlPath, 200);
         let id: string;
         do id = generateSessionId();
         while (this.#sessions.has(id));
@@ -434,6 +540,7 @@ class SessionRegistry {
         };
         const live = {
           summary,
+          grant,
           identityKey: key,
           createdAt: new Date(yield* Clock.currentTimeMillis).toISOString(),
           scope,
@@ -446,8 +553,164 @@ class SessionRegistry {
         Effect.onExit((exit) =>
           Exit.isSuccess(exit) ? Effect.void : Scope.close(scope, exit),
         ),
+        Effect.ensuring(
+          Effect.sync(() => {
+            this.#pendingScopes.delete(scope);
+          }),
+        ),
       );
     });
+  }
+
+  review(
+    sessionId: string,
+  ): Effect.Effect<ReviewControlResult, ReviewError | ContentListenerError> {
+    return this.#mutations.withPermit(
+      Effect.gen({ self: this }, function* () {
+        if (this.#closing)
+          return yield* new ReviewError({
+            code: "review.session_not_found",
+            message: "The raw session is not available",
+          });
+        const session = this.#sessions.get(sessionId);
+        if (session === undefined)
+          return yield* new ReviewError({
+            code: "review.session_not_found",
+            message: "The raw session is not available",
+          });
+
+        const existingId = this.#openReview.get(session.identityKey);
+        if (existingId !== undefined) {
+          const existing = this.#reviews.get(existingId);
+          if (existing !== undefined) {
+            if (existing.status === "ready" && existing.live !== undefined)
+              return this.#reviewResult(existing, session, true);
+            if (existing.status === "stopped") {
+              yield* this.#activateReview(existing, session);
+              return this.#reviewResult(existing, session, true);
+            }
+          }
+        }
+
+        if (this.#reviews.size >= this.maximumReviews)
+          return yield* new ReviewError({
+            code: "review.limit",
+            message: `Retained review limit of ${this.maximumReviews} reached`,
+          });
+        let id: string;
+        do id = generateReviewId();
+        while (this.#reviews.has(id));
+        const record: ReviewRecord = {
+          id,
+          identityKey: session.identityKey,
+          createdAt: new Date(yield* Clock.currentTimeMillis).toISOString(),
+          status: "stopped",
+          session: session.summary.id,
+          drafts: 0,
+          unacknowledged: 0,
+          live: undefined,
+        };
+        yield* this.#activateReview(record, session);
+        this.#reviews.set(record.id, record);
+        this.#openReview.set(record.identityKey, record.id);
+        return this.#reviewResult(record, session, false);
+      }),
+    );
+  }
+
+  #activateReview(
+    record: ReviewRecord,
+    session: LiveSession,
+  ): Effect.Effect<void, ContentListenerError> {
+    return Effect.gen({ self: this }, function* () {
+      const scope = yield* Scope.fork(this.#scope, "parallel");
+      this.#pendingScopes.add(scope);
+      const activate = Effect.gen({ self: this }, function* () {
+        const startReadyOrigin = (role: ReviewOriginRole) =>
+          Scope.provide(scope)(this.startReviewOrigin(role)).pipe(
+            Effect.tap((server) =>
+              verifyListenerReady(server, server.readinessPath, 204),
+            ),
+            Effect.timeoutOrElse({
+              duration: reviewOriginReadyTimeoutMilliseconds,
+              orElse: () =>
+                Effect.fail(
+                  new ContentListenerError({
+                    code: "http.readiness_failed",
+                    message: "The review listener did not become ready",
+                  }),
+                ),
+            }),
+          );
+        const shell = yield* startReadyOrigin("shell");
+        const content = yield* startReadyOrigin("content");
+        const rawHostname = new URL(session.summary.url).hostname;
+        if (
+          shell.hostname === content.hostname ||
+          shell.hostname === rawHostname ||
+          content.hostname === rawHostname
+        )
+          return yield* new ContentListenerError({
+            code: "http.readiness_failed",
+            message: "The review origins were not isolated",
+          });
+        record.status = "ready";
+        record.session = session.summary.id;
+        record.live = { scope, shell, content };
+      });
+      yield* activate.pipe(
+        Effect.onExit((exit) =>
+          Exit.isSuccess(exit) ? Effect.void : Scope.close(scope, exit),
+        ),
+        Effect.ensuring(
+          Effect.sync(() => {
+            this.#pendingScopes.delete(scope);
+          }),
+        ),
+      );
+    });
+  }
+
+  #reviewResult(
+    record: ReviewRecord,
+    session: LiveSession,
+    reused: boolean,
+  ): ReviewControlResult {
+    if (record.status !== "ready" || record.live === undefined)
+      throw new Error("Ready review is missing its live origins");
+    return {
+      review: {
+        id: record.id,
+        status: "ready",
+        url: record.live.shell.url,
+        reused,
+      },
+      session: {
+        id: session.summary.id,
+        url: session.summary.url,
+      },
+      grant: {
+        root: session.grant.root,
+        access: "read_all_regular_files_beneath_root",
+      },
+      fidelity: "instrumented_review",
+    };
+  }
+
+  #detachReview(liveSession: LiveSession): Scope.Closeable | undefined {
+    const reviewId = this.#openReview.get(liveSession.identityKey);
+    if (reviewId === undefined) return undefined;
+    const record = this.#reviews.get(reviewId);
+    if (
+      record === undefined ||
+      record.status !== "ready" ||
+      record.live === undefined
+    )
+      return undefined;
+    const live = record.live;
+    record.status = "stopped";
+    record.live = undefined;
+    return live.scope;
   }
 
   stop(sessionId: string): Effect.Effect<TargetedStopControlResult> {
@@ -455,23 +718,40 @@ class SessionRegistry {
       Effect.gen({ self: this }, function* () {
         const live = this.#sessions.get(sessionId);
         if (live === undefined) return { stopped: 0 };
+        const reviewScope = this.#detachReview(live);
+        const failures = yield* closeScopeFailures(
+          reviewScope === undefined ? [] : [reviewScope],
+        );
         this.#sessions.delete(sessionId);
         this.#identity.delete(live.identityKey);
-        yield* Scope.close(live.scope, Exit.void);
+        failures.push(...(yield* closeScopeFailures([live.scope])));
+        yield* failCleanup(failures);
         return { stopped: 1 };
       }),
     );
   }
 
   stopAll(): Effect.Effect<StopControlResult> {
+    this.#closing = true;
     return Effect.gen({ self: this }, function* () {
-      this.#closing = true;
-      yield* Scope.close(this.#scope, Exit.void);
+      const failures = yield* closeScopeFailures([...this.#pendingScopes]);
       return yield* this.#mutations.withPermit(
-        Effect.sync(() => {
+        Effect.gen({ self: this }, function* () {
           const stopped = this.#sessions.size;
+          const reviewScopes = [...this.#sessions.values()].flatMap((live) => {
+            const scope = this.#detachReview(live);
+            return scope === undefined ? [] : [scope];
+          });
+          failures.push(...(yield* closeScopeFailures(reviewScopes)));
+          failures.push(
+            ...(yield* closeScopeFailures(
+              [...this.#sessions.values()].map((live) => live.scope),
+            )),
+          );
           this.#sessions.clear();
           this.#identity.clear();
+          failures.push(...(yield* closeScopeFailures([this.#scope])));
+          yield* failCleanup(failures);
           return { stopped };
         }),
       );
@@ -498,7 +778,9 @@ async function startSupervisorPromise(
   const instanceId = randomUUID();
   const sessions = new SessionRegistry(
     options.startSessionServer ?? startStaticServer,
+    options.startReviewOriginServer ?? startReviewOriginServer,
     options.maximumSessions ?? maximumConcurrentSessions,
+    options.maximumReviews ?? maximumRetainedReviews,
   );
   const resolveGrantBase = options.resolveGrant ?? resolveServingGrant;
   const canonicalStateDirectory = await realpath(paths.directory);
@@ -636,6 +918,25 @@ async function startSupervisorPromise(
           ),
         );
       }
+      if (request.method === "GET" && requestUrl.pathname === "/state") {
+        if ([...requestUrl.searchParams.keys()].some((key) => key !== "fields"))
+          return yield* invalidControlRequest();
+        const values = requestUrl.searchParams.getAll("fields");
+        if (values.length > 1) return yield* invalidControlRequest();
+        const requestedFields =
+          values.length === 0 || values[0] === ""
+            ? []
+            : (values[0]?.split(",") ?? []);
+        const fields = decodeSessionFieldSelection(requestedFields);
+        if (Result.isFailure(fields)) return yield* invalidControlRequest();
+        return yield* Effect.sync(() =>
+          json(
+            response,
+            200,
+            encodeSupervisorStateResult(sessions.state(fields.success)),
+          ),
+        );
+      }
       if (
         request.method === "POST" &&
         requestUrl.pathname === "/sessions" &&
@@ -649,6 +950,18 @@ async function startSupervisorPromise(
         const result = yield* sessions.serve(grant);
         return yield* Effect.sync(() =>
           json(response, 200, encodeServeControlResult(result)),
+        );
+      }
+      if (
+        request.method === "POST" &&
+        requestUrl.pathname === "/reviews" &&
+        requestUrl.search === ""
+      ) {
+        const body = decodeCreateReviewRequest(yield* readJsonBody(request));
+        if (Result.isFailure(body)) return yield* invalidControlRequest();
+        const result = yield* sessions.review(body.success.session);
+        return yield* Effect.sync(() =>
+          json(response, 200, encodeReviewControlResult(result)),
         );
       }
       if (

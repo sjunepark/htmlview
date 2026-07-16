@@ -40,6 +40,11 @@ export const contentListenerErrorCodes = [
   "http.readiness_failed",
 ] as const;
 
+export const reviewErrorCodes = [
+  "review.session_not_found",
+  "review.limit",
+] as const;
+
 export const PathErrorCode = Schema.Literals(pathErrorCodes);
 export const RuntimeStateErrorCode = Schema.Literals(runtimeStateErrorCodes);
 export const ControlErrorCode = Schema.Literals(controlErrorCodes);
@@ -47,6 +52,7 @@ export const SupervisorErrorCode = Schema.Literals(supervisorErrorCodes);
 export const ContentListenerErrorCode = Schema.Literals(
   contentListenerErrorCodes,
 );
+export const ReviewErrorCode = Schema.Literals(reviewErrorCodes);
 
 interface OperationalErrorFields<Code> {
   readonly code: Code;
@@ -76,12 +82,17 @@ export class ContentListenerError extends Data.TaggedError(
   "ContentListenerError",
 )<OperationalErrorFields<typeof ContentListenerErrorCode.Type>> {}
 
+export class ReviewError extends Data.TaggedError("ReviewError")<
+  OperationalErrorFields<typeof ReviewErrorCode.Type>
+> {}
+
 export type OperationalError =
   | PathError
   | RuntimeStateError
   | ControlError
   | SupervisorError
-  | ContentListenerError;
+  | ContentListenerError
+  | ReviewError;
 
 export interface PublicOperationalError {
   readonly code: OperationalError["code"];
@@ -94,7 +105,8 @@ export function isOperationalError(error: unknown): error is OperationalError {
     error instanceof RuntimeStateError ||
     error instanceof ControlError ||
     error instanceof SupervisorError ||
-    error instanceof ContentListenerError
+    error instanceof ContentListenerError ||
+    error instanceof ReviewError
   );
 }
 
@@ -109,6 +121,7 @@ export function toPublicError(error: OperationalError): PublicOperationalError {
     case "ControlError":
     case "SupervisorError":
     case "ContentListenerError":
+    case "ReviewError":
       return { code: error.code, message: error.message };
     default:
       return unreachable(error);
@@ -125,6 +138,7 @@ const decodeSupervisorErrorCode =
 const decodeContentListenerErrorCode = Schema.decodeUnknownResult(
   ContentListenerErrorCode,
 );
+const decodeReviewErrorCode = Schema.decodeUnknownResult(ReviewErrorCode);
 
 export function operationalError(
   code: unknown,
@@ -152,6 +166,10 @@ export function operationalError(
       code: listenerCode.success,
       message,
     });
+
+  const reviewCode = decodeReviewErrorCode(code);
+  if (Result.isSuccess(reviewCode))
+    return new ReviewError({ code: reviewCode.success, message });
 
   return undefined;
 }

@@ -6,6 +6,7 @@ import {
   ControlError,
   operationalError,
   PathError,
+  ReviewError,
   RuntimeStateError,
   SupervisorError,
   toPublicError,
@@ -52,6 +53,10 @@ describe("operational errors", () => {
         code: "http.start_failed",
         message: "The loopback content listener could not start",
       }),
+      new ReviewError({
+        code: "review.session_not_found",
+        message: "The raw session is not available",
+      }),
     ];
 
     for (const error of errors) {
@@ -73,6 +78,7 @@ describe("operational errors", () => {
     assert.ok(
       operationalError("control.session_limit", "full") instanceof ControlError,
     );
+    assert.ok(operationalError("review.limit", "full") instanceof ReviewError);
     assert.equal(operationalError("runtime.internal", "defect"), undefined);
     assert.equal(operationalError("control.future", "unknown"), undefined);
   });

@@ -6,6 +6,7 @@ import { expect, it } from "@effect/vitest";
 import { Effect, Exit, Fiber, FiberSet, Scope } from "effect";
 import { TestClock } from "effect/testing";
 import {
+  generateReviewId,
   generateSessionId,
   runSupervisor,
   startSupervisor,
@@ -22,6 +23,17 @@ function exists(pathname: string): Effect.Effect<boolean> {
     stat(pathname)
       .then(() => true)
       .catch(() => false),
+  );
+}
+
+function removeTemporaryDirectory(directory: string): Effect.Effect<void> {
+  return Effect.promise(() =>
+    rm(directory, {
+      recursive: true,
+      force: true,
+      maxRetries: 3,
+      retryDelay: 10,
+    }),
   );
 }
 
@@ -79,6 +91,12 @@ it("never returns a session identifier that parses as a flag", () => {
   expect(id.startsWith("-")).toBe(false);
 });
 
+it("generates stable review locators with 128 random bits", () => {
+  const ids = new Set(Array.from({ length: 1_000 }, () => generateReviewId()));
+  expect(ids.size).toBe(1_000);
+  for (const id of ids) expect(id).toMatch(/^rv_[A-Za-z0-9_-]{22}$/);
+});
+
 it.effect("uses the test clock for idle supervisor shutdown", () =>
   Effect.acquireUseRelease(
     Effect.promise(() => mkdtemp(path.join(tmpdir(), "htmlview-idle-clock-"))),
@@ -106,8 +124,7 @@ it.effect("uses the test clock for idle supervisor shutdown", () =>
           }),
         );
       }),
-    (parent) =>
-      Effect.promise(() => rm(parent, { recursive: true, force: true })),
+    removeTemporaryDirectory,
   ),
 );
 
@@ -127,8 +144,7 @@ it.effect("closes the supervisor when its root scope is interrupted", () =>
         expect(yield* exists(paths.controlSocket)).toBe(false);
         expect(yield* exists(paths.supervisorLock)).toBe(false);
       }),
-    (parent) =>
-      Effect.promise(() => rm(parent, { recursive: true, force: true })),
+    removeTemporaryDirectory,
   ),
 );
 
@@ -167,8 +183,7 @@ it.effect(
             }),
           );
         }),
-      (parent) =>
-        Effect.promise(() => rm(parent, { recursive: true, force: true })),
+      removeTemporaryDirectory,
     ),
 );
 
@@ -224,7 +239,6 @@ it.effect(
             }),
           );
         }),
-      (parent) =>
-        Effect.promise(() => rm(parent, { recursive: true, force: true })),
+      removeTemporaryDirectory,
     ),
 );

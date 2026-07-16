@@ -92,6 +92,13 @@ with device/inode checks, and exposes one scope-bound, size-limited stream. The
 raw handler sends that stream without body transformation. Query strings do not
 select files; URL fragments never reach the server.
 
+`src/serving/listener.ts` owns the shared numeric-loopback listener resource,
+request fibers, deadlines, and connection limits without owning route or
+authority policy. Phase 1 review creation uses it for separate fresh
+`r-<random>.localhost` shell and `c-<random>.localhost` content authorities.
+Until the Phase 3 browser surface lands, those listeners expose only an
+exact-Host readiness probe and no raw or placeholder UI routes.
+
 The raw service has no filename or dotfile denylist and never opens a served
 file for writing. Later file changes appear on reload without creating a new
 session.
@@ -134,6 +141,10 @@ supervisor root scope
       content listener + request fibers
         request scope
           authorized file handle -> auto-closing stream
+    stable review records and open-document index
+      ready review child scope
+        shell listener + request fibers
+        instrumented-content listener + request fibers
 ```
 
 Session creation commits only after listener readiness. Failed acquisition
@@ -216,10 +227,13 @@ ended reviews do not resume.
 5. For each browser request, validate authority and method, authorize the opened
    target against the grant, and stream its original bytes.
 
-### Review and feedback (`0.1.0` target)
+### Review lifecycle (Phase 1 implemented; browser and feedback target)
 
-1. `review <session>` snapshots the existing raw identity and acquires or resumes
-   its review listeners; it never accepts a different root.
+1. The private v3 protocol snapshots an existing raw identity and lazily
+   acquires or resumes its review listeners; it never accepts a root or entry.
+   Both isolated origins pass readiness before an in-memory record commits.
+   Live reuse retains origins; stopped resume retains the review ID and receives
+   fresh origins. Public CLI exposure waits for Phase 2 durability.
 2. The shell displays instrumented review content. Element selection reports
    bounded untrusted context; the shell owns the editor and durable draft call.
 3. Send commits ordered feedback events. Send & End also closes the review
@@ -272,10 +286,12 @@ file reads do not hold that registry-wide permit after a snapshot is authorized.
 Each session and listener owns its request fibers so shutdown can interrupt and
 release active work.
 
-The supervisor admits at most 32 live raw sessions. Fresh random authorities are
-never intentionally reused after a lifecycle ends, isolating cookies, storage,
-caches, and service workers. Target review mutations are serialized per review,
-and at most one foreground feedback wait is active for each review.
+The supervisor admits at most 32 live raw sessions and retains at most 128
+non-tombstone review summaries. Fresh random authorities are never intentionally
+reused after a lifecycle ends, isolating cookies, storage, caches, and service
+workers. Raw and review lifecycle mutations share one serialization boundary;
+target review mutations are serialized per review, and at most one foreground
+feedback wait is active for each review.
 
 Exact body, connection, timer, and state limits are implementation constants in
 [Security validation](docs/SECURITY_VALIDATION.md), not user-facing tuning
@@ -291,7 +307,9 @@ flags.
   public failures, and the serialization boundary.
 - `src/serving/grant.ts`, `src/serving/authorized-file.ts`: disclosure grant and
   scope-bound authorized reads.
+- `src/serving/listener.ts`: scoped numeric-loopback listener mechanics.
 - `src/serving/http.ts`: byte-faithful raw HTTP policy and response assembly.
+- `src/serving/review.ts`: isolated review-origin authority and readiness routes.
 - `src/supervisor/protocol.ts`: validated private wire contract.
 - `src/supervisor/client.ts`, `src/supervisor/server.ts`: supervisor discovery,
   ownership, control, session registry, and cleanup.

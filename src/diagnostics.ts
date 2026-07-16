@@ -3,6 +3,7 @@ import {
   contentListenerErrorCodes,
   controlErrorCodes,
   pathErrorCodes,
+  reviewErrorCodes,
   runtimeStateErrorCodes,
   supervisorErrorCodes,
   type OperationalError,
@@ -27,6 +28,7 @@ const diagnosticCodes = [
   ...controlErrorCodes,
   ...supervisorErrorCodes,
   ...contentListenerErrorCodes,
+  ...reviewErrorCodes,
 ] as const;
 
 export type DiagnosticOperation = (typeof diagnosticOperations)[number];

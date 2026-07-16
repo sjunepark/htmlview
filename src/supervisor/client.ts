@@ -11,6 +11,7 @@ import { Clock, Data, Effect, Result, Schedule, Scope } from "effect";
 import {
   operationalError,
   PathError,
+  ReviewError,
   RuntimeStateError,
   SupervisorError,
   type OperationalError,
@@ -28,24 +29,30 @@ import {
 import {
   controlHost,
   decodeControlError,
+  decodeReviewControlResult,
   decodeServeControlResult,
   decodeSessionListResult,
+  decodeSupervisorStateResult,
   decodeStopControlResult,
   decodeTargetedStopControlResult,
   decodeSupervisorIdentity,
   encodeCreateSessionRequest,
+  encodeCreateReviewRequest,
   encodeShutdownRequest,
   encodeStopSessionRequest,
   maximumControlResponseBytes,
   supervisorProtocol,
   type OptionalSessionField,
+  type ReviewControlResult,
   type ServeControlResult,
   type SessionSummary,
   type StopControlResult,
   type SupervisorIdentity,
+  type SupervisorStateResult,
 } from "./protocol.js";
 
 const controlRequestTimeoutMilliseconds = 2_000;
+const reviewRequestTimeoutMilliseconds = 6_000;
 const healthRequestTimeoutMilliseconds = 500;
 const healthRetryCount = 3;
 const healthRetryDelayMilliseconds = 100;
@@ -744,9 +751,16 @@ function requiredRequest<T>(
   route: string,
   decode: (value: unknown) => Result.Result<T, unknown>,
   body?: unknown,
+  timeoutMilliseconds = controlRequestTimeoutMilliseconds,
 ): Effect.Effect<T, OperationalError> {
   const request = Effect.gen(function* () {
-    const response = yield* controlRequest(paths, method, route, body);
+    const response = yield* controlRequest(
+      paths,
+      method,
+      route,
+      body,
+      timeoutMilliseconds,
+    );
     if (response.status < 200 || response.status >= 300)
       return yield* new ControlResponseStatusError({
         status: response.status,
@@ -893,6 +907,34 @@ export class SupervisorClient {
     });
   }
 
+  listState(
+    fields: readonly OptionalSessionField[] = [],
+  ): Effect.Effect<SupervisorStateResult, OperationalError> {
+    const paths = this.#paths;
+    const acquireLock = this.#acquireLock;
+    return Effect.gen(function* () {
+      yield* ensurePrivateStateDirectory(paths);
+      const identity = yield* existingSupervisor(paths, false, acquireLock);
+      if (identity === undefined) return { sessions: [], reviews: [] };
+      const query =
+        fields.length === 0
+          ? ""
+          : `?fields=${encodeURIComponent(fields.join(","))}`;
+      return yield* requiredRequest(paths, "GET", `/state${query}`, (value) => {
+        const decoded = decodeSupervisorStateResult(value);
+        if (Result.isFailure(decoded)) return decoded;
+        const expected = new Set(fields);
+        return decoded.success.sessions.every(
+          (session) =>
+            Object.hasOwn(session, "entry") === expected.has("entry") &&
+            Object.hasOwn(session, "root") === expected.has("root"),
+        )
+          ? decoded
+          : Result.fail("Session fields did not match the request");
+      });
+    });
+  }
+
   serve(
     entry: string,
     root: string,
@@ -917,6 +959,36 @@ export class SupervisorClient {
             : Result.fail("Session grant did not match the request");
         },
         encodeCreateSessionRequest({ entry, root }),
+      );
+    });
+  }
+
+  review(
+    session: string,
+  ): Effect.Effect<ReviewControlResult, OperationalError> {
+    const paths = this.#paths;
+    const acquireLock = this.#acquireLock;
+    return Effect.gen(function* () {
+      yield* ensurePrivateStateDirectory(paths);
+      const identity = yield* existingSupervisor(paths, false, acquireLock);
+      if (identity === undefined)
+        return yield* new ReviewError({
+          code: "review.session_not_found",
+          message: "The raw session is not available",
+        });
+      return yield* requiredRequest(
+        paths,
+        "POST",
+        "/reviews",
+        (value) => {
+          const decoded = decodeReviewControlResult(value);
+          if (Result.isFailure(decoded)) return decoded;
+          return decoded.success.session.id === session
+            ? decoded
+            : Result.fail("Review session did not match the request");
+        },
+        encodeCreateReviewRequest({ session }),
+        reviewRequestTimeoutMilliseconds,
       );
     });
   }

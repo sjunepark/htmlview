@@ -130,6 +130,8 @@ function runtimeHelp(
       return [
         `Run \`htmlview serve <entry.html>${invocation.root === undefined ? "" : " --root <directory>"}${jsonSuffix}\` to retry`,
       ];
+    case "ReviewError":
+      return [];
     case "ControlError":
       return error.code === "control.session_limit"
         ? [

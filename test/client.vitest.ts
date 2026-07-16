@@ -17,6 +17,7 @@ import {
   ensurePrivateStateDirectory,
   statePaths,
 } from "../src/supervisor/state.js";
+import { supervisorProtocol } from "../src/supervisor/protocol.js";
 import { htmlviewVersion } from "../src/version.js";
 
 function listen(server: Server, socketPath: string): Effect.Effect<void> {
@@ -320,7 +321,7 @@ it.effect("uses a five-second Clock deadline for shutdown confirmation", () => {
       }
       response.end(
         JSON.stringify({
-          protocol: "htmlview-supervisor-v2",
+          protocol: supervisorProtocol,
           instanceId,
           pid: process.pid,
           version: htmlviewVersion,

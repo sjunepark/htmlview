@@ -1,25 +1,13 @@
 import { randomBytes } from "node:crypto";
-import {
-  createServer,
-  type IncomingMessage,
-  type Server,
-  type ServerResponse,
-} from "node:http";
+import { type IncomingMessage, type ServerResponse } from "node:http";
 import path from "node:path";
 import type { Readable } from "node:stream";
-import { Effect, FiberSet, type Scope } from "effect";
+import { Effect, type Scope } from "effect";
 import { contentType } from "mime-types";
-import { logDiagnostic } from "../diagnostics.js";
 import { ContentListenerError } from "../errors.js";
 import { openAuthorizedFile } from "./authorized-file.js";
 import type { ServingGrant } from "./grant.js";
-
-const loopbackAddress = "127.0.0.1";
-const defaultResponseDeadlineMilliseconds = 5 * 60_000;
-const responseDeadlines = new WeakMap<
-  IncomingMessage["socket"],
-  NodeJS.Timeout
->();
+import { hasExactAuthority, startLoopbackHttpListener } from "./listener.js";
 
 export interface StaticSessionServer {
   readonly bindAddress: "127.0.0.1";
@@ -31,7 +19,6 @@ export interface StaticSessionServer {
 
 export interface StaticHandlerOptions {
   readonly hostname: string;
-  readonly responseDeadlineMilliseconds: number;
 }
 
 function send(
@@ -49,14 +36,6 @@ function send(
     ...extraHeaders,
   });
   response.end(body);
-}
-
-function isExpectedAuthority(
-  request: IncomingMessage,
-  hostname: string,
-): boolean {
-  const port = request.socket.localPort;
-  return port !== undefined && request.headers.host === `${hostname}:${port}`;
 }
 
 function decodeRequestPath(
@@ -119,14 +98,6 @@ function isNotModified(
   );
 }
 
-function reportCleanupFailure(): Effect.Effect<void> {
-  return logDiagnostic("Error", {
-    operation: "http.cleanup",
-    code: "runtime.internal",
-    failureCount: 1,
-  });
-}
-
 function streamAuthorizedFile(
   stream: Readable,
   response: ServerResponse,
@@ -162,21 +133,7 @@ export function createStaticHandler(
   ): Effect.Effect<void> =>
     Effect.scoped(
       Effect.gen(function* () {
-        yield* Effect.sync(() => {
-          if (responseDeadlines.has(request.socket)) return;
-          const responseDeadline = setTimeout(
-            () => request.socket.destroy(),
-            options.responseDeadlineMilliseconds,
-          );
-          responseDeadline.unref();
-          responseDeadlines.set(request.socket, responseDeadline);
-          request.socket.once("close", () => {
-            clearTimeout(responseDeadline);
-            responseDeadlines.delete(request.socket);
-          });
-        });
-
-        if (!isExpectedAuthority(request, options.hostname))
+        if (!hasExactAuthority(request, options.hostname))
           return yield* Effect.sync(() =>
             send(response, 421, "Misdirected Request"),
           );
@@ -252,44 +209,6 @@ function contentStartFailure(cause: unknown): ContentListenerError {
   });
 }
 
-function closeServer(server: Server): Effect.Effect<void> {
-  return Effect.callback<void>((resume) => {
-    try {
-      server.close((error) =>
-        resume(error === undefined ? Effect.void : reportCleanupFailure()),
-      );
-      server.closeAllConnections();
-    } catch {
-      resume(Effect.void);
-    }
-  });
-}
-
-function listen(server: Server): Effect.Effect<void, ContentListenerError> {
-  return Effect.callback<void, ContentListenerError>((resume) => {
-    const onError = (cause: Error): void =>
-      resume(Effect.fail(contentStartFailure(cause)));
-    server.once("error", onError);
-    try {
-      server.listen({ host: loopbackAddress, port: 0 }, () => {
-        server.off("error", onError);
-        resume(Effect.void);
-      });
-    } catch (cause) {
-      server.off("error", onError);
-      resume(Effect.fail(contentStartFailure(cause)));
-    }
-    return Effect.sync(() => {
-      server.off("error", onError);
-      try {
-        server.close();
-      } catch {
-        // The scoped server finalizer remains authoritative.
-      }
-    });
-  });
-}
-
 export function generateSessionHostname(): string {
   return `h-${randomBytes(16).toString("hex")}.localhost`;
 }
@@ -306,56 +225,21 @@ export function startStaticServer(
       try: () => options.hostname ?? generateSessionHostname(),
       catch: contentStartFailure,
     });
-    const responseDeadlineMilliseconds =
-      options.responseDeadlineMilliseconds !== undefined &&
-      Number.isFinite(options.responseDeadlineMilliseconds) &&
-      options.responseDeadlineMilliseconds > 0
-        ? options.responseDeadlineMilliseconds
-        : defaultResponseDeadlineMilliseconds;
-    const requests = yield* FiberSet.make<void, never>();
-    const runRequest = yield* FiberSet.runtime(requests)<never>();
     const handler = createStaticHandler(grant, {
       hostname,
-      responseDeadlineMilliseconds,
     });
-    const server = yield* Effect.acquireRelease(
-      Effect.try({
-        try: () =>
-          createServer((request, response) => {
-            runRequest(
-              handler(request, response).pipe(
-                Effect.catchCause(() =>
-                  Effect.sync(() => {
-                    if (!response.destroyed) response.destroy();
-                  }),
-                ),
-              ),
-            );
+    const listener = yield* startLoopbackHttpListener(handler, {
+      ...(options.responseDeadlineMilliseconds === undefined
+        ? {}
+        : {
+            responseDeadlineMilliseconds: options.responseDeadlineMilliseconds,
           }),
-        catch: contentStartFailure,
-      }),
-      closeServer,
-    );
-    yield* Effect.sync(() => {
-      server.maxConnections = 100;
-      server.maxHeadersCount = 100;
-      server.headersTimeout = 5_000;
-      server.requestTimeout = 30_000;
-      server.keepAliveTimeout = 5_000;
-      server.maxRequestsPerSocket = 100;
-      server.setTimeout(30_000, (socket) => socket.destroy());
     });
-    yield* listen(server);
-    const address = server.address();
-    if (address === null || typeof address === "string")
-      return yield* contentStartFailure(
-        new Error("Static server did not receive a TCP address"),
-      );
-    const origin = `http://${hostname}:${address.port}`;
+    const origin = `http://${hostname}:${listener.port}`;
     return {
-      bindAddress: loopbackAddress,
+      bindAddress: listener.bindAddress,
       hostname,
-      port: address.port,
+      port: listener.port,
       origin,
       url: `${origin}${grant.entryUrlPath}`,
     };

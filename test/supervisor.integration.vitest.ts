@@ -16,7 +16,10 @@ import {
   writeFile,
 } from "node:fs/promises";
 import { createServer as createHttpServer, request } from "node:http";
-import { createServer as createNetServer } from "node:net";
+import {
+  connect as connectSocket,
+  createServer as createNetServer,
+} from "node:net";
 import { homedir, tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, it } from "vitest";
@@ -25,6 +28,7 @@ import { logDiagnostic } from "../src/diagnostics.js";
 import { ContentListenerError } from "../src/errors.js";
 import { resolveServingGrant } from "../src/serving/grant.js";
 import { startStaticServer } from "../src/serving/http.js";
+import { startReviewOriginServer } from "../src/serving/review.js";
 import {
   ProcessStartError,
   SupervisorClient,
@@ -34,10 +38,12 @@ import {
   controlHost,
   maximumControlResponseBytes,
   maximumConcurrentSessions,
+  supervisorProtocol,
 } from "../src/supervisor/protocol.js";
 import {
   startSupervisor,
   type RunningSupervisor,
+  type SupervisorOptions,
 } from "../src/supervisor/server.js";
 import {
   acquireSupervisorLock,
@@ -94,8 +100,11 @@ async function setup(
   options: {
     readonly idleMilliseconds?: number;
     readonly maximumSessions?: number;
+    readonly maximumReviews?: number;
     readonly version?: string;
     readonly beforeHealth?: () => Promise<void>;
+    readonly startSessionServer?: SupervisorOptions["startSessionServer"];
+    readonly startReviewOriginServer?: SupervisorOptions["startReviewOriginServer"];
   } = {},
 ): Promise<{
   paths: StatePaths;
@@ -114,10 +123,19 @@ async function setup(
       ...(options.maximumSessions === undefined
         ? {}
         : { maximumSessions: options.maximumSessions }),
+      ...(options.maximumReviews === undefined
+        ? {}
+        : { maximumReviews: options.maximumReviews }),
       ...(options.version === undefined ? {} : { version: options.version }),
       ...(options.beforeHealth === undefined
         ? {}
         : { beforeHealth: options.beforeHealth }),
+      ...(options.startSessionServer === undefined
+        ? {}
+        : { startSessionServer: options.startSessionServer }),
+      ...(options.startReviewOriginServer === undefined
+        ? {}
+        : { startReviewOriginServer: options.startReviewOriginServer }),
     }),
   );
   supervisors.push(supervisor);
@@ -173,6 +191,40 @@ function controlRequest(
     operation.once("error", reject);
     if (payload !== undefined) operation.write(payload);
     operation.end();
+  });
+}
+
+function rawHeaders(response: Response): Record<string, string | null> {
+  return Object.fromEntries(
+    [
+      "content-type",
+      "content-length",
+      "last-modified",
+      "etag",
+      "cache-control",
+      "x-content-type-options",
+      "cross-origin-resource-policy",
+      "access-control-allow-origin",
+    ].map((name) => [name, response.headers.get(name)]),
+  );
+}
+
+function rawControlStatus(paths: StatePaths, payload: string): Promise<number> {
+  return new Promise((resolve, reject) => {
+    const socket = connectSocket(paths.controlSocket, () =>
+      socket.end(payload),
+    );
+    let response = "";
+    socket.on("data", (chunk: Buffer) => {
+      response += chunk.toString("latin1");
+    });
+    socket.once("error", reject);
+    socket.once("end", () => {
+      const match = response.match(/^HTTP\/1\.1 (\d{3})/);
+      if (match?.[1] === undefined)
+        reject(new Error("Control listener returned no HTTP status"));
+      else resolve(Number(match[1]));
+    });
   });
 }
 
@@ -241,6 +293,167 @@ describe("supervisor lifecycle", () => {
     );
   });
 
+  it("creates reviews lazily, reuses live origins, and resumes stable identity", async () => {
+    let reviewStarts = 0;
+    const { client, root, entry } = await setup({
+      startReviewOriginServer: (role) => {
+        reviewStarts += 1;
+        return startReviewOriginServer(role);
+      },
+    });
+    const served = await runEffect(client.serve(entry, root));
+    const beforeReviewResponse = await fetch(served.session.url);
+    const beforeReview = {
+      status: beforeReviewResponse.status,
+      headers: rawHeaders(beforeReviewResponse),
+      body: await beforeReviewResponse.text(),
+    };
+    assert.deepEqual(await runEffect(client.listState()), {
+      sessions: [
+        {
+          id: served.session.id,
+          status: "ready",
+          url: served.session.url,
+        },
+      ],
+      reviews: [],
+    });
+    assert.equal(reviewStarts, 0);
+
+    const [first, concurrent] = await Promise.all([
+      runEffect(client.review(served.session.id)),
+      runEffect(client.review(served.session.id)),
+    ]);
+    assert.equal(first.review.id, concurrent.review.id);
+    assert.equal(first.review.url, concurrent.review.url);
+    assert.equal(
+      [first.review.reused, concurrent.review.reused].filter(Boolean).length,
+      1,
+    );
+    assert.equal(reviewStarts, 2);
+    assert.match(
+      first.review.url,
+      /^http:\/\/r-[0-9a-f]{32}\.localhost:\d+\/$/,
+    );
+    assert.equal(first.session.url, served.session.url);
+    assert.equal(first.grant.root, await realpath(root));
+    assert.equal(first.fidelity, "instrumented_review");
+    const afterReviewResponse = await fetch(served.session.url);
+    assert.deepEqual(
+      {
+        status: afterReviewResponse.status,
+        headers: rawHeaders(afterReviewResponse),
+        body: await afterReviewResponse.text(),
+      },
+      beforeReview,
+    );
+
+    const state = await runEffect(client.listState());
+    assert.deepEqual(state.reviews, [
+      {
+        id: first.review.id,
+        status: "ready",
+        session: served.session.id,
+        drafts: 0,
+        unacknowledged: 0,
+      },
+    ]);
+
+    await runEffect(client.stopSession(served.session.id));
+    await assert.rejects(fetch(first.review.url));
+    const stopped = await runEffect(client.listState());
+    assert.equal(stopped.reviews[0]?.status, "stopped");
+    assert.equal(stopped.reviews[0]?.session, served.session.id);
+
+    const replacement = await runEffect(client.serve(entry, root));
+    assert.notEqual(replacement.session.id, served.session.id);
+    const resumed = await runEffect(client.review(replacement.session.id));
+    assert.equal(resumed.review.id, first.review.id);
+    assert.notEqual(resumed.review.url, first.review.url);
+    assert.equal(resumed.review.reused, true);
+    assert.equal(reviewStarts, 4);
+    assert.equal(
+      (await runEffect(client.listState())).reviews[0]?.session,
+      replacement.session.id,
+    );
+  });
+
+  it("rolls back both-origin review acquisition and preserves capacity", async () => {
+    let shellUrl: string | undefined;
+    const { client, root, entry } = await setup({
+      maximumReviews: 1,
+      startReviewOriginServer: (role) =>
+        role === "content"
+          ? Effect.fail(
+              new ContentListenerError({
+                code: "http.start_failed",
+                message: "The loopback content listener could not start",
+              }),
+            )
+          : startReviewOriginServer(role).pipe(
+              Effect.tap((server) =>
+                Effect.sync(() => {
+                  shellUrl = server.url;
+                }),
+              ),
+            ),
+    });
+    const served = await runEffect(client.serve(entry, root));
+    await assert.rejects(runEffect(client.review(served.session.id)), {
+      code: "http.start_failed",
+    });
+    assert.deepEqual((await runEffect(client.listState())).reviews, []);
+    assert.notEqual(shellUrl, undefined);
+    await assert.rejects(fetch(shellUrl ?? ""));
+  });
+
+  it("bounds stalled review-origin acquisition and releases lifecycle mutation", async () => {
+    const { client, root, entry } = await setup({
+      startReviewOriginServer: () => Effect.never,
+    });
+    const served = await runEffect(client.serve(entry, root));
+    await assert.rejects(runEffect(client.review(served.session.id)), {
+      code: "http.readiness_failed",
+    });
+    assert.equal(
+      (await runEffect(client.stopSession(served.session.id))).stopped,
+      1,
+    );
+    assert.deepEqual((await runEffect(client.listState())).reviews, []);
+  });
+
+  it("closes review origins before their raw listener", async () => {
+    const closed: string[] = [];
+    const { client, root, entry } = await setup({
+      startSessionServer: (grant) =>
+        Effect.gen(function* () {
+          yield* Effect.addFinalizer(() =>
+            Effect.sync(() => {
+              closed.push("raw");
+            }),
+          );
+          return yield* startStaticServer(grant);
+        }),
+      startReviewOriginServer: (role) =>
+        Effect.gen(function* () {
+          yield* Effect.addFinalizer(() =>
+            Effect.sync(() => {
+              closed.push(role);
+            }),
+          );
+          return yield* startReviewOriginServer(role);
+        }),
+    });
+    const served = await runEffect(client.serve(entry, root));
+    await runEffect(client.review(served.session.id));
+    await runEffect(client.stopSession(served.session.id));
+    assert.equal(closed.at(-1), "raw");
+    assert.deepEqual(
+      new Set(closed.slice(0, -1)),
+      new Set(["shell", "content"]),
+    );
+  });
+
   it("stops sessions idempotently and makes stop-all a complete shutdown", async () => {
     const { client, root, entry, paths } = await setup();
     const otherRoot = await temporaryDirectory("htmlview-session-other-");
@@ -273,6 +486,13 @@ describe("supervisor lifecycle", () => {
       401,
     );
     assert.equal((await controlRequest(paths, "GET", "/sessions")).status, 200);
+    assert.equal(
+      await rawControlStatus(
+        paths,
+        `GET /sessions HTTP/1.1\r\nHost: ${controlHost}\r\nHost: duplicate\r\nConnection: close\r\n\r\n`,
+      ),
+      401,
+    );
     assert.deepEqual((await readdir(paths.directory)).sort(), [
       "control.sock",
       "supervisor.lock",
@@ -294,18 +514,22 @@ describe("supervisor lifecycle", () => {
       const value =
         route.pathname === "/health"
           ? {
-              protocol: "htmlview-supervisor-v2",
+              protocol: supervisorProtocol,
               instanceId: randomUUID(),
               pid: process.pid,
               version: htmlviewVersion,
             }
           : incoming.method === "GET" && route.pathname === "/sessions"
             ? { sessions: [{ id: "invalid" }] }
-            : route.pathname === "/sessions"
-              ? { session: {}, reused: "no" }
-              : route.pathname === "/stop"
-                ? { stopped: "one" }
-                : { stopped: maximumConcurrentSessions + 1 };
+            : incoming.method === "GET" && route.pathname === "/state"
+              ? { sessions: [], reviews: [{ id: "invalid" }] }
+              : route.pathname === "/sessions"
+                ? { session: {}, reused: "no" }
+                : route.pathname === "/reviews"
+                  ? { review: {}, session: {} }
+                  : route.pathname === "/stop"
+                    ? { stopped: "one" }
+                    : { stopped: maximumConcurrentSessions + 1 };
       const body = Buffer.from(JSON.stringify(value));
       response.writeHead(200, {
         "content-type": "application/json",
@@ -339,10 +563,12 @@ describe("supervisor lifecycle", () => {
         );
         return true;
       });
+      await assert.rejects(runEffect(client.listState()), expected);
       await assert.rejects(
         runEffect(client.serve(entry, await realpath(root))),
         expected,
       );
+      await assert.rejects(runEffect(client.review("aB3_-xYz")), expected);
       await assert.rejects(runEffect(client.stopSession("missing")), expected);
       await assert.rejects(runEffect(client.stopAll()), expected);
     } finally {
@@ -364,7 +590,7 @@ describe("supervisor lifecycle", () => {
       if (route.pathname === "/health") {
         response.end(
           JSON.stringify({
-            protocol: "htmlview-supervisor-v2",
+            protocol: supervisorProtocol,
             instanceId: randomUUID(),
             pid: process.pid,
             version: htmlviewVersion,
@@ -422,7 +648,7 @@ describe("supervisor lifecycle", () => {
       const responseValue =
         route.pathname === "/health"
           ? {
-              protocol: "htmlview-supervisor-v2",
+              protocol: supervisorProtocol,
               instanceId: randomUUID(),
               pid: process.pid,
               version: htmlviewVersion,
@@ -450,10 +676,30 @@ describe("supervisor lifecycle", () => {
       value = { sessions: [{ ...session, entry }] };
       await assert.rejects(runEffect(client.list()), expected);
       value = {
+        sessions: [{ ...session, entry }],
+        reviews: [],
+      };
+      await assert.rejects(runEffect(client.listState(["root"])), expected);
+      value = {
         session: { ...session, entry: `${entry}.different`, root },
         reused: false,
       };
       await assert.rejects(runEffect(client.serve(entry, root)), expected);
+      value = {
+        review: {
+          id: "rv_0123456789abcdefABCDEF",
+          status: "ready",
+          url: "http://r-fedcba9876543210fedcba9876543210.localhost:4322/",
+          reused: false,
+        },
+        session: { id: "zB3_-xYz", url: session.url },
+        grant: {
+          root,
+          access: "read_all_regular_files_beneath_root",
+        },
+        fidelity: "instrumented_review",
+      };
+      await assert.rejects(runEffect(client.review(session.id)), expected);
       value = { stopped: 2 };
       await assert.rejects(runEffect(client.stopSession("missing")), expected);
     } finally {
@@ -948,6 +1194,11 @@ describe("supervisor lifecycle", () => {
       client.serve(path.join(root, "b", "index.html"), root),
     );
     assert.notEqual(first.session.id, second.session.id);
+    const [firstReview, secondReview] = await Promise.all([
+      runEffect(client.review(first.session.id)),
+      runEffect(client.review(second.session.id)),
+    ]);
+    assert.notEqual(firstReview.review.id, secondReview.review.id);
     assert.equal(new URL(first.session.url).pathname, "/a/index.html");
     assert.equal(new URL(second.session.url).pathname, "/b/index.html");
     assert.equal(
@@ -994,6 +1245,27 @@ describe("supervisor lifecycle", () => {
       400,
     );
     assert.equal(
+      (await controlRequest(paths, "GET", "/state?unknown=true")).status,
+      400,
+    );
+    assert.equal(
+      (
+        await controlRequest(paths, "POST", "/reviews", {
+          session: "short",
+        })
+      ).status,
+      400,
+    );
+    assert.equal(
+      (
+        await controlRequest(paths, "POST", "/reviews", {
+          session: minimal[0]?.id,
+          root: "/broadened",
+        })
+      ).status,
+      400,
+    );
+    assert.equal(
       (
         await controlRequest(paths, "POST", "/stop", {
           session: minimal[0]?.id,
@@ -1019,6 +1291,25 @@ describe("supervisor lifecycle", () => {
       (await runEffect(client.serve(otherEntry, otherRoot))).reused,
       false,
     );
+  });
+
+  it("bounds retained review summaries while allowing open-review reuse", async () => {
+    const { client, root, entry } = await setup({ maximumReviews: 1 });
+    const first = await runEffect(client.serve(entry, root));
+    const review = await runEffect(client.review(first.session.id));
+    assert.equal(
+      (await runEffect(client.review(first.session.id))).review.id,
+      review.review.id,
+    );
+
+    const otherRoot = await temporaryDirectory("htmlview-review-limit-");
+    const otherEntry = path.join(otherRoot, "other.html");
+    await writeFile(otherEntry, "other");
+    const second = await runEffect(client.serve(otherEntry, otherRoot));
+    await assert.rejects(runEffect(client.review(second.session.id)), {
+      code: "review.limit",
+    });
+    assert.equal((await runEffect(client.listState())).reviews.length, 1);
   });
 
   it("enumerates the production session cap and rejects the next session", async () => {
@@ -1361,6 +1652,69 @@ describe("supervisor lifecycle", () => {
     assert.equal(await socketExists(paths), false);
     await assert.rejects(lstat(paths.supervisorLock));
     await assert.rejects(fetch(served.session.url));
+  });
+
+  it("attempts every review and raw cleanup after review finalizer defects", async () => {
+    const parent = await temporaryDirectory("hv-rfd-");
+    const paths = statePaths({
+      HTMLVIEW_STATE_DIR: path.join(parent, "state"),
+    });
+    const defect = new Error("review finalizer defect");
+    const supervisor = await runEffect(
+      startSupervisor({
+        paths,
+        idleMilliseconds: 10_000,
+        startReviewOriginServer: (role) =>
+          Effect.gen(function* () {
+            const server = yield* startReviewOriginServer(role);
+            if (role === "shell")
+              yield* Effect.addFinalizer(() => Effect.die(defect));
+            return server;
+          }),
+      }),
+    );
+    supervisors.push(supervisor);
+    const client = new SupervisorClient(paths);
+    const records: Array<{
+      readonly id: string;
+      readonly rawUrl: string;
+      readonly reviewUrl: string;
+    }> = [];
+    for (let index = 0; index < 2; index += 1) {
+      const root = await temporaryDirectory(`hv-review-defect-${index}-`);
+      const entry = path.join(root, "report.html");
+      await writeFile(entry, `review-${index}`);
+      const served = await runEffect(client.serve(entry, root));
+      records.push({
+        id: served.session.id,
+        rawUrl: served.session.url,
+        reviewUrl: (await runEffect(client.review(served.session.id))).review
+          .url,
+      });
+    }
+
+    const first = records[0];
+    const second = records[1];
+    assert.ok(first !== undefined && second !== undefined);
+    await assert.rejects(runEffect(client.stopSession(first.id)), {
+      code: "control.internal",
+    });
+    await assert.rejects(fetch(first.reviewUrl));
+    await assert.rejects(fetch(first.rawUrl));
+    assert.equal((await fetch(second.reviewUrl)).status, 404);
+    assert.equal((await fetch(second.rawUrl)).status, 200);
+
+    supervisors.pop();
+    const closed = assert.rejects(runEffect(supervisor.closed), {
+      _tag: "SupervisorLifecycleError",
+      phase: "shutdown",
+    });
+    await assert.rejects(runEffect(supervisor.close));
+    await closed;
+    assert.equal(await socketExists(paths), false);
+    await assert.rejects(lstat(paths.supervisorLock));
+    await assert.rejects(fetch(second.reviewUrl));
+    await assert.rejects(fetch(second.rawUrl));
   });
 
   it("preserves the private logger inside supervisor callback runtimes", async () => {
