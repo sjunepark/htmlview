@@ -38,7 +38,7 @@ annotation runtime work.
 ## Required invariants
 
 - The serving root remains the complete explicit read-disclosure grant.
-- Serving grants and runtime state are canonically disjoint in both directions.
+- Serving grants and private state are canonically disjoint in both directions.
 - Raw entry and asset bytes are never transformed or written.
 - Content binds only to `127.0.0.1` and validates its exact random
   `.localhost` authority.
@@ -129,8 +129,10 @@ home output, fresh `serve`, and an idle supervisor after the CLI/logging slice;
    parser, manual help models, and hand-written dispatcher; do not retain a
    compatibility wrapper. Keep `--json` as htmlview's global domain-output
    option and `--fields` scoped to the no-argument home command. Follow the
-   [Effect Solutions CLI guide](https://www.effect.solutions/cli) for
-   composition, while treating the exact pinned source as authoritative.
+   [Effect Solutions CLI guide](https://www.effect.solutions/cli) as
+   non-normative composition guidance. The
+   [exact pinned source](https://github.com/Effect-TS/effect/tree/3e4abbcb0d0e9a5e82b6b88c7ef7ab69900105ec/packages/effect/src/unstable/cli)
+   is authoritative for behavior.
 3. Accept Effect CLI's native `--help`/`-h`, `--version`/`-v`,
    `--completions`, and `--log-level` behavior. Native help/version are text;
    syntax diagnostics are native text and exit `1`. `--json` does not rewrite
@@ -201,12 +203,6 @@ Node 22 Linux lifecycle check passes with complete PID/socket/lock cleanup, and
 installed CLI URL and passes the complete interoperability fixture through the
 user-approved Chrome DevTools endpoint. Phase 10 must rerun this evidence after
 the CLI grammar and logger sinks change.
-
-## Current blockers
-
-- No external blocker. Phase 10 is required before annotation runtime work so
-  annotation commands are added to one final command model rather than the
-  parser that is being removed.
 
 ## Next action
 

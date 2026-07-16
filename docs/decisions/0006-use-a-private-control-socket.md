@@ -2,6 +2,13 @@
 
 - Status: Accepted
 - Date: 2026-07-15
+- Related: [ADR 0002](0002-per-user-loopback-supervisor.md),
+  [ADR 0008](0008-separate-raw-serving-from-instrumented-review.md)
+
+## Current applicability
+
+ADR 0008 adds live review listeners to `stop --all`; durable review records are
+not content sessions and are not discarded by supervisor shutdown.
 
 ## Context
 

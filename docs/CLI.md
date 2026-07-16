@@ -1,5 +1,9 @@
 # Agent-facing CLI contract
 
+> **Status:** This is the accepted `0.1.0` interface. The current checkout still
+> uses the pre-migration parser and has no review runtime. Track implementation
+> in [the repository plan](https://github.com/sjunepark/htmlview/blob/main/PLAN.md).
+
 ## Purpose
 
 `htmlview` is an Agent eXperience Interface (AXI): its primary caller is an
@@ -75,16 +79,9 @@ encoder is selected only at the stdout boundary:
   remain equivalent.
 - Contract tests decode both representations and compare their logical values.
 
-The implementation uses `@toon-format/toon` 2.3.0 and validates it against all
-official `@toon-format/spec` 3.3.0 fixtures rather than interpolate
-paths, errors, or other untrusted values into either format. The selected TOON
-implementation and conformance fixtures are pinned with the runtime during the
-foundation milestone.
-
-The stdout adapter emits JSON escapes for TOON structural punctuation inside
-quoted strings. This preserves the logical string while avoiding a known
-reference-decoder ambiguity such as the valid value `[]:`; generated hostile
-values are round-tripped through both output formats in release checks.
+The encoder is validated against the official TOON v3.3 fixtures. Generated
+hostile values are round-tripped through both formats; paths, errors, comments,
+and other untrusted values are never interpolated into serialized output.
 
 ## Output channels and exit codes
 
@@ -114,18 +111,13 @@ emitted. Unexpected defects are projected as a sanitized `runtime.internal`
 domain error after allowlisted diagnostic context is logged to stderr; stack
 traces and dependency text stay private.
 
-Effect logging is diagnostic only. Foreground commands route it to stderr.
-Normal successes and caller-correctable failures are not duplicated as info
-logs; `--log-level debug` or `trace` opts into allowlisted foreground detail.
-The detached supervisor writes bounded, rotated JSONL beneath the private
-htmlview state directory with `0700` directories and `0600` files. No browser
-route or public `logs` command exposes it. The supervisor uses a fixed info
-threshold rather than inheriting a starting command's transient log level. Logs
-may contain timestamps, levels, fixed operation/span names, stable error codes,
-opaque internal IDs, durations, and bounded counts; they must not contain
-comments or prompt text, anchors or selectors, DOM/HTML excerpts, form values,
-headers, cookies, credentials, full paths, file contents, raw protocol payloads,
-dependency error text, or other attacker-controlled strings.
+Effect logging is diagnostic only. Foreground commands route it to stderr and
+stay quiet at info for ordinary success and caller-correctable failure;
+`--log-level debug` or `trace` opts into allowlisted detail. The detached
+supervisor writes bounded, rotated JSONL in private state at a fixed info
+threshold. No browser route or public command exposes logs, and logs never
+contain feedback or untrusted domain/source content. The
+[Threat Model](THREAT_MODEL.md) owns the complete log-content policy.
 
 ## Home view
 
@@ -218,7 +210,7 @@ canonical parent is rejected rather than silently broadening the grant.
 does not use a filename denylist; callers must choose a root containing only
 files they are prepared to expose to the page and other same-origin code.
 The user home directory and its ancestors are rejected. A root is also rejected
-when its canonical tree overlaps htmlview runtime state in either direction;
+when its canonical tree overlaps htmlview private state in either direction;
 state may neither sit beneath a serving grant nor contain one. `session.reused`
 is `true` when the identical public entry route/canonical-root session is
 already live, making the successful no-op explicit. Different authorized
@@ -261,11 +253,11 @@ instrumented content use different random `.localhost` origins; neither origin
 adds or changes a route on `session.url`.
 
 The review status is `ready` while its browser surface accepts feedback,
-`ended` after the browser sends a final batch, and `stopped` when its associated
-session is stopped without an explicit browser end. End persists and
-acknowledges the final batch, then closes both review origins without stopping
-the raw session. An ended review does not reopen silently. If its raw session
-remains live, another `review <session>` creates a new review.
+`ended` after the browser commits a final batch, and `stopped` when its
+associated session is stopped without an explicit browser end. End leaves the
+final batch unacknowledged for the agent, closes both review origins, and does
+not stop the raw session. An ended review does not reopen silently. If its raw
+session remains live, another `review <session>` creates a new review.
 Supervisor recovery changes an orphaned `ready` record to `stopped` before
 returning any command result.
 
@@ -277,13 +269,14 @@ one such event exists or the review becomes `ended` or `stopped`. Only one
 foreground wait may be active for a review; a concurrent wait fails with
 `feedback.consumer_busy`.
 
-`--after <cursor>` accepts a non-negative decimal cursor from an earlier result.
-It atomically acknowledges events through that cursor before reading or waiting
-for newer events. A cursor at or behind the acknowledged position is an
-idempotent retry. A cursor beyond the highest position previously returned for
-that review fails with `feedback.cursor_ahead` and does not discard anything.
-The first read starts at cursor zero. The one-agent-consumer assumption is part
-of the `0.1.0` contract; there are no named consumers or independent offsets.
+`cursor` is a non-negative stream position returned with a batch; delivery does
+not acknowledge it. `--after <cursor>` atomically advances the review's
+persisted acknowledged cursor through a position returned earlier, then reads
+or waits for newer events. A value at or behind the acknowledged cursor is an
+idempotent retry. A value beyond the highest position previously returned for
+that review fails with `feedback.cursor_ahead` and changes no state. The first
+read starts at zero. The one-agent-consumer assumption is part of the `0.1.0`
+contract; there are no named consumers or independent offsets.
 
 ```json
 {
@@ -313,7 +306,7 @@ of the `0.1.0` contract; there are no named consumers or independent offsets.
 ```
 
 The returned `cursor` is the position of the final event in the response, or
-the current acknowledged position when `feedback` is empty. Events are bounded
+the persisted acknowledged cursor when `feedback` is empty. Events are bounded
 and ordered. Every event has `id`, `kind`, `comment`, `entry`, and the
 capture-time SHA-256 `revision`. `kind` is `element` or `freeform`. An `element`
 anchor has a selector, DOM-path fallback, tag, and optional normalized text. A

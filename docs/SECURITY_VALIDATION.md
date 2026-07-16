@@ -31,7 +31,7 @@ land.
 | Browser-controller separation                                           | real CLI URL checks under `validation/interoperability/`; package contents reject `validation/` files                           |
 | Reproducible package version and lifecycle                              | clean-prefix pack/install/serve/reinstall/uninstall checks on the current platform and Node 22 Debian                           |
 | Bundle dependency, license, and map policy                              | exact Effect pins, build-time import/license-set checks, third-party notices, linked maps without embedded source content       |
-| Distribution size and process cost                                      | Phase 9 installed-artifact comparison records packed/install size, file counts, cold commands, readiness, and empty-daemon RSS  |
+| Distribution size and process cost                                      | Clean-package measurements recorded in the repository Effect plan cover size, file count, cold commands, readiness, and RSS     |
 
 ## Required `0.1.0` evidence (pending)
 
@@ -50,43 +50,10 @@ land.
 | Hostile authored content cannot read typed comments      | Real-browser attempts to reach shell DOM/state/mutation routes plus stored-XSS and forged-target cases                                                                                        |
 | Instrumentation failure remains explicit                 | Authored CSP, encoding, malformed markup, framing, navigation, native-control, and Explore/Annotate browser cases                                                                             |
 
-## Explicit residual risks
+## Residual risks
 
-- Filesystem confinement uses canonical resolution, a read-only file handle,
-  and device/inode rechecks. Node does not expose a portable `openat2`-style
-  API on all supported platforms, so exotic filesystem replacement behavior
-  beyond the tested symlink swaps remains a residual race. No observed test
-  response has served outside bytes.
-- Another process running as the same operating-system user can read the same
-  files and open the private control socket; user-only permissions are not a
-  privilege boundary within one account.
-- The portable lifetime lock detects a live owner by PID. Rare PID reuse after
-  a crash can therefore preserve stale authority and fail commands explicitly
-  instead of risking an overlapping supervisor. After confirming the recorded
-  PID belongs to an unrelated process, remove the inactive runtime directory
-  as described in `docs/INSTALL.md`.
-- Ephemeral-port exhaustion and operating-system-wide file-descriptor
-  exhaustion cannot be made deterministic in the ordinary test suite. Spawn,
-  state, HTTP-start, and readiness failures cross stable structured domain
-  error boundaries, while raw dependency errors stay off stdout.
-- Some non-browser Linux resolvers do not implement special-use
-  `*.localhost` lookup. Browsers are covered directly. Plain HTTP clients can
-  connect to `127.0.0.1` while sending the returned URL's exact Host authority,
-  as demonstrated by the Linux package test.
-- Each supervisor permits at most 32 sessions. Every session still consumes a
-  listener and file-descriptor set, so operating-system exhaustion below that
-  cap remains possible on an already constrained machine.
-- The Effect runtime increases the installed artifact and empty-supervisor
-  memory compared with the Promise baseline. Release measurements quantify
-  that cost; the package remains two self-contained executables with only TOON
-  and MIME lookup installed as runtime dependencies.
-- The accepted supervisor logger retains bounded operation, timing, opaque-ID,
-  and error-code metadata until rotation. Another process running as the same
-  user can read it; the log is not audit-grade, complete, or a feedback source.
-- Faithfully rendered HTML can read all files in its granted root, contact the
-  network, and access capabilities of its browser profile. Isolated roots and
-  disposable browser profiles remain operational requirements for untrusted
-  content.
+The [Threat Model](THREAT_MODEL.md#residual-risks) is the single source for
+accepted residual risk. This file records evidence and pending gates only.
 
 ## Resource bounds
 
@@ -101,7 +68,7 @@ land.
   the session-registry shutdown fence rejects any delayed serve mutation that
   resumes after cleanup begins.
 - Ownership records are limited to 16 KiB. Ownership-lock acquisition waits at
-  most 10 seconds while interleaving health probes, followed by at most 5 seconds for supervisor readiness.
-  Health uses three bounded 500 ms attempts; ordinary control calls and content
-  readiness wait at most 2 seconds each. An empty supervisor exits after 30
-  seconds by default.
+  most 10 seconds while interleaving health probes, followed by at most 5
+  seconds for supervisor readiness. Health uses three bounded 500 ms attempts;
+  ordinary control calls and content readiness wait at most 2 seconds each. An
+  empty supervisor exits after 30 seconds by default.

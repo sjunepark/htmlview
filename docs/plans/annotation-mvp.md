@@ -1,84 +1,64 @@
-# Annotation MVP Plan
+# Annotation MVP plan
 
-## Status
+- Status: Phase 0 complete; blocked on Effect CLI/logging Phase 10
+- Updated: 2026-07-16
+- Parent: [`PLAN.md`](../../PLAN.md)
+- Decision: [ADR 0008](../decisions/0008-separate-raw-serving-from-instrumented-review.md)
+- CLI boundary: [ADR 0009](../decisions/0009-adopt-effect-cli-and-logging.md)
 
-Human annotation is required for `0.1.0`. The raw-serving implementation is
-complete, but the release is not ready until this plan is implemented and the
-product, CLI, architecture, threat-model, and decision documents agree with it.
+## Objective
 
-Phase 0 is complete. ADRs 0008–0009 and the public product, CLI, architecture,
-threat-model, README, domain-language, and documentation contract updates lock
-the security, fidelity, persistence, anchoring, workflow, CLI, and diagnostic
-logging choices. Runtime implementation has not started. The Effect CLI and
-logging slice is the next prerequisite; annotation Phase 1 follows it.
+Ship human annotation in `0.1.0` without changing the raw URL or writing into a
+served project. A human selects an element or leaves freeform feedback in a
+separate review surface; one agent receives durable structured events through a
+foreground CLI operation.
 
-| Phase                                     | Status   |
-| ----------------------------------------- | -------- |
-| 0. Contracts and decision records         | Complete |
-| Prerequisite: Effect CLI/logging Phase 10 | Next     |
-| 1. Shared confined reads/review lifecycle | Pending  |
-| 2. Durable feedback/agent delivery        | Pending  |
-| 3. Instrumented content/trusted shell     | Pending  |
-| 4. Security, fidelity, release hardening  | Pending  |
+The design borrows the useful separation in Lavish AXI—detached serving,
+browser-side review, and a foreground structured wait—but not its public bind,
+browser launch, raw-path transformation, destructive reads, or log delivery.
 
-## Product intent
+## Contract ownership
 
-`htmlview` should support two related jobs without conflating their fidelity
-contracts:
+| Concern                                  | Authority                                                  |
+| ---------------------------------------- | ---------------------------------------------------------- |
+| User jobs, scope, non-goals              | [`docs/PRODUCT.md`](../PRODUCT.md)                         |
+| Commands, schemas, cursor/error behavior | [`docs/CLI.md`](../CLI.md)                                 |
+| Component boundaries and flows           | [`ARCHITECTURE.md`](../../ARCHITECTURE.md)                 |
+| Trust boundaries and controls            | [`docs/THREAT_MODEL.md`](../THREAT_MODEL.md)               |
+| Required evidence                        | [`docs/SECURITY_VALIDATION.md`](../SECURITY_VALIDATION.md) |
+| Domain terms                             | [`CONTEXT.md`](../../CONTEXT.md)                           |
 
-1. An agent opens the existing raw URL to inspect, interact with, or run
-   end-to-end checks against the authored artifact.
-2. A human opens a separate review URL, selects an element or leaves page-level
-   feedback, writes a change request such as “increase padding,” and sends it
-   to the agent as structured prompt data.
+This plan owns implementation order and completion state, not duplicate public
+specifications.
 
-An agent may also open the review URL to inspect the review workflow, but only
-the raw URL is an application-fidelity target.
+## Accepted implementation constraints
 
-The review loop is local-first and browser-neutral. `htmlview` returns URLs but
-does not install, launch, or automate a browser. Remote sharing, user accounts,
-multi-user attribution, durable comment threads, and automatic source edits
-are outside the MVP.
+- `session.url` and the raw handler remain byte-faithful and independently
+  usable. Annotation never becomes a `serve` mode or raw-origin route.
+- One review reuses the raw session's canonical grant but owns stable review
+  state plus fresh trusted-shell and instrumented-content origins.
+- Only the selected review entry may load the selection probe. Ordinary review
+  assets use the same authorized-file seam and remain unmodified.
+- The shell owns typed comments, drafts, and mutation APIs. Authored content is
+  cross-origin and may forge anchor metadata but cannot read comments or invoke
+  supervisor control.
+- Element anchors contain bounded selector/path/tag/text context and a
+  capture-time entry revision. Freeform feedback has no anchor. Text ranges are
+  deferred.
+- Queue success means the draft is durably committed outside every serving
+  grant. Browser storage is not authoritative.
+- Send atomically creates ordered immutable events. End commits the final batch
+  and closes review origins; it does not acknowledge agent delivery.
+- A returned feedback cursor is a delivered stream position. Only a later
+  `--after` advances the acknowledged cursor. Retry favors duplicates over loss.
+- One agent consumer and one active wait per review are explicit `0.1.0`
+  limits.
+- Stop preserves pending work. Deletion of drafts or unacknowledged events
+  requires explicit discard; retry tombstones are bounded.
+- Logs remain content-free diagnostics and never deliver feedback.
+- Browser installation, launch, and automation stay outside the package.
 
-## Reference workflow
-
-The design was compared with Lavish AXI at upstream commit
-`55045850f61e7b23c8dbf8cc30d92bd6e31649d2` (`0.1.42`). Its useful pattern is
-the separation of:
-
-- a detached server and browser session;
-- a browser-side annotation queue persisted outside the artifact after send;
-  and
-- a foreground `poll` command whose structured completion returns feedback to
-  the invoking agent.
-
-The MVP adopts that separation. It does not adopt Lavish's permissive network
-binding, browser launching, raw-path transformation, destructive feedback read,
-lexical-only file confinement, or reliance on server logs as an agent wake-up
-channel.
-
-## Confirmed boundaries
-
-- `session.url` remains the byte-faithful raw URL and keeps its existing
-  meaning, handler, origin, and readiness contract.
-- Annotation is an explicit consumer created after `serve`; it is not a
-  `serve` mode and never reserves routes on the raw origin.
-- The review representation may be instrumented, but it must use separate
-  random `.localhost` origins and disclose that it is not fidelity-equivalent
-  to the raw page.
-- Source files and served directories are always read-only. Review assets,
-  drafts, feedback, and lifecycle state live beneath htmlview's existing
-  user-private state directory. Canonical state/grant overlap is rejected in
-  either direction, so neither directory can contain the other.
-- Browser-facing review endpoints can submit review data only. Serving,
-  stopping, listing, root selection, and other supervisor control remain on
-  the private Unix-domain socket.
-- The first release remains loopback-only and does not gain a public-bind or
-  remote-review escape hatch.
-
-## Default workflow and CLI contract
-
-The accepted command flow is:
+## Workflow to preserve
 
 ```sh
 htmlview serve ./report.html
@@ -86,345 +66,112 @@ htmlview review <session>
 htmlview feedback --wait <review>
 ```
 
-1. `serve` remains short-lived and returns only after the raw URL is ready.
-2. `review <session>` lazily creates, reuses, or resumes a review, then returns
-   its opaque identifier, instrumented URL, associated raw URL, and fidelity
-   notice. A stopped unended review for the same document identity keeps its ID
-   and drafts but receives fresh origins. It never opens a browser.
-3. The human uses the review URL. The page starts in annotation mode and offers
-   an explicit Explore/Annotate toggle so authored controls remain usable.
-4. Selecting an element opens a tooltip-style comment editor owned by the
-   trusted review shell; freeform feedback has no target. Queueing persists a
-   draft; Send atomically makes the selected drafts available to the agent.
-5. `feedback <review>` returns the current state and any available feedback
-   without waiting. `feedback --wait <review>` long-polls until feedback is sent or the review
-   ends. Wait progress and heartbeats go to stderr; stdout contains one final
-   TOON or JSON result.
-6. After applying a batch, the agent follows the returned cursor-bearing next
-   command to acknowledge that batch and wait for newer feedback. Stable event
-   IDs make retry and duplicate handling explicit; feedback is never deleted
-   merely because a response started.
-7. Stopping the serving session closes its raw and review listeners. Drafts and
-   sent but unacknowledged feedback remain in private state. Once a review is
-   ended and its final cursor is acknowledged, its active state is reduced to
-   a bounded retry tombstone before final removal.
+`review` never opens a browser. The shell starts in Annotate mode and offers an
+Explore/Annotate switch. Queue persists a draft; Send publishes selected work;
+Send & End publishes the final work and closes the review listeners. The agent
+uses the returned cursor in its next feedback request after applying a batch.
 
-The no-argument home result includes bounded non-tombstone review summaries
-with IDs, lifecycle status, associated or originating session, draft count, and
-unacknowledged count. Durable feedback therefore remains discoverable and
-cleanable even if the agent loses an earlier command result.
+A stopped, unended review resumes for the same canonical-root/public-entry
+identity with its stable ID, drafts, and fresh origins. Ended reviews do not
+resume. The no-argument home result keeps non-tombstone review IDs and pending
+counts discoverable.
 
-The browser offers Send & End for a final batch. Ending with unsent drafts must
-require an explicit discard confirmation. After the final state and response
-are committed, End closes both review origins but leaves the raw session live;
-review shutdown never silently drops drafts.
+## Phase status
 
-`review delete <review>` removes an empty or fully acknowledged review.
-Deleting drafts or sent, unacknowledged feedback requires an explicit
-`--discard-feedback` flag and returns the discarded counts. Repeating either
-successful form is an idempotent success while its bounded tombstone remains.
-Successful deletion closes any live review origins before committing the
-deletion result and does not stop the raw session.
+| Phase                                     | Status   | Outcome                                         |
+| ----------------------------------------- | -------- | ----------------------------------------------- |
+| 0. Contracts and decisions                | Complete | Public specs, ADRs, domain language, doc tests  |
+| Prerequisite: Effect CLI/logging          | Next     | One final command model and diagnostic boundary |
+| 1. Authorized reads and review lifecycle  | Pending  | Review identity, origins, scopes, protocol      |
+| 2. Durable feedback and agent delivery    | Pending  | Store, transitions, CLI/control operations      |
+| 3. Instrumented content and trusted shell | Pending  | Entry probe, shell UI, browser boundaries       |
+| 4. Security, fidelity, release hardening  | Pending  | Adversarial evidence and complete release gate  |
 
-`serve` must not become a foreground development server. Detached diagnostics
-or log lines cannot reliably resume an agent turn, would mix operational output
-with domain feedback, and would reverse the accepted non-blocking contract.
-There is no portable way for a local server to inject a prompt into every agent
-harness. Completion of the foreground structured wait is the MVP integration;
-feedback remains queued when no agent is waiting.
+## Prerequisite: Effect CLI and logging
 
-### Logical result defaults
+Complete [Phase 10 of the Effect plan](effect-v4-adoption.md#phase-10-effect-cli-and-diagnostic-logging)
+before adding commands. Annotation must extend pinned Effect CLI directly, not
+the parser being removed. The prerequisite also installs the diagnostic seam
+whose redaction tests must cover later annotation values.
 
-`review` returns a minimal result shaped like:
+## Phase 1: authorized reads and review lifecycle
 
-```json
-{
-  "review": {
-    "id": "rv_...",
-    "status": "ready",
-    "url": "http://...localhost:.../...",
-    "reused": false
-  },
-  "session": {
-    "id": "...",
-    "url": "http://...localhost:.../report.html"
-  },
-  "grant": {
-    "root": "/workspace",
-    "access": "read_all_regular_files_beneath_root"
-  },
-  "fidelity": "instrumented_review"
-}
-```
+- Characterize the current raw file-open/response boundary before refactoring.
+- Extract one deep authorized-file service from `src/serving/http.ts`; retain
+  raw response assembly and prove unchanged bytes, headers, methods, Host,
+  paths, cache behavior, and confinement.
+- Add review/document identity, stable records, two fresh exact authorities,
+  child scopes, ready-before-output, reuse/resume, stop, and bounded home
+  summaries to the supervisor protocol and registry.
+- Keep review creation lazy so raw-only sessions acquire no review listener or
+  browser surface.
 
-`feedback` returns a definitive event count, cursor, review status, and a
-bounded array of prompt events. TOON remains the default and `--json` emits the
-same logical value. Empty feedback is a successful, explicit result.
-`docs/CLI.md` is authoritative for command, flag, schema, error, cursor, and
-exit details. Native Effect CLI help, version, completion, log-level, and syntax
-behavior is intentionally outside the TOON/JSON domain-result model.
+## Phase 2: durable feedback and agent delivery
 
-## Review-page architecture
+- Add a versioned, bounded, schema-validated annotation store with `0700`/`0600`
+  permissions and durable atomic replacement. Fail closed on unsupported or
+  corrupt state; add no migration layer until a second schema exists.
+- Implement serialized draft, send, end, read, acknowledge, wait,
+  delete/discard, recovery, resume, and tombstone transitions with typed errors.
+- Add `review`, `feedback`, retained-review home summaries, and deletion to the
+  Effect CLI tree and private protocol. Keep domain results TOON/JSON and native
+  syntax/meta output text.
+- Prove wait cancellation changes no persisted cursor/event state and a lost
+  response can be retried.
 
-Use two fresh review origins in addition to the raw origin:
+Persistence precedes browser UI so Phase 3 cannot create an ephemeral side
+channel that later needs replacing.
 
-- a trusted shell origin owns the comment editor, draft state API, send action,
-  review status, and browser-facing mutation endpoints;
-- an instrumented content origin serves the selected root with the same
-  confinement checks as raw serving, transforms only the entry response, and
-  hosts a small selection probe loaded by that response.
+## Phase 3: instrumented content and trusted shell
 
-The shell embeds the content origin in a sandboxed iframe. Because shell and
-content use different hostnames, the iframe may retain its content origin for
-same-origin assets, modules, and fetches without gaining DOM access to the
-shell. The probe reports a schema-validated target and viewport rectangle with
-`postMessage`; the shell positions the tooltip and owns the textarea. The
-shell validates both `event.source` and the exact content origin.
+- Add an HTML-token-aware entry transform that inserts one external probe
+  reference without reserializing original bytes or weakening CSP.
+- Bundle immutable in-memory shell/probe assets; write nothing beside served
+  content.
+- Implement the sandboxed cross-origin iframe, exact source/origin message
+  validation, Explore/Annotate selection, shell-owned tooltip/freeform editor,
+  draft list, Send, and Send & End.
+- Report unsupported CSP, encoding, markup, framing, and multi-document
+  navigation explicitly while leaving the raw URL usable.
+- Keep the browser surface dependency-light and controller-independent.
 
-Both review hostnames are reused only while that review's listeners remain
-live. Recreating a stopped review issues fresh hostnames so browser storage,
-cookies, caches, and service workers cannot cross review lifetimes.
+## Phase 4: security, fidelity, and release hardening
 
-Authored scripts can still interfere with the page or forge target messages
-from their own frame. They must not be able to read typed comments, call the
-shell's mutation API, access annotation state, or invoke supervisor control.
-This is the explicit MVP trust posture: reviewed HTML is trusted enough to
-render, while feedback confidentiality and control authority are isolated from
-it where the browser boundary permits.
-
-Review routes must use exact Host checks, exact Origin and fetch-metadata checks
-for mutations, same-origin resource policy for state reads, no permissive CORS,
-bounded headers/bodies/connections, and non-guessable origin labels. Random
-labels are isolation tools, not authorization credentials. Review data is
-treated as untrusted input at every shell, protocol, persistence, CLI-output,
-and rendering boundary.
-
-## Instrumentation and fidelity
-
-- Keep `createStaticHandler` and every raw response path unchanged. Extract
-  shared authorized-file primitives only when both raw and review handlers can
-  use them without weakening raw invariants.
-- Transform only the review entry document. Serve review subresources from the
-  authorized root without body changes, apart from explicit in-memory review
-  assets that cannot collide with raw paths.
-- Insert one external selection-probe script with an HTML-token-aware transform
-  that preserves all original entry bytes outside the inserted tag. Do not
-  parse and reserialize the whole document.
-- Never remove or weaken an authored CSP. If CSP, document encoding, malformed
-  markup, or another condition prevents safe instrumentation, keep the raw URL
-  available and show a specific review error instead of silently degrading.
-- The review contract must disclose iframe, sandbox, top-level browsing
-  context, event interception, injected DOM/style, storage, and CSP
-  differences. Agent E2E and fidelity assertions use the raw URL.
-- The MVP instruments only the selected entry document and its live SPA DOM.
-  Navigation to another HTML document is not silently transformed; the shell
-  reports that annotation is unavailable there while its raw content remains
-  reachable under the grant.
-
-The browser probe and shell should be maintained as ordinary typed source and
-bundled into the existing supervisor artifact at build time unless measured
-evidence shows that separate published assets are simpler. Review resources
-are served from immutable in-memory bytes, not written beside user content.
-
-## Annotation anchors
-
-Each feedback event gets a stable ID, creation time, bounded comment, review
-ID, entry route, and capture-time SHA-256 revision of the entry bytes. Anchor
-schema version 1 supports:
-
-- **Element:** a unique-ID or bounded structural CSS selector, bounded DOM-path
-  fallback, tag, and normalized text excerpt. Never capture form values,
-  inline script/style, credential-bearing URLs, or arbitrary `data-*`
-  payloads.
-- **Freeform:** a review-level message with no DOM target.
-
-Geometry may help position the current tooltip but is not a durable anchor and
-is not required in agent output. Runtime-generated element IDs are not durable
-identity. Selector depth, text, paths, and comments all have explicit size
-limits.
-
-The MVP captures an anchor once and sends it as prompt context; it does not
-maintain permanent pins or silently reattach comments after document changes.
-A queued draft remains visible in the shell after reload but is never silently
-retargeted. The entry revision lets the agent recognize feedback captured
-against older bytes.
-
-## Persistence and delivery
-
-Use a versioned annotation store beneath the existing private state directory,
-which must be canonically disjoint from every serving root in either direction.
-Keep directory permissions at `0700`, files at `0600`, validate every decoded
-record, cap per-review and global state, and use durable atomic replacement. Do
-not use browser local storage as the authoritative queue.
-
-The private document identity is the canonical root plus public entry route,
-matching raw-session reuse semantics; a different root or authorized route is
-a different review. A random public review ID addresses the record and remains
-stable across supervisor restarts, but is not an authorization credential.
-A stopped unended review resumes against a newly live raw session for the same
-document identity with fresh browser origins. Ended reviews never resume.
-On supervisor recovery, any `ready` record not owned by the current process is
-made `stopped` before a command can observe it.
-
-Persist drafts when the human queues them so browser closure or reload does not
-lose work. Sending transitions selected drafts into an ordered append-only
-feedback stream. Agent reads are cursor-based and non-destructive:
-
-- a response carries stable event IDs and its highest cursor;
-- the next request may acknowledge through that cursor while waiting for newer
-  events;
-- an interrupted or repeated read can return duplicates but cannot lose an
-  unacknowledged event; and
-- the single-agent-consumer assumption is explicit for `0.1.0`.
-
-Reject new drafts with an actionable browser and CLI error when a bound is
-reached; never evict unseen feedback silently. Acknowledged events may be
-removed. Ended and fully acknowledged reviews become small tombstones retaining
-their final cursor and deletion result for 24 hours so acknowledgement and
-delete retries remain idempotent, then expire. Drafts and sent,
-unacknowledged feedback do not expire silently; the explicit delete command is
-the recovery path when global bounds are reached. Exact byte and event limits
-are implementation constants covered by contract tests, not
-caller-configurable v0.1.0 flags.
-
-## Implementation milestones
-
-### 0. Contracts and decision record
-
-Status: Complete on 2026-07-16. Documentation validation and relative-link
-checks pass.
-
-- Add ADR 0008 for the review origins, active-page trust posture,
-  instrumentation/fidelity boundary, anchor schema, persistence, and cursor
-  delivery semantics.
-- Update `docs/PRODUCT.md`, `docs/CLI.md`, `ARCHITECTURE.md`,
-  `docs/THREAT_MODEL.md`, README, and contract tests before implementation.
-- Amend ADR 0004 so the existing state exclusion is symmetric. A root inside
-  runtime state is as invalid as a root containing runtime state; both would
-  violate read-only served directories once annotations or logs are written.
-
-### Prerequisite: Effect CLI and logging
-
-Status: Next in the
-[Effect v4 adoption plan](effect-v4-adoption.md#phase-10-effect-cli-and-diagnostic-logging).
-
-- Replace the custom parser, manual help model, and dispatcher before adding
-  `review` and `feedback`, so annotation extends one final command tree.
-- Preserve TOON/JSON domain values while adopting native Effect CLI text
-  help/version/usage behavior and exit `1` for syntax failures.
-- Install stderr-only foreground logging and bounded, rotated, private
-  supervisor JSONL. Logs remain diagnostics and must exclude comments,
-  anchors, DOM/HTML excerpts, form values, credentials, file content, raw
-  protocol payloads, and attacker-controlled strings.
-
-### 1. Shared confined reads and review lifecycle
-
-Status: Pending until the Effect CLI/logging prerequisite passes.
-
-- Extract a deep authorized-file service from `src/serving/http.ts` while
-  preserving the raw handler and its tests byte-for-byte at the boundary.
-- Add review identity, child scopes, two exact review authorities, readiness,
-  reuse/resume, stop, bounded home summaries, and supervisor control schemas.
-- Keep review creation lazy so raw-only sessions pay no browser surface or
-  listener cost.
-
-### 2. Durable feedback and agent delivery
-
-- Add the bounded, versioned, atomic store and unsupported-version/corruption
-  policy. Do not add a compatibility migration path until a second persisted
-  schema exists.
-- Add draft, send, end, cursor-read, acknowledge, delete/tombstone, and
-  long-poll state transitions with typed errors and scoped cancellation.
-- Add `review` and `feedback` to the Effect CLI command tree, private control
-  routes, TOON/JSON domain results and operational errors, and contextual next
-  commands. Native help and syntax errors retain Effect CLI's text contract.
-
-### 3. Instrumented content and trusted shell
-
-- Add the entry-only HTML transform, in-memory probe route, shell route, iframe
-  sandbox, origin/message validation, and explicit instrumentation failures.
-- Implement Explore/Annotate mode, element hover/selection, tooltip
-  positioning, native control behavior, draft list, Send, and End review
-  against the durable Phase 2 transitions.
-- Keep browser resources dependency-light and independent of any controller.
-
-### 4. Security, fidelity, and release hardening
-
-- Extend the threat model and adversarial evidence for review origins, CSRF,
-  hostile authored scripts, stored content, postMessage spoofing, CSP, state
-  permissions, bounds, concurrency, interruption, and cleanup.
-- Add raw-versus-review fidelity evidence and verify raw bodies, headers, URLs,
-  paths, and lifecycle remain unchanged after review creation.
-- Update build/publication checks, package smoke tests, examples, install docs,
-  and the complete macOS/Linux release matrix.
-
-## Required validation
-
-- Unit tests for element anchors, bounded schemas, state transitions, cursor
-  retry, delete/tombstone expiry, and HTML-token-aware injection.
-- Raw HTTP regressions proving review creation never changes or reserves a raw
-  route and never weakens traversal, symlink, Host, method, or byte checks.
-- Root/state regressions for equality, containment in either direction, and
-  symlinked overlap before any annotation or diagnostic state is written.
-- Review integration tests for exact Host/Origin enforcement, CORS absence,
-  capability separation, body and connection bounds, state permissions,
-  atomic recovery, restart adoption, long-poll cancellation, cleanup, and the
-  cross-origin embedding behavior of review response headers.
-- Real-browser E2E for element and freeform comments, Explore/Annotate
-  switching, native controls, queue/send/end, browser reload and closure,
-  supervisor restart, cursor retry, stale document revision, authored CSP
-  failure, and an authored-script attempt to reach shell state or mutation
-  APIs.
-- Black-box CLI tests for every TOON/JSON domain success, expected operational
-  failure, empty state, idempotent reuse/stop, interruption, and next command;
-  plus separate assertions for native text help and syntax failures.
-- Diagnostic tests proving annotation content never reaches foreground or
-  supervisor logs and that feedback is delivered only through the durable
-  cursor queue.
-- Release checks with at least two independently supplied browser controllers,
-  while keeping both outside runtime dependencies.
+- Complete every pending row in
+  [`docs/SECURITY_VALIDATION.md`](../SECURITY_VALIDATION.md), including hostile
+  authored code, CSRF/origin checks, postMessage spoofing, persistence bounds,
+  concurrency, interruption, restart, and log canaries.
+- Compare the raw contract before and after review creation at the byte, header,
+  URL, path, Host, cache, method, confinement, and lifecycle boundaries.
+- Add black-box and real-browser workflows for element/freeform feedback,
+  native controls, reload/closure/restart, cursor retry, stale revision, CSP
+  failure, End, explicit discard, and retained-work discovery.
+- Update build/package checks, examples, install guidance, and macOS/Node 22
+  Linux lifecycle evidence; keep browser controllers external.
+- Run the complete release gate and final implementation/diet review.
 
 ## Deliberately deferred
 
-- Remote review, accounts, reviewer identity, permissions, or collaboration
-- Persistent resolved/unresolved comment threads or source-control integration
-- Automatic source edits, selector-to-source mapping, or LLM invocation inside
-  the supervisor
-- Screenshots, visual diffs, accessibility interpretation, or automatic layout
-  findings
-- Browser launching, hooks, ambient agent integration, or a controller SDK
-- Agent-to-human chat beyond an optional later structured reply field
-- Text-range comments, quote anchoring, and cross-node selection
-- Annotation across multi-document navigation
-- Automatic review-history retention, compaction, or draft expiry beyond the
-  bounded retry tombstone
-
-## Progress
-
-- 2026-07-16: Completed Phase 0. Added the domain language, accepted ADR 0008,
-  aligned the public product/CLI/architecture/threat-model/README contracts,
-  and added executable documentation checks for the raw/review boundary,
-  command surface, origin isolation, anchoring, and durable cursor semantics.
-  The cross-cutting review added retained-review discovery/resume and explicit
-  End/Delete listener closure, aligned the package surface, moved persistence
-  before browser UI, and deferred text-range anchors to keep `0.1.0` narrow.
-- 2026-07-16: Accepted ADR 0009 and refreshed the annotation contract for the
-  native Effect CLI/logging boundary. The CLI/logging migration now precedes
-  Phase 1; feedback remains a durable domain queue and never a log stream.
+- Remote review, accounts, identity, permissions, or collaboration
+- Persistent pins, threads, resolution state, or source-control integration
+- Automatic edits, selector-to-source mapping, built-in LLM calls, or agent
+  replies in the review page
+- Screenshots, visual diffs, accessibility interpretation, or automatic findings
+- Browser launch, hooks, ambient integration, or controller SDKs
+- Text-range/quote anchors and annotation across document navigation
+- Automatic history retention, compaction, or draft expiry beyond retry
+  tombstones
 
 ## Next action
 
-Complete Phase 10 of the Effect adoption plan and its CLI/logging validation
-gate. Then begin Phase 1 with characterization tests around the existing raw
-authorized-file path and extract the shared confined-read seam without changing
-any raw HTTP response. Add review identity and lifecycle protocol types only
-after the raw regression harness is in place. Do not publish automatically.
+Do not start Phase 1 until Effect CLI/logging Phase 10 and its full gate pass.
+Then begin with raw-boundary characterization tests before extracting authorized
+reads or adding review protocol types.
 
 ## Completion gate
 
-Annotation is complete for `0.1.0` only when a human can submit element-targeted
-and freeform feedback; a foreground agent command receives it without polling
-logs or losing it across browser/supervisor interruption; raw serving remains
-byte-faithful and independently usable; review limitations are explicit; all
-state remains private and outside the grant; and the full release matrix passes.
-Do not publish before this gate is met.
+Annotation is complete only when a human can send element-targeted and freeform
+feedback, one foreground agent command receives it durably across interruption,
+raw serving remains byte-faithful and independent, review limitations are
+explicit, private state stays outside every grant, and the complete release
+matrix passes. Do not publish automatically.

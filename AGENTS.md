@@ -2,14 +2,15 @@
 
 ## Current state
 
+- Read `PLAN.md` before implementation, then use `docs/README.md` to load only
+  the product, CLI, architecture, security, or decision docs affected by the
+  task.
 - Install dependencies with `pnpm install --frozen-lockfile`. Run the
   current-platform suite with `pnpm run check`; browser checks require
   Playwright Chromium to be installed. Release validation also runs
   `pnpm run validate:browser-use` with the external
   executable and a Chrome remote-debugging connection, plus
   `pnpm run validate:package:linux` with Docker.
-- Read `docs/PRODUCT.md`, `docs/CLI.md`, `ARCHITECTURE.md`,
-  `docs/THREAT_MODEL.md`, and `PLAN.md` before implementation work.
 - Keep `PLAN.md` current as milestones, validation, blockers, and the next
   action change.
 
@@ -34,9 +35,9 @@
 - Resolve and authorize every requested file against the session root,
   including symlink targets. Reject traversal and root escape.
 - Reject roots equal to or broader than the user home and any root whose
-  canonical tree overlaps htmlview runtime state in either direction.
+  canonical tree overlaps htmlview private state in either direction.
 - Keep control on the user-private Unix-domain socket; do not add a TCP control
-  endpoint or persisted bearer credential. Keep runtime state outside served
+  endpoint or persisted bearer credential. Keep private state outside served
   repositories with user-only permissions.
 - Do not rely on CORS alone for protection from local or cross-origin callers.
 
@@ -53,10 +54,8 @@
   exit `1` for invalid invocations. Do not force these native outputs through
   the domain encoder.
 - Keep stdout free of logs. Route foreground Effect logs and progress to stderr;
-  keep detached supervisor logs bounded and private. Never log comments,
-  prompt text, anchors, selectors, DOM/HTML excerpts, form values, headers,
-  cookies, credentials, full paths, served content, raw protocol payloads,
-  dependency error text, or attacker-controlled strings.
+  keep detached supervisor logs bounded and private. Enforce the content
+  exclusions in `docs/THREAT_MODEL.md` at the typed diagnostic-event seam.
 - Route application diagnostics through the closed allowlisted event seam; do
   not pass arbitrary messages, error objects, or annotation maps directly to
   Effect Logger.

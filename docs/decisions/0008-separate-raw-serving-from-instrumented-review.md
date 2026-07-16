@@ -3,7 +3,8 @@
 - Status: Accepted
 - Date: 2026-07-16
 - Extends: [ADR 0001](0001-separate-serving-from-browser-control.md)
-- CLI boundary: [ADR 0009](0009-adopt-effect-cli-and-logging.md)
+- Related: [ADR 0009](0009-adopt-effect-cli-and-logging.md) defines the CLI and
+  diagnostic boundary
 
 ## Context
 
@@ -110,8 +111,8 @@ source changes.
 
 - Raw bytes, URLs, origin isolation, root confinement, and browser-neutral
   serving retain their existing contract.
-- Agents have an observable wake path: a foreground command completes with the
-  feedback as prompt-shaped structured data.
+- Agents have an observable wake path: a foreground command completes with
+  durable structured feedback.
 - The extra shell/content boundary preserves authored same-origin behavior more
   closely than an opaque-origin iframe while keeping comment text out of the
   authored page's realm.

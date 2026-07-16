@@ -1,5 +1,9 @@
 # Threat Model
 
+> **Status:** Raw-serving controls are implemented. Effect CLI/logging and
+> review controls are accepted `0.1.0` requirements with pending evidence in
+> [Security validation](SECURITY_VALIDATION.md).
+
 ## Scope
 
 `htmlview` exposes files beneath a caller-authorized directory root to a
@@ -22,8 +26,8 @@ metadata reported by authored code is authentic.
 - Canonical local paths, which may themselves be sensitive
 - The private control socket and supervisor ownership state
 - Private supervisor diagnostic files and their retention bounds
-- Human annotation drafts, sent feedback, acknowledgement cursors, and the
-  confidentiality and integrity of typed comments
+- Human annotation drafts, sent feedback, delivered/acknowledged cursor state,
+  and the confidentiality and integrity of typed comments
 - Availability of the user's machine and agent session
 - Browser credentials, local-network access, and data reachable by page scripts
 
@@ -92,7 +96,7 @@ metadata reported by authored code is authentic.
   the exact resolved root and grant meaning from `serve`. Do not imply that a
   dotfile or sensitive-filename denylist protects files inside the root. Reject
   roots equal to or broader than the user home. Reject canonical overlap between
-  a serving root and runtime state in either direction, including a root chosen
+  a serving root and private state in either direction, including a root chosen
   from inside the state tree.
 - **Unauthorized supervisor control.** Keep control on a `0600` Unix-domain
   socket beneath a current-user-owned `0700` directory. Browsers cannot address
@@ -230,54 +234,12 @@ make review rendering differ from raw rendering.
 
 ## Required adversarial validation
 
-The implementation evidence and explicit residual notes for this list are
-maintained in [Security validation evidence](SECURITY_VALIDATION.md).
-
-- `..`, percent-encoded traversal, double encoding, mixed separators, NULs,
-  malformed UTF-8, Unicode filenames, and platform-specific path forms
-- Symlinks created before and during requests, including targets swapped around
-  authorization time
-- Malicious same-origin requests for unreferenced, hidden, and sensitive files
-  inside the selected root, confirming the documented grant rather than a
-  nonexistent filename denylist
-- Forged `Host`, cross-origin `fetch`, form posts, and wrong-authority control
-  calls over the private socket
-- Cross-origin and missing-origin review mutations, conflicting fetch metadata,
-  content-frame attempts to read shell state, and direct browser attempts to
-  invoke supervisor operations
-- Forged, malformed, oversized, stale, and wrong-window `postMessage` target
-  payloads; comments and targets containing stored-XSS, terminal-control, TOON,
-  JSON, and prompt-injection strings
-- Concurrent first startup, malformed or occupied socket paths, stale sockets,
-  version mismatch, and supervisor crashes
-- Interruption during ownership acquisition, listener readiness, request body
-  reads, streaming, and shutdown, including a finalizer that fails
-- Very large files, slow readers, excessive connections, and aborted requests
-- Bound exhaustion for comments, anchors, drafts, events, reviews, request
-  bodies, concurrent review requests, and feedback waits, including restart
-  recovery without silent eviction
-- Files outside an explicit root and symlinks resolving to them
-- Concurrent sessions and an unrelated loopback service setting overlapping
-  cookies for the same numeric host
-- Port reuse while a browser profile retains origin-keyed storage, cache
-  entries, and a service worker from the prior session
-- TOON and JSON fields containing delimiters, quotes, newlines, controls,
-  Unicode, and terminal escape sequences
-- Effect CLI native help/version/completion and syntax failures, including
-  hostile arguments, mixed meta/domain flags, exit status, and proof that
-  domain `--json` does not create a second parser path
-- Foreground log isolation from stdout; native log-level filtering; supervisor
-  log directory/file permissions, bounded rotation, restart behavior, and
-  absence of comments, anchors, source excerpts, paths, headers, protocol
-  payloads, dependency text, and control characters under hostile input
-- Exact raw-body, header, path, Host, origin, and lifecycle comparisons before
-  and after review creation
-- Review CSP success/failure, unsupported encodings and markup, iframe/sandbox
-  differences, same-origin authored assets, multi-document navigation, and
-  fresh shell/content origin state after review recreation
-- Draft durability across reload, browser closure, listener stop, and
-  supervisor restart; atomic send, cursor retry/duplicate delivery, wait
-  cancellation, explicit discard, and tombstone expiry
+The canonical matrix of implemented evidence and pending release checks is
+[Security validation](SECURITY_VALIDATION.md). It covers confinement, hostile
+protocol and browser input, ownership and interruption races, resource bounds,
+origin isolation, structured output, Effect CLI/logging, raw/review fidelity,
+and durable feedback. A required control is not complete merely because it is
+described here.
 
 ## Residual risks
 

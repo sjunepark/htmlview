@@ -2,7 +2,9 @@
 
 - Status: Accepted
 - Date: 2026-07-16
-- Supersedes in part: ADR 0003 and ADR 0007
+- Partially supersedes:
+  [ADR 0003](0003-adopt-an-axi-output-contract.md) and
+  [ADR 0007](0007-adopt-effect-v4.md)
 
 ## Context
 
@@ -22,9 +24,10 @@ stdout and diagnostics to stderr, and invalid invocations exit `1` rather than
 `2`. Because the earlier interface is unpublished, preserving those differences
 is not a compatibility requirement.
 
-Use the [Effect Solutions CLI guide](https://www.effect.solutions/cli) for
-composition patterns and the pinned Effect source/API as the behavioral
-authority. Logging follows the pinned
+The [Effect Solutions CLI guide](https://www.effect.solutions/cli) is
+non-normative composition guidance. The
+[pinned Effect source](https://github.com/Effect-TS/effect/tree/3e4abbcb0d0e9a5e82b6b88c7ef7ab69900105ec/packages/effect/src/unstable/cli)
+is the behavioral authority. Logging follows the pinned
 [Effect Logger API](https://effect-ts.github.io/effect/effect/Logger.ts.html);
 no documentation example overrides captured-channel tests for this prerelease.
 

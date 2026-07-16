@@ -52,9 +52,20 @@ element anchor.
 _Avoid_: Draft, log entry
 
 **Feedback cursor**:
-The ordered position through which one agent consumer has acknowledged feedback
-for a review.
-_Avoid_: Session ID, credential
+An ordered stream position returned with a feedback batch and later supplied to
+acknowledge that batch. Delivery alone does not acknowledge it.
+_Avoid_: Acknowledged cursor, session ID, credential
+
+**Acknowledged cursor**:
+The highest feedback cursor the single agent consumer has explicitly
+acknowledged for a review.
+_Avoid_: Feedback cursor, delivered cursor
+
+**Private state**:
+The user-only htmlview directory that owns supervisor control state,
+annotations, and bounded diagnostic logs. It is canonically disjoint from every
+serving grant.
+_Avoid_: Project state, serving root
 
 **Diagnostic log**:
 A bounded operational record for troubleshooting foreground commands or the

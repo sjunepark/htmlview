@@ -2,6 +2,13 @@
 
 - Status: Accepted
 - Date: 2026-07-15
+- Extended by: [ADR 0008](0008-separate-raw-serving-from-instrumented-review.md)
+
+## Current applicability
+
+ADR 0008 completed the annotation trust/fidelity analysis anticipated here.
+Its review surface extends this decision; browser-neutral byte-faithful raw
+serving remains the core boundary.
 
 ## Context
 

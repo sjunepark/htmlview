@@ -1,5 +1,9 @@
 # Install, upgrade, and remove
 
+> **Status:** The package is not published. These instructions describe the
+> accepted `0.1.0` interface; Effect CLI/logging and annotation commands are
+> still being implemented.
+
 `htmlview` is distributed as an npm package containing compiled JavaScript. It
 supports macOS and glibc-based Linux environments supported by Node.js 22,
 on arm64 or x64, with Node.js 22.13 or newer.
@@ -71,9 +75,11 @@ explicit destructive discard of any retained feedback; prefer
 
 Rare operating-system PID reuse after a crash can conservatively preserve a
 stale lock. If commands keep reporting `supervisor.unavailable`, inspect
-`supervisor.lock/owner.json`. Only after confirming its PID belongs to an
-unrelated process and no htmlview supervisor is active, remove the inactive
-runtime directory and retry.
+`supervisor.lock/owner.json` beneath the platform state directory. Only after
+confirming its PID belongs to an unrelated process and no htmlview supervisor
+is active, remove the `supervisor.lock` directory and retry. Leave the rest of
+the state directory intact; the next supervisor recovers an inactive control
+socket, while annotation records and diagnostic logs remain available.
 
 ## Release validation
 

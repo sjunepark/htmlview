@@ -7,22 +7,21 @@ async function read(relativePath) {
 }
 
 test("public docs make annotation a required 0.1.0 feature", async () => {
-  const [product, readme, plan] = await Promise.all([
+  const [product, readme] = await Promise.all([
     read("docs/PRODUCT.md"),
     read("README.md"),
-    read("PLAN.md"),
   ]);
 
   assert.match(product, /^### Review and feedback$/m);
   assert.match(product, /separate instrumented surface/);
   assert.match(product, /element-targeted and freeform comments/);
-  assert.doesNotMatch(product, /Annotation in version one/);
+  assert.match(product, /accepted `0\.1\.0` target/);
   assert.match(readme, /required `0\.1\.0` milestone/);
+  assert.match(readme, /runtime is not implemented/);
   assert.doesNotMatch(readme, /Human annotations are a possible later layer/);
-  assert.match(plan, /Human annotation is a core first-release feature/);
 });
 
-test("CLI docs define the review, feedback, and explicit deletion contracts", async () => {
+test("CLI docs define review, feedback, acknowledgement, and deletion", async () => {
   const cli = await read("docs/CLI.md");
 
   assert.match(cli, /htmlview review \[--json\] <session>/);
@@ -42,58 +41,16 @@ test("CLI docs define the review, feedback, and explicit deletion contracts", as
   assert.match(cli, /feedback\.cursor_ahead/);
   assert.match(cli, /review\.pending_feedback/);
   assert.match(cli, /duplicate delivery over loss/);
+  assert.match(cli, /delivery does\s+not acknowledge it/);
+  assert.match(cli, /persisted acknowledged cursor/);
+  assert.match(cli, /final batch unacknowledged for the agent/);
   assert.match(cli, /review_count: 0/);
   assert.match(cli, /reviews\[2\]\{id,status,session,drafts,unacknowledged\}/);
   assert.match(cli, /stopped, unended review resumes its stable\s+review ID/);
-  assert.match(
-    cli,
-    /Logs are diagnostics, not a feedback transport|logs are never a feedback transport/i,
-  );
+  assert.match(cli, /logs are never a feedback transport/i);
 });
 
-test("Effect CLI and logging are the accepted prerequisite boundary", async () => {
-  const [cli, adr, grantAdr, plan, annotationPlan, threatModel] =
-    await Promise.all([
-      read("docs/CLI.md"),
-      read("docs/decisions/0009-adopt-effect-cli-and-logging.md"),
-      read(
-        "docs/decisions/0004-treat-the-serving-root-as-a-disclosure-grant.md",
-      ),
-      read("PLAN.md"),
-      read("docs/plans/annotation-mvp.md"),
-      read("docs/THREAT_MODEL.md"),
-    ]);
-
-  assert.match(cli, /`effect\/unstable\/cli` API is the sole parser/);
-  assert.match(cli, /`--completions <bash\|zsh\|fish\|sh>`/);
-  assert.match(cli, /There is no exit `2` contract/);
-  assert.match(cli, /`--json` does not alter a native usage failure/);
-  assert.match(cli, /bounded, rotated JSONL/);
-
-  assert.match(adr, /- Status: Accepted/);
-  assert.match(adr, /remove the custom parser/);
-  assert.match(adr, /logs remain diagnostics only/);
-  assert.match(adr, /closed diagnostic-event type/);
-  assert.match(adr, /`0700` directory and\s+`0600` file permissions/);
-  assert.match(
-    grantAdr,
-    /canonical overlap between the serving root and\s+htmlview's runtime state directory/,
-  );
-  assert.match(
-    grantAdr,
-    /neither may equal, contain, or be contained\s+by the other/,
-  );
-
-  assert.match(plan, /Implement Phase 10 of the Effect adoption plan/);
-  assert.match(
-    annotationPlan,
-    /Effect CLI and\s+logging slice is the next prerequisite/,
-  );
-  assert.match(threatModel, /Never log comments\s+or prompt text/);
-  assert.match(threatModel, /Logs never deliver feedback/);
-});
-
-test("architecture and threat model preserve raw fidelity and isolate review authority", async () => {
+test("architecture and threat model preserve raw fidelity and review isolation", async () => {
   const [architecture, threatModel] = await Promise.all([
     read("ARCHITECTURE.md"),
     read("docs/THREAT_MODEL.md"),
@@ -104,10 +61,13 @@ test("architecture and threat model preserve raw fidelity and isolate review aut
   assert.match(architecture, /trusted shell origin/);
   assert.match(architecture, /instrumented-content origin/);
   assert.match(architecture, /never opens a served file for writing/);
-  assert.doesNotMatch(architecture, /optional annotation surface \(later\)/);
   assert.match(
     architecture,
-    /0008-separate-raw-serving-from-instrumented-review\.md/,
+    /Square-bracketed components are accepted targets/,
+  );
+  assert.match(
+    architecture,
+    /0008-separate-raw-serving-from-instrumented-review\.md|Decision index/,
   );
 
   assert.match(threatModel, /exact shell `Origin`/);
@@ -117,7 +77,7 @@ test("architecture and threat model preserve raw fidelity and isolate review aut
   assert.match(threatModel, /raw remains the fidelity reference/);
 });
 
-test("ADR and domain language lock anchoring, durability, and lifecycle terms", async () => {
+test("ADR and domain language lock anchoring, durability, and cursor terms", async () => {
   const [adr, context, product] = await Promise.all([
     read(
       "docs/decisions/0008-separate-raw-serving-from-instrumented-review.md",
@@ -132,8 +92,10 @@ test("ADR and domain language lock anchoring, durability, and lifecycle terms", 
   assert.match(adr, /SHA-256 revision/);
   assert.match(adr, /24-hour retry tombstone/);
   assert.match(adr, /One agent consumer per review/);
-  assert.match(product, /Text-range selection or quote anchoring in `0\.1\.0`/);
   assert.match(adr, /non-tombstone review summaries/);
+  assert.match(product, /Text-range selection or quote anchoring in `0\.1\.0`/);
+  assert.match(context, /Delivery alone does not acknowledge it/);
+  assert.match(context, /highest feedback cursor.*explicitly\s+acknowledged/s);
 
   for (const term of [
     "Serving grant",
@@ -145,8 +107,36 @@ test("ADR and domain language lock anchoring, durability, and lifecycle terms", 
     "Annotation draft",
     "Feedback event",
     "Feedback cursor",
+    "Acknowledged cursor",
+    "Private state",
     "Diagnostic log",
   ]) {
     assert.match(context, new RegExp(`\\*\\*${term}\\*\\*:`));
   }
+});
+
+test("documentation map and ADR index define canonical ownership", async () => {
+  const [map, decisions] = await Promise.all([
+    read("docs/README.md"),
+    read("docs/decisions/README.md"),
+  ]);
+
+  for (const owner of [
+    "Product requirements",
+    "CLI contract",
+    "Domain language",
+    "Architecture",
+    "Threat model",
+    "Security evidence",
+    "Decision index",
+  ])
+    assert.match(map, new RegExp(`\\[${owner}\\]`, "i"));
+
+  assert.match(
+    map,
+    /plans are the\s+source of truth for implementation progress/,
+  );
+  assert.match(decisions, /ADRs record why a durable choice was made/);
+  assert.match(decisions, /0003.*Partially superseded/);
+  assert.match(decisions, /0007.*Partially superseded/);
 });

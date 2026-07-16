@@ -1,8 +1,8 @@
 # ADR 0005: Use Node.js, TypeScript, pnpm, and the npm registry
 
-- Status: Accepted
+- Status: Accepted; partially superseded by
+  [ADR 0007](0007-adopt-effect-v4.md)
 - Date: 2026-07-15
-- Amended by: [ADR 0007](0007-adopt-effect-v4.md)
 
 ## Context
 
