@@ -1,1 +1,32 @@
+# Dependencies and generated output
+node_modules/
+dist/
+coverage/
+test-results/
+playwright-report/
+*.tgz
+*.tsbuildinfo
+
+# Local configuration and credentials
+.env
+.env.*
+!.env.example
+!.env.*.example
+.npmrc
+
+# Caches and logs
+.cache/
+.tmp/
+.pnpm-store/
+.eslintcache
+*.log
+*.pid
+*.pid.lock
+*.sock
+
+# Editor and operating-system files
 .DS_Store
+.idea/
+.vscode/
+*.swp
+*.swo

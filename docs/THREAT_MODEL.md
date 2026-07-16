@@ -16,7 +16,7 @@ static HTTP service. It does not claim that rendered HTML is safe.
 - Files inside the chosen root, which may contain secrets despite being inside
   the disclosure boundary
 - Canonical local paths, which may themselves be sensitive
-- The control credential and supervisor discovery state
+- The private control socket and supervisor ownership state
 - Availability of the user's machine and agent session
 - Browser credentials, local-network access, and data reachable by page scripts
 
@@ -35,7 +35,7 @@ static HTTP service. It does not claim that rendered HTML is safe.
 ## Boundaries
 
 1. CLI input crosses from the caller into local path and command validation.
-2. The CLI crosses an authenticated local control channel into the supervisor.
+2. The CLI crosses a user-private Unix-domain control socket into the supervisor.
 3. Browsers cross an unauthenticated, per-session HTTP content origin.
 4. The HTTP service crosses from URL paths into the local filesystem.
 5. Authored page scripts cross from local content into the browser's network,
@@ -45,8 +45,9 @@ static HTTP service. It does not claim that rendered HTML is safe.
 
 - **LAN or public exposure.** Bind numeric loopback only. Version one has no
   wildcard or interface-selection flag.
-- **DNS rebinding or forged `Host`.** Accept only the exact loopback host and
-  port forms issued by the service. Do not trust the bind address alone.
+- **DNS rebinding or forged `Host`.** Bind only to `127.0.0.1`. Issue a fresh
+  random special-use `.localhost` hostname per session and accept only its
+  exact host and port. Do not trust the bind address alone.
 - **Session discovery.** Expose no HTTP session-list endpoint and never encode
   canonical filesystem paths into content URLs. Treat content ports as
   discoverable, not as secrets.
@@ -56,36 +57,44 @@ static HTTP service. It does not claim that rendered HTML is safe.
 - **Unintended in-root disclosure.** Treat the root as the complete disclosure
   grant, never infer a directory broader than the entry's parent, and return
   the exact resolved root and grant meaning from `serve`. Do not imply that a
-  dotfile or sensitive-filename denylist protects files inside the root.
-- **Unauthorized control or CSRF.** Require a separate high-entropy control
-  credential on every mutation and sensitive query. Do not rely on HTTP
-  method, CORS, `Origin`, or route secrecy alone.
+  dotfile or sensitive-filename denylist protects files inside the root. Reject
+  roots equal to or broader than the user home and roots containing runtime
+  state.
+- **Unauthorized control or CSRF.** Keep control on a `0600` Unix-domain socket
+  beneath a current-user-owned `0700` directory. Browsers cannot address it;
+  do not expose a TCP control route or rely on CORS, `Origin`, or route secrecy.
 - **Plain and encoded traversal.** Decode once, reject malformed encodings and
   forbidden separators, resolve the final target, and enforce canonical root
   containment.
 - **Symlink escape.** Authorize the resolved target, not only the lexical path.
   Re-check safely when opening to limit check/use races.
-- **State theft or tampering.** Store discovery state and credentials in a
-  user-private directory with restrictive file permissions and atomic writes.
+- **State theft or tampering.** Keep the control socket and owner-fenced
+  lifetime lock in a user-private directory with restrictive permissions.
 - **Source modification.** Open content read-only and never place state,
   generated files, or annotations under the serving root.
 - **Resource exhaustion.** Bound headers, request concurrency, request
   duration, file streaming resources, state size, startup waits, and idle
-  lifetime.
+  lifetime. Make waits and body reads cancellable, and scope listeners,
+  request fibers, files, ownership, and timers so interruption releases them.
 - **Information in logs.** Keep normal output minimal; avoid logging control
   credentials and avoid canonical paths unless explicitly requested.
 - **Structured-output injection.** Encode result values with conforming TOON
   and JSON libraries. Never interpolate paths, error text, or source-derived
   strings into structured output. Test delimiters, newlines, controls, Unicode,
   and terminal escape characters in both formats.
-- **Stale or hijacked supervisor.** Verify service identity through the
-  authenticated health contract; recover stale records without killing an
-  unrelated process.
-- **Browser-state collision.** Cookies are shared across ports on the same host,
-  so concurrent sessions and unrelated loopback services can exchange or
-  overwrite them. Ephemeral-port reuse can also revive origin-keyed storage,
-  caches, and service workers from a stopped session. Resolve both cases before
-  release rather than treating a new port as complete isolation.
+- **Stale or hijacked supervisor.** Verify protocol, version, instance, and
+  process identity through health. Retry transient failures without removing
+  ownership; reclaim a refused stale socket only after acquiring the lifetime
+  ownership lock held by every live supervisor.
+- **Browser-state collision.** Cookies are shared across ports and exact origin
+  reuse revives storage, caches, and service workers. Give every new session a
+  fresh random `.localhost` label with at least 128 bits of entropy. The
+  supervisor does not intentionally reuse labels after sessions stop.
+  Accept a reused label only for an idempotent request to the same live session.
+- **Bundled dependency drift.** Pin the prerelease Effect toolchain exactly.
+  Bundle only the audited dependency set, keep every external import declared
+  as a runtime dependency, ship the bundled licenses, exclude embedded source
+  content, and rerun the audit and full release gate for every update.
 
 ## Malicious-content risk
 
@@ -117,6 +126,9 @@ content because it would change what the page can execute.
 
 ## Required adversarial validation
 
+The implementation evidence and explicit residual notes for this list are
+maintained in [Security validation evidence](SECURITY_VALIDATION.md).
+
 - `..`, percent-encoded traversal, double encoding, mixed separators, NULs,
   malformed UTF-8, Unicode filenames, and platform-specific path forms
 - Symlinks created before and during requests, including targets swapped around
@@ -124,10 +136,12 @@ content because it would change what the page can execute.
 - Malicious same-origin requests for unreferenced, hidden, and sensitive files
   inside the selected root, confirming the documented grant rather than a
   nonexistent filename denylist
-- Forged `Host`, cross-origin `fetch`, form posts, and unauthenticated control
-  calls
-- Concurrent first startup, corrupted state, stale PIDs, occupied ports, and
-  supervisor crashes
+- Forged `Host`, cross-origin `fetch`, form posts, and wrong-authority control
+  calls over the private socket
+- Concurrent first startup, malformed or occupied socket paths, stale sockets,
+  version mismatch, and supervisor crashes
+- Interruption during ownership acquisition, listener readiness, request body
+  reads, streaming, and shutdown, including a finalizer that fails
 - Very large files, slow readers, excessive connections, and aborted requests
 - Files outside an explicit root and symlinks resolving to them
 - Concurrent sessions and an unrelated loopback service setting overlapping
@@ -140,8 +154,8 @@ content because it would change what the page can execute.
 ## Residual risks
 
 - Another process running as the same operating-system user can generally read
-  the same files and runtime credentials; `htmlview` is not a privilege
-  boundary within one user account.
+  the same files and open the same private socket; `htmlview` is not a
+  privilege boundary within one user account.
 - The page and any same-origin script can read and exfiltrate permitted files
   inside the selected root. Confinement protects the boundary, not files within
   it.
@@ -152,8 +166,12 @@ content because it would change what the page can execute.
 - Fully eliminating symlink check/use races depends on filesystem primitives
   available in the selected runtime and operating system. The implementation
   must document any remaining gap.
-- Numeric loopback ports do not isolate same-host cookies and may be reused over
-  time. The release cannot claim session-state isolation until the planned
-  browser validation has produced and enforced a mitigation.
+- Browser isolation relies on user agents and HTTP clients honoring the
+  special-use `.localhost` resolution contract. Supported clients are covered
+  by release interoperability checks; unusual clients may require explicit
+  hostname-to-loopback resolution.
 - Browser execution of untrusted authored code remains dangerous by design and
   is mitigated operationally with an isolated browser environment.
+- Effect v4 is a pinned prerelease dependency. Exact pins and bundled-package
+  checks prevent silent drift, but each deliberate update still requires
+  source/API inspection, audit, and the complete release validation matrix.

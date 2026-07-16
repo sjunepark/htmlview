@@ -17,12 +17,14 @@ Version one keeps four operations:
 
 ```sh
 htmlview [--fields <name,...>] [--json]
+htmlview --version [--json]
 htmlview serve <entry.html> [--root <directory>]
 htmlview stop <session>
 htmlview stop --all
 ```
 
-Every command accepts `--json` and `--help`. The home view accepts
+Every command accepts `--json` and `--help`. `--version` is a top-level
+structured query. The home view accepts
 `--fields entry,root` to add those fields to each session row. Unknown
 commands, arguments, flags, and field names are usage errors; they are never
 ignored.
@@ -43,12 +45,21 @@ encoder is selected only at the stdout boundary:
 - `--json` emits the same logical value as JSON.
 - Both formats use the same field names, value meanings, error codes, and exit
   codes.
+- Contextual command strings may differ only to retain an explicit `--json`
+  choice in the next command; the surrounding result schema and domain values
+  remain equivalent.
 - Contract tests decode both representations and compare their logical values.
 
-The implementation must use a maintained encoder rather than interpolate
+The implementation uses `@toon-format/toon` 2.3.0 and validates it against all
+official `@toon-format/spec` 3.3.0 fixtures rather than interpolate
 paths, errors, or other untrusted values into either format. The selected TOON
 implementation and conformance fixtures are pinned with the runtime during the
 foundation milestone.
+
+The stdout adapter emits JSON escapes for TOON structural punctuation inside
+quoted strings. This preserves the logical string while avoiding a known
+reference-decoder ambiguity such as the valid value `[]:`; generated hostile
+values are round-tripped through both output formats in release checks.
 
 ## Output channels and exit codes
 
@@ -61,6 +72,13 @@ foundation milestone.
 
 Raw dependency messages, stack traces, and progress text must never appear on
 stdout.
+
+Runtime failures use stable code families: `path.*` for entry/root filesystem
+validation, `state.unavailable` for private socket or ownership-lock access,
+`supervisor.*` for lifecycle availability, `http.*` for content-listener start
+or readiness, and `control.*` for the private local protocol. Messages
+may include the failed path, but credentials and raw dependency errors are
+never emitted.
 
 ## Home view
 
@@ -81,14 +99,15 @@ The default non-empty session table contains only decision-relevant fields:
 ```toon
 count: 2
 sessions[2]{id,status,url}:
-  7sp4k2,ready,"http://127.0.0.1:49152/report.html"
-  c2m9qa,ready,"http://127.0.0.1:49153/public/index.html"
+  7sp4k2,ready,"http://h-k7w4m2.localhost:49152/report.html"
+  c2m9qa,ready,"http://h-p9c3qa.localhost:49153/public/index.html"
 help[1]: "Run `htmlview stop <session>` to stop a session"
 ```
 
 Entry and root paths belong behind `--fields`; they are not part of the default
 list schema. Add future optional fields only when they remove a demonstrated
-follow-up query.
+follow-up query. The requested fields are selected by the supervisor rather
+than discarded after transport.
 
 Contextual commands preserve fixed choices that affect the next result, such
 as `--json`, while leaving runtime values as placeholders such as `<session>`.
@@ -102,7 +121,8 @@ is a security grant, not merely routing configuration:
 session:
   id: 7sp4k2
   status: ready
-  url: "http://127.0.0.1:49152/public/report.html"
+  url: "http://h-k7w4m2.localhost:49152/public/report.html"
+  reused: false
 grant:
   root: /workspace
   access: read_all_regular_files_beneath_root
@@ -115,7 +135,8 @@ The equivalent JSON is available without changing the operation:
   "session": {
     "id": "7sp4k2",
     "status": "ready",
-    "url": "http://127.0.0.1:49152/public/report.html"
+    "url": "http://h-k7w4m2.localhost:49152/public/report.html",
+    "reused": false
   },
   "grant": {
     "root": "/workspace",
@@ -130,6 +151,26 @@ canonical parent is rejected rather than silently broadening the grant.
 `--root` explicitly broadens or otherwise changes the grant. The raw service
 does not use a filename denylist; callers must choose a root containing only
 files they are prepared to expose to the page and other same-origin code.
+The user home directory, its ancestors, and a root containing htmlview runtime
+state are rejected. `session.reused` is `true` when the identical public entry
+route/canonical-root session is already live, making the successful no-op
+explicit. Different authorized symlink routes remain distinct because their
+relative asset URLs differ.
+
+## Stop result
+
+Stopping one or all sessions reports the affected count and treats an already
+stopped target as a successful no-op. `stop --all` is also an acknowledged
+supervisor shutdown boundary: success means its content listeners and private
+control socket are closed.
+
+```toon
+stop:
+  scope: session
+  session: 7sp4k2
+  stopped: 0
+  status: already_stopped
+```
 
 ## Errors and help
 
@@ -154,10 +195,10 @@ the complete usage form.
 
 ## Scope of AXI features
 
-Version one has no long-form content, pagination, or expensive derived data, so
-truncation and aggregation beyond definitive session counts are unnecessary.
-Add `--full`, pagination, or new aggregates only when real output requires
-them.
+Version one has no long-form content or expensive derived data. A supervisor
+owns at most 32 sessions, so complete field-selected enumeration and a
+definitive count remain bounded without pagination. Add `--full`, pagination,
+or new aggregates only when real output requires them.
 
 Ordinary commands never install agent hooks or edit agent configuration. An
 installable Agent Skill generated from the same static guidance as the home

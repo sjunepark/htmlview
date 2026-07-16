@@ -13,40 +13,53 @@ Multiple projects may be inspected concurrently.
 ## Decision
 
 Run one on-demand supervisor per operating-system user. It exposes an
-authenticated loopback control endpoint and manages multiple sessions. Each
-session receives its own ephemeral numeric-loopback content listener.
+operating-system-user-private Unix-domain control socket and manages multiple
+sessions. Each session receives its own ephemeral content listener bound to
+numeric loopback.
 
 The returned URL retains the entry file's path relative to the selected root.
 Because the session owns the whole content origin, document-relative and
 root-relative references resolve naturally without rewriting HTML or prefixing
 paths with a session identifier.
 
-CLI invocations discover or start the supervisor through private runtime state,
-authenticate control requests, and wait for confirmed readiness. The
-supervisor owns session lifecycle, stale-state recovery, and bounded idle
-shutdown.
+CLI invocations discover or start the supervisor at its deterministic private
+socket and wait for confirmed readiness. The supervisor owns session
+lifecycle, stale-socket recovery, and bounded idle shutdown.
+[ADR 0006](0006-use-a-private-control-socket.md) records the control ownership
+and failure semantics; control never depends on a
+session identifier, port number, or content URL remaining secret.
 
-Control authorization uses a private credential and never depends on a session
-identifier, port number, or content URL remaining secret.
+Each new session receives a cryptographically random hostname
+under the special-use `.localhost` name and an ephemeral port, for example
+`h-<random>.localhost:<port>`. The listener still binds only to `127.0.0.1`;
+the hostname changes browser identity, not network exposure. The content
+server accepts only its exact issued hostname and port. Internal readiness
+checks use that same authority.
 
-Distinct ports create distinct web origins, but they do not isolate cookies:
-cookies for one host are shared across all its ports, as described by
-[RFC 6265 §8.5](https://www.rfc-editor.org/rfc/rfc6265#section-8.5). An
-ephemeral port may also be reused after a session stops. The release design
-must validate and address both simultaneous and cross-lifetime browser state.
+The supervisor does not intentionally reissue a session hostname after that
+session stops. Random labels carry at least 128 bits of entropy, so accidental
+reuse remains possible but negligible without persistent tombstones. A repeated
+`serve` reuses the same hostname only while the matching session is still live.
+
+This replaces the provisional assumption that distinct numeric-loopback ports
+were sufficient. Reproducible Chromium tests described in
+[`docs/validation/browser-origin.md`](../validation/browser-origin.md) show
+that cookies cross ports on one numeric host and that exact origin reuse
+revives local storage, cached responses, and a service worker. A fresh
+`.localhost` label isolates all four even when the port is reused; a cookie
+attempting `Domain=localhost` is rejected. The same fixture loads through both
+Playwright and Browser Use.
 
 ## Consequences
 
 - Agents receive ready URLs without managing background jobs or port conflicts.
 - One lifecycle owner can list and clean up sessions across projects.
-- Separate content origins preserve root-relative paths and isolate
-  origin-keyed storage and service workers between simultaneously active
-  sessions, but same-host cookies remain shared across ports.
-- Concurrent sessions and unrelated loopback services can exchange or overwrite
-  cookies. Port reuse can additionally reintroduce storage, cache entries, or
-  service workers from a prior session. Release validation must prevent or
-  explicitly mitigate these behaviors through a follow-up decision.
-- Startup requires careful locking, state permissions, and stale-record
+- Unique `.localhost` names isolate cookies as well as origin-keyed storage,
+  caches, and service workers across concurrent and later sessions.
+- Returned URLs use a special-use loopback hostname rather than a numeric host;
+  compatibility with supported plain HTTP clients and browser controllers is a
+  release gate.
+- Startup requires careful locking, socket permissions, and stale-socket
   recovery.
 - A supervisor failure temporarily affects all sessions, but the next CLI call
   can recover them from caller intent without modifying project files.
@@ -62,3 +75,8 @@ must validate and address both simultaneous and cross-lifetime browser state.
   without rewriting HTML.
 - **One fixed port per session.** Caller-selected ports collide with unrelated
   processes; automatic ephemeral allocation removes that burden.
+- **One numeric host with per-session ports.** Cookies ignore ports, and reused
+  ports revive origin-keyed browser state.
+- **Different `127/8` address per session.** Arbitrary addresses in the
+  loopback block are not bindable on supported macOS without configuring
+  interface aliases, which would require privileges and machine mutation.

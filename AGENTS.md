@@ -2,8 +2,12 @@
 
 ## Current state
 
-- This repository is a documentation-only scaffold. No setup, build, lint, or
-  test commands exist yet.
+- Install dependencies with `pnpm install --frozen-lockfile`. Run the
+  current-platform suite with `pnpm run check`; browser checks require
+  Playwright Chromium to be installed. Release validation also runs
+  `pnpm run validate:browser-use` with the external
+  executable and a Chrome remote-debugging connection, plus
+  `pnpm run validate:package:linux` with Docker.
 - Read `docs/PRODUCT.md`, `docs/CLI.md`, `ARCHITECTURE.md`,
   `docs/THREAT_MODEL.md`, and `PLAN.md` before implementation work.
 - Keep `PLAN.md` current as milestones, validation, blockers, and the next
@@ -29,8 +33,11 @@
   hatch without a new threat-model review and explicit product decision.
 - Resolve and authorize every requested file against the session root,
   including symlink targets. Reject traversal and root escape.
-- Authenticate control operations and keep runtime state outside repositories
-  with user-only permissions.
+- Reject roots equal to or broader than the user home and roots containing
+  htmlview runtime state.
+- Keep control on the user-private Unix-domain socket; do not add a TCP control
+  endpoint or persisted bearer credential. Keep runtime state outside served
+  repositories with user-only permissions.
 - Do not rely on CORS alone for protection from local or cross-origin callers.
 
 ## Agent-facing CLI
@@ -55,5 +62,5 @@
 - Update `docs/CLI.md` and its contract tests when commands, fields, formats,
   errors, or exit behavior change.
 - Add or amend an ADR in `docs/decisions/` when changing a recorded decision.
-- Until project tooling exists, validate documentation changes with
-  `git diff --check` and verify every relative Markdown link resolves.
+- Validate documentation-only changes with `pnpm run validate:docs` and
+  `git diff --check`; run `pnpm run check` for implementation changes.

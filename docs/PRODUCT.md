@@ -18,7 +18,7 @@ read disclosure, return a confined loopback HTTP URL that is already ready for
 any separately supplied browser tool to inspect and interact with.
 
 The product is browser-neutral. Documentation uses
-[`agent-browser`](https://github.com/vercel-labs/agent-browser) as one
+[Browser Use](https://github.com/browser-use/browser-harness) as one
 interoperability example, not as a runtime dependency or the reason the product
 exists. Callers should use direct `file://` navigation when it already provides
 the behavior and safety they need.
@@ -34,7 +34,7 @@ contract.
 2. **Project-root assets.** Serve an entry below a larger explicit root so
    references such as `/assets/app.css` resolve as authored.
 3. **Repeated inspection.** Return the same live session when an agent invokes
-   the same entry/root pair again after editing files.
+   the same public entry route/root pair again after editing files.
 4. **Parallel projects.** Serve independent entries from multiple working
    directories without port selection or process-management work by the agent.
 5. **Cleanup.** Let the agent identify and stop one or all sessions; also clean
@@ -52,10 +52,14 @@ contract.
   whose target escapes it instead of broadening the default grant.
 - Accept `--root <directory>` only as an explicit alternative grant containing
   the entry; never infer a broader project root.
+- Reject a root equal to or broader than the user's home directory and reject a
+  root containing htmlview's runtime state directory.
 - Return the resolved root and grant meaning in a successful `serve` result.
-- Return an HTTP URL on numeric loopback after the server is ready.
-- Give each session its own automatically allocated origin and retain the
-  entry's path relative to the chosen root in the returned URL.
+- Return an HTTP URL using a unique special-use `.localhost` name after the
+  numeric-loopback listener is ready.
+- Give each session a fresh, high-entropy automatically allocated origin and
+  do not intentionally reuse it after the session stops. Retain the entry's
+  path relative to the chosen root in the returned URL.
 - Serve the entry and permitted subresources without body transformation.
 - Select correct content types, including JavaScript modules, CSS, JSON, SVG,
   images, media, and fonts.
@@ -84,7 +88,12 @@ contract.
 
 - Keep URLs alive after the initiating CLI process exits.
 - Expose current sessions and their status.
-- Recover automatically when recorded supervisor state is stale.
+- Coordinate one per-user supervisor through a private Unix-domain control
+  socket and normally recover automatically when a crashed process leaves it
+  stale; fail safely if operating-system PID reuse makes ownership ambiguous.
+- Treat transient control unavailability as an error without discarding the
+  live supervisor's ownership.
+- Make `stop --all` close every session and the supervisor before succeeding.
 - Shut down after a bounded idle period when no sessions remain.
 - Store runtime metadata outside served repositories.
 
@@ -94,7 +103,10 @@ contract.
 - Authorize every file against a canonical session root.
 - Make clear that same-origin page code can read every permitted file beneath
   the selected root, including hidden files.
-- Authenticate control operations separately from public content routes.
+- Authorize control through a user-private local socket that browsers and other
+  operating-system users cannot open.
+- Limit one supervisor to 32 concurrent sessions while allowing idempotent
+  reuse at the limit.
 - Do not mutate, upload, or publish served content.
 - Make the trust implications of rendering untrusted HTML explicit.
 
@@ -113,10 +125,10 @@ contract.
 - HTML sanitization
 - Annotation in version one
 
-## Planned CLI behavior
+## CLI behavior
 
-The exact spelling is provisional until Milestone 0. The complete interface
-contract is in the [CLI contract](CLI.md); the intended command surface is:
+The complete interface contract is in the [CLI contract](CLI.md). The command
+surface is:
 
 ```sh
 htmlview serve ./report.html
@@ -134,7 +146,7 @@ grant:
 session:
   id: 7sp4k2
   status: ready
-  url: "http://127.0.0.1:49152/public/report.html"
+  url: "http://h-k7w4m2.localhost:49152/public/report.html"
 grant:
   root: /workspace
   access: read_all_regular_files_beneath_root
@@ -146,7 +158,7 @@ authorization credential.
 
 ## Success criteria
 
-- A caller can navigate the returned URL with `agent-browser`. Compatibility
+- A caller can navigate the returned URL with Browser Use. Compatibility
   with at least one other independently installed browser controller is a
   required release check.
 - The browser receives the authored HTML and assets without injected markup or
@@ -160,9 +172,6 @@ authorization credential.
 
 ## Deferred product decisions
 
-- Implementation language and package channel
 - Supported operating-system versions beyond initial macOS and Linux targets
 - Whether optional annotations eventually live here or in a companion project
-- How to isolate browser state across concurrent sessions, unrelated loopback
-  services, and later reuse of a numeric loopback port
 - Whether usage evidence justifies an opt-in ambient agent-session integration

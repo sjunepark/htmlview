@@ -11,7 +11,7 @@ others support it directly or behind controller-specific flags. File origins
 can still differ from HTTP in root-relative resolution, module loading, fetch
 behavior, and security scope.
 
-The product must remain useful across `agent-browser`, Playwright, Chrome
+The product must remain useful across Browser Use, Playwright, Chrome
 integrations, and future browser tools without treating any one controller's
 limitations as its reason to exist.
 
@@ -26,7 +26,7 @@ lifecycle.
 
 Browser installation, launch, automation, and inspection are external. The
 core returns a URL and makes no browser-controller API part of its architecture.
-Documentation may use `agent-browser` as one example, but release
+Documentation may use Browser Use as one example, but release
 interoperability covers at least one other independently supplied controller.
 Callers should use direct `file://` navigation when it already provides the
 required behavior and safety.

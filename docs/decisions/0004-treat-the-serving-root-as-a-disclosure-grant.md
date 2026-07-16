@@ -31,6 +31,11 @@ Documentation tells callers to use an isolated artifact directory when the
 page is untrusted or the surrounding project contains secrets. No command may
 infer a root broader than the entry's parent.
 
+Version one rejects a canonical root equal to or broader than the user's home
+directory. It also rejects a root containing htmlview's runtime state
+directory. These are root-level authorization constraints, not filename
+denylists: directories below the home directory remain ordinary valid grants.
+
 ## Consequences
 
 - Relative and root-relative assets work without parsing HTML or predicting
@@ -41,6 +46,8 @@ infer a root broader than the entry's parent.
   default hidden from output.
 - Hidden files and sensitive filenames receive no special protection when
   they are inside the selected root.
+- Broad home disclosure must be narrowed by moving the entry and assets into a
+  dedicated subdirectory; version one has no override for this safety check.
 
 ## Rejected alternatives
 
