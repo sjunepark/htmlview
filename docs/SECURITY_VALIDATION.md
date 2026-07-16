@@ -63,9 +63,14 @@ accepted residual risk. This file records evidence and pending gates only.
 - The control listener accepts at most 25 connections, 50 headers, 100
   requests per socket, a 64 KiB request body, 5-second headers, and 10-second
   request/socket inactivity. Both ends bound responses at 1 MiB.
-- The in-memory Phase 1 registry retains at most 128 review summaries. Each
-  review-origin start/readiness sequence is bounded at 2 seconds, and the
-  private two-origin client operation is bounded at 6 seconds.
+- The review registry and versioned private annotation snapshot retain at most
+  128 live review records and 128 unexpired retry tombstones. The snapshot is
+  limited to 8 MiB, each review to 768 KiB, and each review to 32 queued drafts
+  and 32 unacknowledged events. Comments are limited to 4 KiB of UTF-8;
+  selectors to 2 KiB, DOM paths to 4 KiB, normalized text to 512 bytes, and
+  stored entry/root paths to 8 KiB. Each review-origin start/readiness sequence
+  is bounded at 2 seconds, and the private two-origin client operation is
+  bounded at 6 seconds.
 - Control shutdown gives admitted sockets 2 seconds before forcing them closed;
   the session-registry shutdown fence rejects any delayed serve mutation that
   resumes after cleanup begins.

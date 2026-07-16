@@ -178,8 +178,10 @@ channel that later needs replacing.
 
 ## Next action
 
-Begin Phase 2 with the versioned private annotation store and recovery model,
-then build serialized draft/event/cursor transitions on that durable boundary.
+The versioned private annotation store, bounds, relational validation, atomic
+replacement, and orphan recovery are implemented. Continue Phase 2 by putting
+the review registry behind that store and adding serialized
+draft/event/cursor transitions.
 
 ## Completion gate
 

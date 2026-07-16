@@ -94,6 +94,6 @@ and a size comparison justifies changing it.
 
 ## Next action
 
-Begin annotation Phase 2 with the versioned private store and recovery model,
-then add serialized draft/event/cursor transitions. Do not publish
-automatically.
+Continue annotation Phase 2 by putting the review registry behind the versioned
+private store and adding serialized draft/event/cursor transitions. Do not
+publish automatically.

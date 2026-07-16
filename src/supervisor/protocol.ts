@@ -1,5 +1,12 @@
 import { Schema } from "effect";
 import {
+  maximumReviews,
+  ReviewIdentifierSchema,
+  ReviewStatusSchema,
+  SessionIdentifierSchema,
+} from "../annotation/model.js";
+export { ReviewStatusSchema } from "../annotation/model.js";
+import {
   ContentListenerErrorCode,
   ControlErrorCode,
   PathErrorCode,
@@ -9,7 +16,7 @@ import {
 export const supervisorProtocol = "htmlview-supervisor-v3";
 export const controlHost = "htmlview-control";
 export const maximumConcurrentSessions = 32;
-export const maximumRetainedReviews = 128;
+export const maximumRetainedReviews = maximumReviews;
 export const maximumControlBodyBytes = 64 * 1024;
 export const maximumControlResponseBytes = 1024 * 1024;
 
@@ -21,12 +28,8 @@ const ResponseString = Schema.String.check(
   Schema.isMaxLength(maximumControlResponseBytes),
 );
 const ResponsePath = ResponseString.check(Schema.isNonEmpty());
-const SessionIdentifier = Schema.String.check(
-  Schema.isPattern(/^[A-Za-z0-9_][A-Za-z0-9_-]{7}$/),
-);
-const ReviewIdentifier = Schema.String.check(
-  Schema.isPattern(/^rv_[A-Za-z0-9_-]{22}$/),
-);
+const SessionIdentifier = SessionIdentifierSchema;
+const ReviewIdentifier = ReviewIdentifierSchema;
 const SessionSelector = RequestString;
 const SessionUrl = ResponseString.check(
   Schema.makeFilter(
@@ -132,11 +135,6 @@ export const SupervisorSessionSchema = Schema.Struct({
 });
 export type SupervisorSession = typeof SupervisorSessionSchema.Type;
 
-export const ReviewStatusSchema = Schema.Literals([
-  "ready",
-  "stopped",
-  "ended",
-]);
 export type ReviewStatus = typeof ReviewStatusSchema.Type;
 
 export const ReviewSummarySchema = Schema.Struct({

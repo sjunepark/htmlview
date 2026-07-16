@@ -3,8 +3,9 @@
 ## Status and boundary
 
 The raw-serving core, per-user supervisor, Effect execution model, Effect CLI,
-foreground/private diagnostic sinks, and release packaging are implemented.
-The accepted `0.1.0` target still needs review and feedback. The repository
+foreground/private diagnostic sinks, review lifecycle, and release packaging
+are implemented. The accepted `0.1.0` target still needs review surfaces and
+durable feedback transitions. The repository
 [implementation plan](https://github.com/sjunepark/htmlview/blob/main/PLAN.md)
 owns their sequencing.
 
@@ -33,7 +34,7 @@ short-lived agent CLI
         |
         v
   per-user supervisor --------> private state
-        |                         ownership + [target] annotations/logs
+        |                         ownership + annotation snapshot/logs
         |
         +-- raw-session registry --> raw listener --> raw browser origin
         |
@@ -44,9 +45,9 @@ short-lived agent CLI
 ```
 
 Square-bracketed components are accepted targets, not current runtime behavior.
-Private supervisor log persistence remains part of the target private-state
-branch. Browser tools consume returned URLs and never become runtime
-dependencies.
+The annotation snapshot boundary is implemented; its domain transitions are
+not yet connected to the review registry. Browser tools consume returned URLs
+and never become runtime dependencies.
 
 ## Implemented core
 
@@ -191,11 +192,13 @@ encoding, policy, framing, or markup produces an explicit review limitation;
 the raw URL remains usable. Instrumentation covers the selected entry and its
 live SPA DOM, not later HTML-document navigation.
 
-### Annotation store (`0.1.0` target)
+### Annotation store (persistence boundary implemented; transitions target)
 
-Versioned review records live in private state with user-only permissions,
-bounded global/per-review size, schema validation, and atomic replacement. The
-store never opens a served file for writing.
+`src/annotation/model.ts` owns the strict versioned shape and whole-state
+relationships. `src/annotation/store.ts` owns bounded no-follow reads, private
+metadata checks, recovery of orphaned ready records, and durable atomic
+replacement beneath the fixed private-state child. The store never derives a
+write path from a grant and never opens a served file for writing.
 
 Queueing creates a durable draft. Sending atomically converts selected drafts
 into ordered immutable feedback events with stable IDs, bounded element context,

@@ -31,6 +31,8 @@ const lockObservationMilliseconds = 50;
 
 export interface StatePaths {
   readonly directory: string;
+  readonly annotationDirectory: string;
+  readonly annotationFile: string;
   readonly controlSocket: string;
   readonly supervisorLock: string;
   readonly diagnosticLogDirectory: string;
@@ -70,6 +72,8 @@ export function statePaths(
   }
   return {
     directory,
+    annotationDirectory: path.join(directory, "annotations"),
+    annotationFile: path.join(directory, "annotations", "state.json"),
     controlSocket: path.join(directory, "control.sock"),
     supervisorLock: path.join(directory, "supervisor.lock"),
     diagnosticLogDirectory: path.join(directory, "logs"),
@@ -166,6 +170,10 @@ function removeTemporaryFile(file: string): Effect.Effect<void> {
 export function writePrivateJson(
   file: string,
   value: unknown,
+  options: {
+    readonly maximumBytes?: number;
+    readonly synchronizeDirectory?: boolean;
+  } = {},
 ): Effect.Effect<void, RuntimeStateError> {
   return Effect.gen(function* () {
     const suffix = yield* Effect.try({
@@ -179,7 +187,7 @@ export function writePrivateJson(
           try: () => Buffer.from(JSON.stringify(value)),
           catch: (cause) => stateFailure(cause),
         });
-        if (body.length > maximumStateFileBytes)
+        if (body.length > (options.maximumBytes ?? maximumStateFileBytes))
           return yield* stateFailure(
             new Error("State record exceeds size limit"),
             {
@@ -194,7 +202,18 @@ export function writePrivateJson(
           (descriptor) =>
             Effect.try({
               try: () => {
-                writeSync(descriptor, body);
+                let offset = 0;
+                while (offset < body.length) {
+                  const written = writeSync(
+                    descriptor,
+                    body,
+                    offset,
+                    body.length - offset,
+                  );
+                  if (written === 0)
+                    throw new Error("State record write made no progress");
+                  offset += written;
+                }
                 fsyncSync(descriptor);
               },
               catch: (cause) => stateFailure(cause),
@@ -207,6 +226,19 @@ export function writePrivateJson(
         );
         yield* tryStatePromise(() => rename(temporary, file));
         yield* tryStatePromise(() => chmod(file, 0o600));
+        if (options.synchronizeDirectory === true)
+          yield* Effect.acquireUseRelease(
+            Effect.try({
+              try: () => openSync(path.dirname(file), constants.O_RDONLY),
+              catch: (cause) => stateFailure(cause),
+            }),
+            (descriptor) =>
+              Effect.try({
+                try: () => fsyncSync(descriptor),
+                catch: (cause) => stateFailure(cause),
+              }),
+            closeDescriptor,
+          );
       }),
     );
     return yield* operation.pipe(
