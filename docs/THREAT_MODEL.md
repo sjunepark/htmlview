@@ -1,8 +1,9 @@
 # Threat Model
 
-> **Status:** Raw-serving controls are implemented. Effect CLI/logging and
-> review controls are accepted `0.1.0` requirements with pending evidence in
-> [Security validation](SECURITY_VALIDATION.md).
+> **Status:** Raw-serving controls, Effect CLI grammar, native output channels,
+> and foreground diagnostic filtering are implemented. Private supervisor logs
+> and review controls remain accepted `0.1.0` requirements with pending
+> evidence in [Security validation](SECURITY_VALIDATION.md).
 
 ## Scope
 

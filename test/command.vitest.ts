@@ -1,109 +1,89 @@
 import assert from "node:assert/strict";
+import * as NodeServices from "@effect/platform-node/NodeServices";
 import { describe, it } from "vitest";
-import { parseCommand } from "../src/command.js";
+import { Effect, Layer } from "effect";
+import { runApp } from "../src/app.js";
+import { CommandService } from "../src/service.js";
+import { htmlviewVersion } from "../src/version.js";
 
-describe("command parsing", () => {
-  it("accepts a structured top-level version query", () => {
-    assert.deepEqual(parseCommand(["--version", "--json"]), {
-      kind: "version",
-      format: "json",
-      help: false,
-    });
-    const conflict = parseCommand(["--version", "--help"]);
-    assert.equal("exitCode" in conflict && conflict.exitCode, 2);
-  });
-  it("accepts format and optional home fields", () => {
-    assert.deepEqual(parseCommand(["--fields", "entry,root", "--json"]), {
-      kind: "home",
-      format: "json",
-      fields: ["entry", "root"],
-      help: false,
-    });
-  });
+const service = Layer.succeed(CommandService, {
+  listSessions: () => Effect.succeed([]),
+  serve: () => Effect.die(new Error("serve handler should not run")),
+  stopSession: () => Effect.die(new Error("stop handler should not run")),
+  stopAll: () => Effect.die(new Error("stop handler should not run")),
+});
 
-  it("rejects repeated field selections instead of silently replacing them", () => {
-    const result = parseCommand([
-      "--fields",
-      "entry",
-      "--fields",
-      "root",
-      "--json",
-    ]);
-    assert.ok("exitCode" in result);
-    assert.equal(result.exitCode, 2);
-    assert.deepEqual(result.result.error, {
-      code: "usage.duplicate_flag",
-      message: "Flag --fields may be provided only once",
-      valid_flags: ["--fields", "--json", "--help", "--version"],
-    });
-  });
+async function invoke(args: string[]) {
+  let stdout = "";
+  let stderr = "";
+  const exitCode = await Effect.runPromise(
+    runApp(args, {
+      executablePath: "/tmp/htmlview",
+      stdout: (value) => {
+        stdout += value;
+      },
+      stderr: (value) => {
+        stderr += value;
+      },
+    }).pipe(Effect.provide(Layer.merge(service, NodeServices.layer))),
+  );
+  return { exitCode, stdout, stderr };
+}
 
-  it("reports missing serve arguments with complete usage", () => {
-    const result = parseCommand(["serve"]);
-    assert.ok("exitCode" in result);
-    assert.equal(result.exitCode, 2);
-    assert.deepEqual(result.result.error, {
-      code: "usage.missing_argument",
-      message: "Missing required argument <entry.html> for `htmlview serve`",
-      usage: "htmlview serve <entry.html> [--root <directory>] [--json]",
-    });
+describe("native Effect CLI contract", () => {
+  it("owns text help and exposes the command tree", async () => {
+    for (const flag of ["--help", "-h"]) {
+      const result = await invoke([flag]);
+      assert.equal(result.exitCode, 0);
+      assert.equal(result.stderr, "");
+      assert.match(result.stdout, /USAGE/);
+      assert.match(result.stdout, /\n {2}serve\s+/);
+      assert.match(result.stdout, /\n {2}stop\s+/);
+      assert.equal(result.stdout.startsWith("{"), false);
+    }
   });
 
-  it("reports unknown flags with the relevant valid set", () => {
-    const result = parseCommand(["serve", "report.html", "--stat"]);
-    assert.ok("exitCode" in result);
-    assert.deepEqual(result.result.error, {
-      code: "usage.unknown_flag",
-      message: "Unknown flag --stat for `htmlview serve`",
-      valid_flags: ["--root", "--json", "--help"],
-    });
+  it("owns text version output even when --json is present", async () => {
+    for (const args of [["--version"], ["-v"], ["--version", "--json"]]) {
+      const result = await invoke(args);
+      assert.equal(result.exitCode, 0);
+      assert.equal(result.stderr, "");
+      assert.equal(result.stdout, `htmlview v${htmlviewVersion}`);
+    }
   });
 
-  it("has no public or caller-selected bind option", () => {
-    const result = parseCommand(["serve", "report.html", "--host", "0.0.0.0"]);
-    assert.equal("exitCode" in result && result.exitCode, 2);
-    if ("exitCode" in result)
-      assert.equal(
-        (result.result.error as Record<string, unknown>).code,
-        "usage.unknown_flag",
-      );
+  it("generates native shell completions", async () => {
+    for (const shell of ["bash", "sh", "zsh", "fish"]) {
+      const result = await invoke(["--completions", shell]);
+      assert.equal(result.exitCode, 0);
+      assert.equal(result.stderr, "");
+      assert.match(result.stdout, /htmlview/);
+    }
   });
 
-  it("never treats a single-dash option as an entry path", () => {
-    const result = parseCommand(["serve", "-x"]);
-    assert.ok("exitCode" in result);
-    assert.deepEqual(result.result.error, {
-      code: "usage.unknown_flag",
-      message: "Unknown flag -x for `htmlview serve`",
-      valid_flags: ["--root", "--json", "--help"],
-    });
+  it("writes native syntax help to stdout and diagnostics to stderr", async () => {
+    for (const args of [
+      ["serve"],
+      ["serve", "report.html", "--host", "0.0.0.0"],
+      ["launch"],
+      ["--fields", "entry", "--fields", "root"],
+      ["serve", "report.html", "--fields", "entry"],
+      ["stop"],
+      ["stop", "abc", "--all"],
+    ]) {
+      const result = await invoke(args);
+      assert.equal(result.exitCode, 1, args.join(" "));
+      assert.match(result.stdout, /USAGE/, args.join(" "));
+      assert.notEqual(result.stderr, "", args.join(" "));
+      assert.equal(result.stdout.startsWith("{"), false);
+    }
   });
 
-  it("reports unknown commands with valid commands", () => {
-    const result = parseCommand(["launch"]);
-    assert.ok("exitCode" in result);
-    assert.deepEqual(result.result.error, {
-      code: "usage.unknown_command",
-      message: "Unknown command launch",
-      valid_commands: ["serve", "stop"],
-    });
-  });
-
-  it("does not require operational arguments for help", () => {
-    assert.deepEqual(parseCommand(["serve", "--help"]), {
-      kind: "serve",
-      format: "toon",
-      help: true,
-    });
-  });
-
-  it("rejects conflicting stop selectors", () => {
-    const result = parseCommand(["stop", "abc", "--all"]);
-    assert.ok("exitCode" in result);
-    assert.equal(result.exitCode, 2);
-    assert.equal(
-      (result.result.error as Record<string, unknown>).code,
-      "usage.conflicting_arguments",
-    );
+  it("does not let --json rewrite native syntax failures", async () => {
+    const toon = await invoke(["serve"]);
+    const json = await invoke(["serve", "--json"]);
+    assert.equal(json.exitCode, 1);
+    assert.equal(json.stdout, toon.stdout);
+    assert.equal(json.stderr, toon.stderr);
   });
 });

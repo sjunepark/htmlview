@@ -1,4 +1,5 @@
 import { mkdir, mkdtemp, readFile, rm } from "node:fs/promises";
+import { isBuiltin } from "node:module";
 import path from "node:path";
 import { build } from "esbuild";
 import { publishGeneration } from "./build-publication.mjs";
@@ -18,11 +19,17 @@ const licensedBundledPackages = new Set([
   "@effect/platform-node-shared",
   "effect",
   "fast-check",
+  "ini",
   "pure-rand",
+  "toml",
+  "yaml",
 ]);
 
 const sharedOptions = {
   bundle: true,
+  banner: {
+    js: 'import { createRequire as __htmlviewCreateRequire } from "node:module"; const require = __htmlviewCreateRequire(import.meta.url);',
+  },
   external: externalPackages,
   format: "esm",
   legalComments: "none",
@@ -64,7 +71,7 @@ async function validateBundles(results) {
     }
     for (const output of Object.values(result.metafile.outputs)) {
       for (const imported of output.imports) {
-        if (!imported.external || imported.path.startsWith("node:")) continue;
+        if (!imported.external || isBuiltin(imported.path)) continue;
         const dependency = packageName(`node_modules/${imported.path}`);
         if (dependency === undefined || !runtimeDependencies.has(dependency))
           throw new Error(

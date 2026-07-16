@@ -4,9 +4,9 @@ This matrix maps the required checks in [THREAT_MODEL.md](THREAT_MODEL.md) to
 repeatable evidence. `pnpm run check` runs the automated macOS/current-platform
 set; Linux package installation is the separate
 `pnpm run validate:package:linux` release check. The first table is the
-implemented raw-serving baseline. The second table is required before
-`0.1.0`; it is not evidence until the Effect CLI/logging and annotation slices
-land.
+implemented raw-serving and native CLI baseline. The second table is required
+before `0.1.0`; its remaining rows are not evidence until private logging and
+annotation land.
 
 | Control or adversarial case                                             | Evidence                                                                                                                        |
 | ----------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------- |
@@ -28,6 +28,7 @@ land.
 | Finalizer failure isolation                                             | injected session-scope finalizer defect plus failure/interruption cleanup for files, listeners, control, and ownership          |
 | Browser cookies, storage, cache, and service-worker isolation           | five-case Playwright origin suite in `validation/browser-origin/`                                                               |
 | Structured-output injection and shape preservation                      | official TOON v3.3 fixtures plus 500 generated hostile-value round trips through TOON and JSON                                  |
+| Effect CLI grammar and native/domain channel separation                 | `test/command.vitest.ts`, `test/app.vitest.ts`, and black-box metadata/syntax/log-level cases in `test-e2e/cli.test.mjs`        |
 | Browser-controller separation                                           | real CLI URL checks under `validation/interoperability/`; package contents reject `validation/` files                           |
 | Reproducible package version and lifecycle                              | clean-prefix pack/install/serve/reinstall/uninstall checks on the current platform and Node 22 Debian                           |
 | Bundle dependency, license, and map policy                              | exact Effect pins, build-time import/license-set checks, third-party notices, linked maps without embedded source content       |
@@ -37,8 +38,6 @@ land.
 
 | Control or adversarial case                              | Required evidence                                                                                                                                                                             |
 | -------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Effect CLI is the only grammar and dispatcher            | Native-process tests for help/version/completions/log-level, hostile syntax, missing inputs, exit `1`, and no compatibility path                                                              |
-| Domain and native-output boundaries remain distinct      | TOON/JSON logical equivalence for domain results; text meta/usage fixtures; `--json` cannot rewrite native failures                                                                           |
 | State and serving grants are canonically disjoint        | Equality, inverse nesting, both symlink directions, state descendants selected as roots, and ordinary disjoint roots                                                                          |
 | Foreground logging cannot corrupt stdout                 | Captured-channel tests at every log level, including `none`, domain failures, defects, interruption, and hostile input                                                                        |
 | Detached logs stay private and bounded                   | Restart/rotation tests for exact size/file-count constants, `0700` directories, `0600` files, cleanup, and state-root exclusion                                                               |

@@ -6,7 +6,7 @@ export HTMLVIEW_IDLE_MS="1000"
 tarball=(/artifacts/*.tgz)
 
 npm install --global "${tarball[0]}" >/dev/null
-node -e 'const {execFileSync}=require("child_process"); const value=JSON.parse(execFileSync("htmlview",["--version","--json"],{encoding:"utf8"})); if(value.version!==process.env.EXPECTED_VERSION) process.exit(1)'
+node -e 'const {execFileSync}=require("child_process"); const value=execFileSync("htmlview",["--version"],{encoding:"utf8"}); if(value!==`htmlview v${process.env.EXPECTED_VERSION}\n`) process.exit(1)'
 
 mkdir /tmp/htmlview-fixture
 printf '<!doctype html><p>linux package</p>' >/tmp/htmlview-fixture/report.html
@@ -44,7 +44,7 @@ if kill -0 "$supervisor_pid" 2>/dev/null ||
 fi
 
 npm install --global "${tarball[0]}" >/dev/null
-htmlview --version --json >/dev/null
+htmlview --version >/dev/null
 npm uninstall --global @sejunpark/htmlview >/dev/null
 hash -r
 if command -v htmlview >/dev/null; then

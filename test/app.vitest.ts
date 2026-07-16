@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import * as NodeServices from "@effect/platform-node/NodeServices";
 import { describe, it } from "vitest";
 import { Effect, Exit, Fiber, Layer } from "effect";
 import { runApp } from "../src/app.js";
@@ -83,7 +84,7 @@ async function invoke(
       stderr: (value) => {
         stderr += value;
       },
-    }).pipe(Effect.provide(service)),
+    }).pipe(Effect.provide(Layer.merge(service, NodeServices.layer))),
   );
   return { exitCode, stdout, stderr, listedFields, stopCalls };
 }
@@ -190,17 +191,7 @@ describe("CLI application contract", () => {
     assert.deepEqual(all.stopCalls, ["all"]);
   });
 
-  for (const args of [
-    [],
-    ["--help"],
-    ["--version"],
-    ["serve", "--help"],
-    ["stop", "--help"],
-    ["serve", "x.html"],
-    ["stop", "missing"],
-    ["serve"],
-    ["serve", "x.html", "--bad"],
-  ]) {
+  for (const args of [[], ["serve", "x.html"], ["stop", "missing"]]) {
     it(`emits equivalent TOON and JSON for ${args.join(" ") || "home"}`, async () => {
       const toon = await invoke(args);
       const json = await invoke([...args, "--json"]);
@@ -229,17 +220,6 @@ describe("CLI application contract", () => {
       unknown
     >;
     assert.deepEqual(value.help, ["Run `htmlview serve <entry.html> --json`"]);
-  });
-
-  it("preserves JSON in usage-error corrective commands", async () => {
-    const result = await invoke(["serve", "x.html", "--bad", "--json"]);
-    const value = decodeOutput(result.stdout, "json") as Record<
-      string,
-      unknown
-    >;
-    assert.deepEqual(value.help, [
-      "Run `htmlview serve --help --json` for complete examples",
-    ]);
   });
 
   it("emits equivalent structured runtime errors", async () => {
@@ -328,7 +308,14 @@ describe("CLI application contract", () => {
       new Error("private internal detail"),
     );
     assert.equal(result.exitCode, 1);
-    assert.match(result.stderr, /private internal detail/);
+    assert.equal(result.stderr.includes("private internal detail"), false);
+    assert.deepEqual(Object.keys(JSON.parse(result.stderr)).sort(), [
+      "code",
+      "internal_id",
+      "level",
+      "operation",
+      "timestamp",
+    ]);
     assert.deepEqual(decodeOutput(result.stdout, "json"), {
       error: {
         code: "runtime.internal",
@@ -336,6 +323,22 @@ describe("CLI application contract", () => {
       },
     });
     assert.equal(result.stdout.includes("private internal detail"), false);
+  });
+
+  it("honors --log-level none for sanitized defects", async () => {
+    const result = await invoke(
+      ["serve", "x.html", "--json", "--log-level", "none"],
+      [],
+      new Error("private internal detail"),
+    );
+    assert.equal(result.exitCode, 1);
+    assert.equal(result.stderr, "");
+    assert.deepEqual(decodeOutput(result.stdout, "json"), {
+      error: {
+        code: "runtime.internal",
+        message: "htmlview could not complete the request",
+      },
+    });
   });
 
   it("preserves interruption without rendering an internal error", async () => {
@@ -358,7 +361,7 @@ describe("CLI application contract", () => {
             stderr: (value) => {
               stderr += value;
             },
-          }).pipe(Effect.provide(pending)),
+          }).pipe(Effect.provide(Layer.merge(pending, NodeServices.layer))),
         );
         yield* Effect.yieldNow;
         yield* Fiber.interrupt(fiber);

@@ -1,7 +1,7 @@
 # Effect v4 Adoption Plan
 
-- Status: In progress; execution-model phases 0–9 complete, Effect CLI and
-  logging Phase 10 next
+- Status: In progress; execution-model phases 0–9 and the Phase 10 native CLI
+  migration are complete; private diagnostic logging remains
 - Updated: 2026-07-16
 - Parent plan: [`PLAN.md`](../../PLAN.md)
 - Decisions: [ADR 0007](../decisions/0007-adopt-effect-v4.md),
@@ -54,19 +54,19 @@ annotation runtime work.
 
 ## Phase status
 
-| Phase                                 | Status   | Result/target                                             |
-| ------------------------------------- | -------- | --------------------------------------------------------- |
-| 0. Baseline and API verification      | Complete | Green baseline, beta.98 source inspection, package choice |
-| 1. Decision records and toolchain     | Complete | Exact pins, diagnostics, bundle and test foundation       |
-| 2. Errors and protocol schemas        | Complete | Tagged failures and one validated wire contract           |
-| 3. Runtime-state and lock lifecycle   | Complete | Typed, interruption-safe private state ownership          |
-| 4. Grant and raw-server resources     | Complete | Scoped files/listeners with byte fidelity intact          |
-| 5. Supervisor registry and server     | Complete | Scoped sessions, control work, idle shutdown              |
-| 6. Supervisor client                  | Complete | Cancellable transport, schedules, launch handoff          |
-| 7. App services and entry points      | Complete | One Effect runtime path per executable                    |
-| 8. Test-suite migration               | Complete | One Effect-aware TypeScript runner                        |
-| 9. Packaging, docs, and release gate  | Complete | Execution-model release gate and artifact audit passed    |
-| 10. Effect CLI and diagnostic logging | Next     | Native CLI grammar plus isolated private log sinks        |
+| Phase                                 | Status      | Result/target                                             |
+| ------------------------------------- | ----------- | --------------------------------------------------------- |
+| 0. Baseline and API verification      | Complete    | Green baseline, beta.98 source inspection, package choice |
+| 1. Decision records and toolchain     | Complete    | Exact pins, diagnostics, bundle and test foundation       |
+| 2. Errors and protocol schemas        | Complete    | Tagged failures and one validated wire contract           |
+| 3. Runtime-state and lock lifecycle   | Complete    | Typed, interruption-safe private state ownership          |
+| 4. Grant and raw-server resources     | Complete    | Scoped files/listeners with byte fidelity intact          |
+| 5. Supervisor registry and server     | Complete    | Scoped sessions, control work, idle shutdown              |
+| 6. Supervisor client                  | Complete    | Cancellable transport, schedules, launch handoff          |
+| 7. App services and entry points      | Complete    | One Effect runtime path per executable                    |
+| 8. Test-suite migration               | Complete    | One Effect-aware TypeScript runner                        |
+| 9. Packaging, docs, and release gate  | Complete    | Execution-model release gate and artifact audit passed    |
+| 10. Effect CLI and diagnostic logging | In progress | Native CLI complete; private log sink and hardening next  |
 
 ## Version and package decisions
 
@@ -122,6 +122,21 @@ home output, fresh `serve`, and an idle supervisor after the CLI/logging slice;
 `--version --json` is not a target contract.
 
 ## Phase 10: Effect CLI and diagnostic logging
+
+Current progress:
+
+- Complete: the custom parser/manual help model is removed; one pinned Effect
+  command tree owns grammar, native help/version/completions/log-level, syntax
+  rejection, and dispatch.
+- Complete: domain TOON/JSON behavior, native channel separation, exit `1`,
+  sanitized defect projection, foreground log-level routing, package smoke,
+  build concurrency, and black-box native CLI tests pass.
+- Complete: the build license gate and notices include the additional
+  INI/TOML/YAML parsers brought into the standalone CLI by
+  `NodeServices.layer`.
+- Next: enforce symmetric grant/private-state exclusion, finish the closed
+  diagnostic seam migration, and add bounded rotated supervisor JSONL with its
+  permissions, rotation, restart, structural, and canary tests.
 
 1. Characterize current domain values, idempotency, supervisor interactions,
    and operational error projections independently from the custom parser.
@@ -206,7 +221,8 @@ the CLI grammar and logger sinks change.
 
 ## Next action
 
-Implement Phase 10 in the order above. Preserve the completed execution-model,
-raw serving, private control, and filesystem-security baseline. After its full
-gate passes, begin Phase 1 of the [annotation MVP](annotation-mvp.md). Do not
-publish automatically.
+Finish the Phase 10 logging/security remainder above, then rerun the complete
+gate and measurements. Preserve the completed execution model, native CLI, raw
+serving, private control, and filesystem-security baseline. After the full gate
+passes, begin Phase 1 of the [annotation MVP](annotation-mvp.md). Do not publish
+automatically.

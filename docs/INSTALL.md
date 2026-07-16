@@ -1,8 +1,8 @@
 # Install, upgrade, and remove
 
 > **Status:** The package is not published. These instructions describe the
-> accepted `0.1.0` interface; Effect CLI/logging and annotation commands are
-> still being implemented.
+> accepted `0.1.0` interface; private supervisor logging and annotation
+> commands are still being implemented.
 
 `htmlview` is distributed as an npm package containing compiled JavaScript. It
 supports macOS and glibc-based Linux environments supported by Node.js 22,

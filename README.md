@@ -12,11 +12,11 @@ install, launch, or automate a browser.
 
 ## Status
 
-Raw serving and its validation suite are implemented. Human annotation is a
-required `0.1.0` milestone, but its runtime is not implemented. The next slice
-first replaces the current parser and diagnostic path with the accepted Effect
-CLI/logging boundary, then implements review and feedback. The package has not
-been published.
+Raw serving, the Effect CLI grammar, native output boundary, and foreground
+diagnostic seam are implemented. Human annotation is a required `0.1.0` milestone.
+Its runtime is not implemented. Private bounded supervisor logs and their
+filesystem hardening are the remaining prerequisite before review and feedback.
+The package has not been published.
 
 The public docs describe the accepted `0.1.0` target. See the repository
 [`PLAN.md`](https://github.com/sjunepark/htmlview/blob/main/PLAN.md) for

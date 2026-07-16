@@ -6,18 +6,6 @@ export interface JsonObject {
 
 export type OutputFormat = "json" | "toon";
 
-export interface UsageFailure {
-  readonly exitCode: 2;
-  readonly result: JsonObject;
-}
-
-export interface RuntimeFailure {
-  readonly exitCode: 1;
-  readonly result: JsonObject;
-}
-
-export type Failure = UsageFailure | RuntimeFailure;
-
 export function errorResult(
   code: string,
   message: string,

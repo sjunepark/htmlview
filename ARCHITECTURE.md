@@ -2,9 +2,10 @@
 
 ## Status and boundary
 
-The raw-serving core, per-user supervisor, Effect execution model, and release
-packaging are implemented. The accepted `0.1.0` target still needs two slices:
-Effect CLI/diagnostic logging, then review and feedback. The repository
+The raw-serving core, per-user supervisor, Effect execution model, Effect CLI,
+foreground diagnostic seam, and release packaging are implemented. The
+accepted `0.1.0` target still needs private supervisor logging, then review and
+feedback. The repository
 [implementation plan](https://github.com/sjunepark/htmlview/blob/main/PLAN.md)
 owns their sequencing.
 
@@ -27,7 +28,7 @@ URL, origin, path, response bytes, headers, or lifecycle.
 short-lived agent CLI
   |
   +-- command/domain result --> stdout: TOON or JSON
-  +-- [target] Effect logs --> stderr
+  +-- Effect diagnostic events --> stderr
   |
   +-- private Unix-domain control socket
         |
@@ -44,22 +45,29 @@ short-lived agent CLI
 ```
 
 Square-bracketed components are accepted targets, not current runtime behavior.
-Browser tools consume returned URLs and never become runtime dependencies.
+Private supervisor log persistence remains part of the target private-state
+branch. Browser tools consume returned URLs and never become runtime
+dependencies.
 
 ## Implemented core
 
 ### CLI and domain boundary
 
-`src/cli.ts` is the process-I/O and Node runtime boundary. Today it passes raw
-arguments to the custom parser in `src/command.ts`; `src/app.ts` dispatches the
-parsed intent through one `CommandService` Layer. Domain handlers create
-ordinary JSON-compatible values, and `src/output.ts` alone encodes TOON or JSON.
+`src/cli.ts` is the process-I/O and Node runtime boundary. `src/app.ts` defines
+one pinned `effect/unstable/cli` command tree and dispatches typed handlers
+through one `CommandService` Layer. Effect CLI owns native help, version,
+completions, log-level selection, syntax diagnostics, and dispatch. Domain
+handlers create ordinary JSON-compatible values, and `src/output.ts` alone
+encodes TOON or JSON.
 
 The CLI exits after an operation is confirmed. It does not stay attached to keep
 a content URL alive. The no-argument path returns a state-oriented home value;
 `serve` and `stop` are idempotent domain operations.
 
-Expected filesystem, control, supervisor, and listener failures use tagged
+Native meta and syntax text stay outside the domain encoder. Foreground
+diagnostics pass through the closed event seam in `src/diagnostics.ts`; its
+logger accepts exactly one validated event and writes allowlisted JSON only to
+stderr. Expected filesystem, control, supervisor, and listener failures use tagged
 Effect error channels. `src/errors.ts` exhaustively maps them to stable public
 codes. Unknown defects are sanitized at the executable boundary. The private
 protocol validates requests and responses before domain code consumes them.
@@ -135,21 +143,13 @@ one finalizer fails.
 
 ## Accepted `0.1.0` additions
 
-### Effect CLI and diagnostic logging (`0.1.0` target)
+### Detached diagnostic logging (`0.1.0` target)
 
-Pinned `effect/unstable/cli` will replace `src/command.ts` and the manual help
-dispatcher as the only command grammar, validator, help/completion owner, and
-dispatcher. Native help, version, completions, log-level selection, and syntax
-diagnostics remain text. Successful domain values and expected operational
-failures continue through the TOON/JSON boundary.
-
-Foreground Effect logs go only to stderr. A detached supervisor instead writes
-bounded, rotated JSONL beneath private state at a fixed threshold. Application
-code can emit only through a closed diagnostic-event type; the sink serializes
-allowlisted fixed metadata and cannot accept arbitrary messages, causes, domain
-records, or source-derived values. Logs are neither feedback nor an audit/event
-store. Both executable roots project causes before the Node runtime can print a
-raw unhandled cause.
+The implemented foreground CLI routes validated Effect diagnostic events only
+to stderr. The remaining detached supervisor work writes the same allowlisted
+shape as bounded, rotated JSONL beneath private state at a fixed threshold.
+Logs are neither feedback nor an audit/event store. The supervisor executable
+must project causes before the Node runtime can print a raw unhandled cause.
 
 ### Review service (`0.1.0` target)
 
@@ -283,9 +283,8 @@ flags.
 ## Start-here code map
 
 - `src/cli.ts`: executable entry and process-I/O boundary.
-- `src/command.ts`: current parser/help model; removed by the next Effect CLI
-  slice.
-- `src/app.ts`: current dispatch and format-neutral result assembly.
+- `src/app.ts`: Effect CLI grammar, dispatch, and format-neutral result assembly.
+- `src/diagnostics.ts`: closed diagnostic events and validated foreground sink.
 - `src/service.ts`: command intent to grant/supervisor operations.
 - `src/contracts.ts`, `src/errors.ts`, `src/output.ts`: domain values, tagged
   public failures, and the serialization boundary.

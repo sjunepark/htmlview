@@ -270,12 +270,9 @@ try {
   );
 
   await consumerNpm(["install", "--global", tarball, "--prefix", prefix]);
-  const version = await installed(["--version", "--json"]);
+  const version = await installed(["--version"]);
   assert.equal(version.stderr, "");
-  assert.deepEqual(JSON.parse(version.stdout), {
-    command: "htmlview",
-    version: packageMetadata.version,
-  });
+  assert.equal(version.stdout, `htmlview v${packageMetadata.version}\n`);
   const empty = JSON.parse((await installed(["--json"])).stdout);
   assert.equal(empty.count, 0);
 
@@ -302,8 +299,8 @@ try {
 
   await consumerNpm(["install", "--global", tarball, "--prefix", prefix]);
   assert.equal(
-    JSON.parse((await installed(["--version", "--json"])).stdout).version,
-    packageMetadata.version,
+    (await installed(["--version"])).stdout,
+    `htmlview v${packageMetadata.version}\n`,
   );
 
   await consumerNpm([

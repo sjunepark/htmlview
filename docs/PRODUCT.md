@@ -1,7 +1,8 @@
 # Product requirements
 
-> **Status:** This is the accepted `0.1.0` target. Raw serving is implemented;
-> Effect CLI/logging and annotation runtime work remain. See
+> **Status:** This is the accepted `0.1.0` target. Raw serving, Effect CLI, and
+> foreground diagnostics are implemented; private supervisor logging and the
+> annotation runtime remain. See
 > [the repository plan](https://github.com/sjunepark/htmlview/blob/main/PLAN.md)
 > for implementation status.
 

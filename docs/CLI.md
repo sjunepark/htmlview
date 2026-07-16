@@ -1,8 +1,9 @@
 # Agent-facing CLI contract
 
-> **Status:** This is the accepted `0.1.0` interface. The current checkout still
-> uses the pre-migration parser and has no review runtime. Track implementation
-> in [the repository plan](https://github.com/sjunepark/htmlview/blob/main/PLAN.md).
+> **Status:** This is the accepted `0.1.0` interface. The Effect CLI grammar,
+> serving commands, native output boundary, and foreground diagnostics are
+> implemented; review and feedback commands are not. Track implementation in
+> [the repository plan](https://github.com/sjunepark/htmlview/blob/main/PLAN.md).
 
 ## Purpose
 

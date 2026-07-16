@@ -15,20 +15,24 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { after, before, test } from "node:test";
 
+const packageVersion = JSON.parse(
+  await readFile(new URL("../package.json", import.meta.url), "utf8"),
+).version;
+
 let base;
 let stateDirectory;
 let firstRoot;
 let secondRoot;
 let environment;
 
-function cli(args, cwd = firstRoot) {
+function cli(args, cwd = firstRoot, childEnvironment = environment) {
   return new Promise((resolve, reject) => {
     const child = spawn(
       process.execPath,
       [path.resolve("dist/cli.js"), ...args],
       {
         cwd,
-        env: environment,
+        env: childEnvironment,
         stdio: ["ignore", "pipe", "pipe"],
       },
     );
@@ -159,6 +163,78 @@ after(async () => {
   await cli(["stop", "--all", "--json"]).catch(() => undefined);
   const { rm } = await import("node:fs/promises");
   await rm(base, { recursive: true, force: true });
+});
+
+test("native CLI metadata, syntax, and logging keep their channels", async () => {
+  const metadataState = path.join(base, "m");
+  const metadataEnvironment = {
+    ...environment,
+    HTMLVIEW_STATE_DIR: metadataState,
+  };
+  for (const args of [["--version"], ["-v"], ["--version", "--json"]]) {
+    const result = await cli(args, firstRoot, metadataEnvironment);
+    assert.deepEqual(result, {
+      code: 0,
+      signal: null,
+      stdout: `htmlview v${packageVersion}\n`,
+      stderr: "",
+    });
+  }
+  for (const flag of ["--help", "-h"]) {
+    const result = await cli([flag], firstRoot, metadataEnvironment);
+    assert.equal(result.code, 0);
+    assert.match(result.stdout, /USAGE/);
+    assert.match(result.stdout, /SUBCOMMANDS/);
+    assert.equal(result.stderr, "");
+  }
+  for (const shell of ["bash", "sh", "zsh", "fish"]) {
+    const result = await cli(
+      ["--completions", shell],
+      firstRoot,
+      metadataEnvironment,
+    );
+    assert.equal(result.code, 0);
+    assert.match(result.stdout, /htmlview/);
+    assert.equal(result.stderr, "");
+  }
+  await assert.rejects(lstat(metadataState));
+
+  const invalid = await cli(["serve"], firstRoot, metadataEnvironment);
+  const invalidJson = await cli(
+    ["serve", "--json"],
+    firstRoot,
+    metadataEnvironment,
+  );
+  assert.equal(invalid.code, 1);
+  assert.match(invalid.stdout, /USAGE/);
+  assert.match(invalid.stderr, /Missing required argument/);
+  assert.equal(invalidJson.stdout, invalid.stdout);
+  assert.equal(invalidJson.stderr, invalid.stderr);
+
+  for (const level of [
+    "all",
+    "trace",
+    "debug",
+    "info",
+    "warn",
+    "warning",
+    "error",
+    "fatal",
+    "none",
+  ]) {
+    const result = await cli(
+      ["--json", "--log-level", level],
+      firstRoot,
+      metadataEnvironment,
+    );
+    assert.equal(result.code, 0, `${level}: ${JSON.stringify(result)}`);
+    assert.equal(JSON.parse(result.stdout).count, 0);
+    if (["all", "trace", "debug"].includes(level)) {
+      const event = JSON.parse(result.stderr);
+      assert.equal(event.level, "debug");
+      assert.equal(event.operation, "cli.home");
+    } else assert.equal(result.stderr, "", level);
+  }
 });
 
 test("detached CLI lifecycle converges, recovers, and remains project-clean", async () => {

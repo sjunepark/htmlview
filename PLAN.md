@@ -14,23 +14,25 @@ review surface whose comments reach one agent as durable structured feedback.
 
 Raw serving, the per-user supervisor, Effect execution/resource ownership, and
 the existing release gate are implemented. Human annotation is a core
-first-release feature. Its public contracts are accepted, but Effect CLI/logging
-and annotation runtime code remain, so `0.1.0` is not ready to publish.
+first-release feature. Its public contracts are accepted. The Effect CLI,
+native output boundary, and foreground diagnostic seam are implemented;
+private supervisor logging and annotation runtime code remain, so `0.1.0` is
+not ready to publish.
 
 Documentation now has explicit ownership and current-versus-target status; see
 [`docs/README.md`](docs/README.md). There is no external blocker.
 The organized surface, contract tests, link/fragment checks, and packaged-link
 closure pass the complete current-platform `pnpm run check` gate.
 
-| Slice                             | Status   | Detail                                                              |
-| --------------------------------- | -------- | ------------------------------------------------------------------- |
-| Raw serving and supervisor        | Complete | Fidelity, confinement, private control, lifecycle, packaging        |
-| Effect execution model            | Complete | Typed failures, schemas, cancellation, scopes, release measurements |
-| Annotation and CLI contracts      | Complete | Product, CLI, architecture, threat model, ADRs 0008–0009            |
-| Documentation organization        | Complete | Canonical map, ADR index, contract cleanup, validation hardening    |
-| Effect CLI and diagnostic logging | Next     | [Active plan](docs/plans/effect-v4-adoption.md) Phase 10            |
-| Annotation runtime                | Pending  | [Annotation plan](docs/plans/annotation-mvp.md) Phases 1–4          |
-| Publication                       | Pending  | Complete release matrix and explicit publish action                 |
+| Slice                             | Status      | Detail                                                                                 |
+| --------------------------------- | ----------- | -------------------------------------------------------------------------------------- |
+| Raw serving and supervisor        | Complete    | Fidelity, confinement, private control, lifecycle, packaging                           |
+| Effect execution model            | Complete    | Typed failures, schemas, cancellation, scopes, release measurements                    |
+| Annotation and CLI contracts      | Complete    | Product, CLI, architecture, threat model, ADRs 0008–0009                               |
+| Documentation organization        | Complete    | Canonical map, ADR index, contract cleanup, validation hardening                       |
+| Effect CLI and diagnostic logging | In progress | Native CLI complete; [active plan](docs/plans/effect-v4-adoption.md) logging remainder |
+| Annotation runtime                | Pending     | [Annotation plan](docs/plans/annotation-mvp.md) Phases 1–4                             |
+| Publication                       | Pending     | Complete release matrix and explicit publish action                                    |
 
 ## Release invariants
 
@@ -92,5 +94,6 @@ and a size comparison justifies changing it.
 
 ## Next action
 
-Implement Phase 10 from the active Effect plan. Do not begin annotation Phase 1
-or publish until that slice and its full gate pass.
+Finish Phase 10 with symmetric state/grant exclusion, private rotated
+supervisor logs, structural/canary tests, and its full gate. Do not begin
+annotation Phase 1 or publish until that slice passes.
