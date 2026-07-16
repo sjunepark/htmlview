@@ -94,6 +94,6 @@ and a size comparison justifies changing it.
 
 ## Next action
 
-Continue annotation Phase 2 by putting the review registry behind the versioned
-private store and adding serialized draft/event/cursor transitions. Do not
+Continue annotation Phase 2 with serialized draft/event/cursor, wait, and
+delete/tombstone transitions, then expose its public CLI commands. Do not
 publish automatically.

@@ -1,9 +1,18 @@
+import { randomBytes } from "node:crypto";
 import { closeSync, constants, fstatSync, openSync, readSync } from "node:fs";
-import { lstat, mkdir, readdir, realpath, unlink } from "node:fs/promises";
+import {
+  lstat,
+  mkdir,
+  open,
+  readdir,
+  realpath,
+  rename,
+  unlink,
+} from "node:fs/promises";
 import path from "node:path";
 import { Effect, Result, Schema } from "effect";
 import { RuntimeStateError } from "../errors.js";
-import { type StatePaths, writePrivateJson } from "../supervisor/state.js";
+import type { StatePaths } from "../supervisor/state.js";
 import {
   type AnnotationState,
   AnnotationStateSchema,
@@ -144,27 +153,91 @@ function removeStaleTemporaryFiles(
   });
 }
 
-function validateDestination(
+async function assertValidDestination(paths: StatePaths): Promise<void> {
+  try {
+    const metadata = await lstat(paths.annotationFile);
+    if (
+      !metadata.isFile() ||
+      metadata.isSymbolicLink() ||
+      metadata.nlink !== 1 ||
+      (metadata.mode & 0o777) !== 0o600 ||
+      (process.getuid !== undefined && metadata.uid !== process.getuid())
+    )
+      throw new Error("The annotation state destination is not private");
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+  }
+}
+
+function writeSnapshot(
   paths: StatePaths,
+  value: unknown,
 ): Effect.Effect<void, RuntimeStateError> {
-  return Effect.tryPromise({
-    try: async () => {
-      try {
-        const metadata = await lstat(paths.annotationFile);
-        if (
-          !metadata.isFile() ||
-          metadata.isSymbolicLink() ||
-          metadata.nlink !== 1 ||
-          (metadata.mode & 0o777) !== 0o600 ||
-          (process.getuid !== undefined && metadata.uid !== process.getuid())
-        )
-          throw new Error("The annotation state destination is not private");
-      } catch (error) {
-        if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-      }
-    },
-    catch: storeFailure,
-  });
+  return Effect.uninterruptible(
+    Effect.tryPromise({
+      try: async () => {
+        const body = Buffer.from(JSON.stringify(value));
+        if (body.length > maximumAnnotationStoreBytes)
+          throw new Error("The annotation snapshot exceeds its size limit");
+        const temporary = `${paths.annotationFile}.${process.pid}.${randomBytes(8).toString("hex")}.tmp`;
+        let descriptor: Awaited<ReturnType<typeof open>> | undefined;
+        let renamed = false;
+        try {
+          descriptor = await open(
+            temporary,
+            constants.O_WRONLY |
+              constants.O_CREAT |
+              constants.O_EXCL |
+              constants.O_NOFOLLOW,
+            0o600,
+          );
+          const metadata = await descriptor.stat();
+          if (
+            !metadata.isFile() ||
+            metadata.nlink !== 1 ||
+            (process.getuid !== undefined && metadata.uid !== process.getuid())
+          )
+            throw new Error("The annotation temporary file is not private");
+          await descriptor.chmod(0o600);
+          let offset = 0;
+          while (offset < body.length) {
+            const result = await descriptor.write(
+              body,
+              offset,
+              body.length - offset,
+              offset,
+            );
+            if (result.bytesWritten === 0)
+              throw new Error("Annotation snapshot write made no progress");
+            offset += result.bytesWritten;
+          }
+          await descriptor.sync();
+          await descriptor.close();
+          descriptor = undefined;
+          await assertValidDestination(paths);
+          await rename(temporary, paths.annotationFile);
+          renamed = true;
+          const directory = await open(
+            paths.annotationDirectory,
+            constants.O_RDONLY,
+          );
+          try {
+            await directory.sync();
+          } finally {
+            await directory.close();
+          }
+        } finally {
+          if (descriptor !== undefined)
+            await descriptor.close().catch(() => undefined);
+          if (!renamed)
+            await unlink(temporary).catch((error: NodeJS.ErrnoException) => {
+              if (error.code !== "ENOENT") throw error;
+            });
+        }
+      },
+      catch: storeFailure,
+    }),
+  );
 }
 
 function recoverAnnotationState(
@@ -194,7 +267,6 @@ export function saveAnnotationState(
 ): Effect.Effect<void, RuntimeStateError> {
   return Effect.gen(function* () {
     yield* ensureAnnotationDirectory(paths);
-    yield* validateDestination(paths);
     if (!annotationStateIsConsistent(state))
       return yield* storeFailure(
         new Error("Annotation state invariants failed"),
@@ -210,10 +282,7 @@ export function saveAnnotationState(
         return yield* storeFailure(
           new Error("A persisted annotation review exceeds its size limit"),
         );
-    yield* writePrivateJson(paths.annotationFile, encoded, {
-      maximumBytes: maximumAnnotationStoreBytes,
-      synchronizeDirectory: true,
-    }).pipe(Effect.mapError((error) => storeFailure(error)));
+    yield* writeSnapshot(paths, encoded);
   });
 }
 

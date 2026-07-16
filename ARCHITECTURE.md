@@ -45,9 +45,9 @@ short-lived agent CLI
 ```
 
 Square-bracketed components are accepted targets, not current runtime behavior.
-The annotation snapshot boundary is implemented; its domain transitions are
-not yet connected to the review registry. Browser tools consume returned URLs
-and never become runtime dependencies.
+The annotation snapshot is the durable authority for review lifecycle records;
+the supervisor retains only live scopes in memory. Browser tools consume
+returned URLs and never become runtime dependencies.
 
 ## Implemented core
 
@@ -192,7 +192,7 @@ encoding, policy, framing, or markup produces an explicit review limitation;
 the raw URL remains usable. Instrumentation covers the selected entry and its
 live SPA DOM, not later HTML-document navigation.
 
-### Annotation store (persistence boundary implemented; transitions target)
+### Annotation store (lifecycle durability implemented; feedback target)
 
 `src/annotation/model.ts` owns the strict versioned shape and whole-state
 relationships. `src/annotation/store.ts` owns bounded no-follow reads, private
@@ -232,11 +232,11 @@ ended reviews do not resume.
 
 ### Review lifecycle (Phase 1 implemented; browser and feedback target)
 
-1. The private v3 protocol snapshots an existing raw identity and lazily
+1. The private v4 protocol snapshots an existing raw identity and lazily
    acquires or resumes its review listeners; it never accepts a root or entry.
    Both isolated origins pass readiness before an in-memory record commits.
    Live reuse retains origins; stopped resume retains the review ID and receives
-   fresh origins. Public CLI exposure waits for Phase 2 durability.
+   fresh origins. Public CLI exposure waits for Phase 2 feedback operations.
 2. The shell displays instrumented review content. Element selection reports
    bounded untrusted context; the shell owns the editor and durable draft call.
 3. Send commits ordered feedback events. Send & End also closes the review

@@ -1,4 +1,4 @@
-import { mkdtemp, rm, stat } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, stat, writeFile } from "node:fs/promises";
 import { request } from "node:http";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -51,10 +51,10 @@ function waitUntilMissing(pathname: string): Effect.Effect<boolean> {
 
 function waitUntilPresent(pathname: string): Effect.Effect<boolean> {
   return Effect.gen(function* () {
-    for (let attempt = 0; attempt < 100; attempt += 1) {
+    for (let attempt = 0; attempt < 200; attempt += 1) {
       if (yield* exists(pathname)) return true;
       yield* Effect.promise(
-        () => new Promise<void>((resolve) => setImmediate(resolve)),
+        () => new Promise<void>((resolve) => setTimeout(resolve, 5)),
       );
     }
     return false;
@@ -146,6 +146,34 @@ it.effect("closes the supervisor when its root scope is interrupted", () =>
       }),
     removeTemporaryDirectory,
   ),
+);
+
+it.effect(
+  "fails startup closed and releases ownership for corrupt annotations",
+  () =>
+    Effect.acquireUseRelease(
+      Effect.promise(() =>
+        mkdtemp(path.join(tmpdir(), "htmlview-corrupt-state-")),
+      ),
+      (parent) =>
+        Effect.gen(function* () {
+          const paths = statePaths({
+            HTMLVIEW_STATE_DIR: path.join(parent, "state"),
+          });
+          yield* ensurePrivateStateDirectory(paths);
+          yield* Effect.promise(() =>
+            mkdir(paths.annotationDirectory, { mode: 0o700 }),
+          );
+          yield* Effect.promise(() =>
+            writeFile(paths.annotationFile, "{", { mode: 0o600 }),
+          );
+          const failure = yield* startSupervisor({ paths }).pipe(Effect.flip);
+          expect(failure.phase).toBe("startup");
+          expect(yield* exists(paths.controlSocket)).toBe(false);
+          expect(yield* exists(paths.supervisorLock)).toBe(false);
+        }),
+      removeTemporaryDirectory,
+    ),
 );
 
 it.effect(

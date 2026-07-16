@@ -170,10 +170,6 @@ function removeTemporaryFile(file: string): Effect.Effect<void> {
 export function writePrivateJson(
   file: string,
   value: unknown,
-  options: {
-    readonly maximumBytes?: number;
-    readonly synchronizeDirectory?: boolean;
-  } = {},
 ): Effect.Effect<void, RuntimeStateError> {
   return Effect.gen(function* () {
     const suffix = yield* Effect.try({
@@ -187,7 +183,7 @@ export function writePrivateJson(
           try: () => Buffer.from(JSON.stringify(value)),
           catch: (cause) => stateFailure(cause),
         });
-        if (body.length > (options.maximumBytes ?? maximumStateFileBytes))
+        if (body.length > maximumStateFileBytes)
           return yield* stateFailure(
             new Error("State record exceeds size limit"),
             {
@@ -226,19 +222,6 @@ export function writePrivateJson(
         );
         yield* tryStatePromise(() => rename(temporary, file));
         yield* tryStatePromise(() => chmod(file, 0o600));
-        if (options.synchronizeDirectory === true)
-          yield* Effect.acquireUseRelease(
-            Effect.try({
-              try: () => openSync(path.dirname(file), constants.O_RDONLY),
-              catch: (cause) => stateFailure(cause),
-            }),
-            (descriptor) =>
-              Effect.try({
-                try: () => fsyncSync(descriptor),
-                catch: (cause) => stateFailure(cause),
-              }),
-            closeDescriptor,
-          );
       }),
     );
     return yield* operation.pipe(

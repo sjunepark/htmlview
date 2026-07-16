@@ -295,11 +295,12 @@ describe("supervisor lifecycle", () => {
 
   it("creates reviews lazily, reuses live origins, and resumes stable identity", async () => {
     let reviewStarts = 0;
-    const { client, root, entry } = await setup({
-      startReviewOriginServer: (role) => {
-        reviewStarts += 1;
-        return startReviewOriginServer(role);
-      },
+    const startReview = (role: "shell" | "content") => {
+      reviewStarts += 1;
+      return startReviewOriginServer(role);
+    };
+    const { client, root, entry, paths, supervisor } = await setup({
+      startReviewOriginServer: startReview,
     });
     const served = await runEffect(client.serve(entry, root));
     const beforeReviewResponse = await fetch(served.session.url);
@@ -376,6 +377,25 @@ describe("supervisor lifecycle", () => {
       (await runEffect(client.listState())).reviews[0]?.session,
       replacement.session.id,
     );
+
+    supervisors.splice(supervisors.indexOf(supervisor), 1);
+    await runEffect(supervisor.close);
+    const restarted = await runEffect(
+      startSupervisor({
+        paths,
+        idleMilliseconds: 10_000,
+        startReviewOriginServer: startReview,
+      }),
+    );
+    supervisors.push(restarted);
+    const afterRestart = await runEffect(client.serve(entry, root));
+    const resumedAfterRestart = await runEffect(
+      client.review(afterRestart.session.id),
+    );
+    assert.equal(resumedAfterRestart.review.id, first.review.id);
+    assert.notEqual(resumedAfterRestart.review.url, resumed.review.url);
+    assert.equal(resumedAfterRestart.review.reused, true);
+    assert.equal(reviewStarts, 6);
   });
 
   it("rolls back both-origin review acquisition and preserves capacity", async () => {
@@ -494,6 +514,7 @@ describe("supervisor lifecycle", () => {
       401,
     );
     assert.deepEqual((await readdir(paths.directory)).sort(), [
+      "annotations",
       "control.sock",
       "supervisor.lock",
     ]);
@@ -773,6 +794,7 @@ describe("supervisor lifecycle", () => {
     await runEffect(client.serve(entry, root));
     assert.deepEqual(await readdir(root), ["report.html"]);
     assert.deepEqual((await readdir(paths.directory)).sort(), [
+      "annotations",
       "control.sock",
       "supervisor.lock",
     ]);

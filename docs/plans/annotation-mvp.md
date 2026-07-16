@@ -103,7 +103,7 @@ whose redaction tests must cover later annotation values.
   piping.
 - **Complete:** add review/document identity, stable records, two fresh exact
   authorities, child scopes, ready-before-output, reuse/resume, stop, and
-  bounded home summaries to the strict v3 supervisor protocol and registry.
+  bounded home summaries to the strict v4 supervisor protocol and registry.
 - **Complete:** keep review creation lazy so raw-only sessions acquire no review
   listener or browser surface.
 
@@ -179,9 +179,9 @@ channel that later needs replacing.
 ## Next action
 
 The versioned private annotation store, bounds, relational validation, atomic
-replacement, and orphan recovery are implemented. Continue Phase 2 by putting
-the review registry behind that store and adding serialized
-draft/event/cursor transitions.
+replacement, orphan recovery, and durable review lifecycle are implemented.
+Continue Phase 2 with serialized draft/event/cursor, wait, and
+delete/tombstone transitions, then expose the public commands.
 
 ## Completion gate
 

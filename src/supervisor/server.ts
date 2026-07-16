@@ -23,12 +23,15 @@ import {
   Semaphore,
 } from "effect";
 import type { Fiber as EffectFiber } from "effect/Fiber";
+import { AnnotationRegistry } from "../annotation/registry.js";
+import { loadAnnotationState } from "../annotation/store.js";
 import { logDiagnostic } from "../diagnostics.js";
 import {
   ContentListenerError,
   ControlError,
   PathError,
   ReviewError,
+  RuntimeStateError,
 } from "../errors.js";
 import {
   canonicalTreesOverlap,
@@ -76,7 +79,6 @@ import {
   type CurrentSupervisorIdentity,
   type OptionalSessionField,
   type ReviewControlResult,
-  type ReviewStatus,
   type ReviewSummary,
   type ServeControlResult,
   type SessionSummary,
@@ -118,17 +120,6 @@ interface LiveReview {
   readonly scope: Scope.Closeable;
   readonly shell: ReviewOriginServer;
   readonly content: ReviewOriginServer;
-}
-
-interface ReviewRecord {
-  readonly id: string;
-  readonly identityKey: string;
-  readonly createdAt: string;
-  status: ReviewStatus;
-  session: string;
-  drafts: number;
-  unacknowledged: number;
-  live: LiveReview | undefined;
 }
 
 type StartSessionServer = (
@@ -209,7 +200,11 @@ function authorized(request: IncomingMessage): boolean {
 }
 
 type ServerControlError =
-  PathError | ControlError | ContentListenerError | ReviewError;
+  | PathError
+  | ControlError
+  | ContentListenerError
+  | ReviewError
+  | RuntimeStateError;
 
 function invalidControlRequest(): ControlError {
   return new ControlError({
@@ -223,6 +218,8 @@ function controlStatus(error: ServerControlError): number {
     case "PathError":
       return 400;
     case "ContentListenerError":
+      return 500;
+    case "RuntimeStateError":
       return 500;
     case "ReviewError":
       return error.code === "review.session_not_found" ? 404 : 409;
@@ -446,8 +443,7 @@ function failCleanup(failures: readonly unknown[]): Effect.Effect<void> {
 class SessionRegistry {
   readonly #sessions = new Map<string, LiveSession>();
   readonly #identity = new Map<string, string>();
-  readonly #reviews = new Map<string, ReviewRecord>();
-  readonly #openReview = new Map<string, string>();
+  readonly #liveReviews = new Map<string, LiveReview>();
   readonly #pendingScopes = new Set<Scope.Closeable>();
   readonly #mutations = Semaphore.makeUnsafe(1);
   readonly #scope = Scope.makeUnsafe("parallel");
@@ -457,7 +453,7 @@ class SessionRegistry {
     private readonly startServer: StartSessionServer,
     private readonly startReviewOrigin: StartReviewOriginServer,
     private readonly maximumSessions: number,
-    private readonly maximumReviews: number,
+    private readonly annotations: AnnotationRegistry,
   ) {}
 
   list(fields: readonly OptionalSessionField[]): SessionSummary[] {
@@ -478,15 +474,7 @@ class SessionRegistry {
   } {
     return {
       sessions: this.list(fields),
-      reviews: [...this.#reviews.values()]
-        .sort((left, right) => left.createdAt.localeCompare(right.createdAt))
-        .map((record) => ({
-          id: record.id,
-          status: record.status,
-          session: record.session,
-          drafts: record.drafts,
-          unacknowledged: record.unacknowledged,
-        })),
+      reviews: this.annotations.summaries(),
     };
   }
 
@@ -564,7 +552,10 @@ class SessionRegistry {
 
   review(
     sessionId: string,
-  ): Effect.Effect<ReviewControlResult, ReviewError | ContentListenerError> {
+  ): Effect.Effect<
+    ReviewControlResult,
+    ReviewError | ContentListenerError | RuntimeStateError
+  > {
     return this.#mutations.withPermit(
       Effect.gen({ self: this }, function* () {
         if (this.#closing)
@@ -579,49 +570,59 @@ class SessionRegistry {
             message: "The raw session is not available",
           });
 
-        const existingId = this.#openReview.get(session.identityKey);
-        if (existingId !== undefined) {
-          const existing = this.#reviews.get(existingId);
-          if (existing !== undefined) {
-            if (existing.status === "ready" && existing.live !== undefined)
-              return this.#reviewResult(existing, session, true);
-            if (existing.status === "stopped") {
-              yield* this.#activateReview(existing, session);
-              return this.#reviewResult(existing, session, true);
-            }
+        const existing = this.annotations.openReview({
+          root: session.grant.root,
+          entry: session.grant.routeEntry,
+        });
+        if (existing !== undefined) {
+          const currentLive = this.#liveReviews.get(existing.id);
+          if (existing.status === "ready" && currentLive !== undefined)
+            return this.#reviewResult(existing.id, currentLive, session, true);
+          if (existing.status === "stopped") {
+            const live = yield* this.#acquireReview(session);
+            yield* this.annotations
+              .resumeReady(existing.id, session.summary.id)
+              .pipe(
+                Effect.onExit((exit) =>
+                  Exit.isFailure(exit)
+                    ? Scope.close(live.scope, exit)
+                    : Effect.void,
+                ),
+              );
+            this.#liveReviews.set(existing.id, live);
+            return this.#reviewResult(existing.id, live, session, true);
           }
         }
 
-        if (this.#reviews.size >= this.maximumReviews)
-          return yield* new ReviewError({
-            code: "review.limit",
-            message: `Retained review limit of ${this.maximumReviews} reached`,
-          });
         let id: string;
         do id = generateReviewId();
-        while (this.#reviews.has(id));
-        const record: ReviewRecord = {
-          id,
-          identityKey: session.identityKey,
-          createdAt: new Date(yield* Clock.currentTimeMillis).toISOString(),
-          status: "stopped",
-          session: session.summary.id,
-          drafts: 0,
-          unacknowledged: 0,
-          live: undefined,
-        };
-        yield* this.#activateReview(record, session);
-        this.#reviews.set(record.id, record);
-        this.#openReview.set(record.identityKey, record.id);
-        return this.#reviewResult(record, session, false);
+        while (this.annotations.hasIdentifier(id));
+        const live = yield* this.#acquireReview(session);
+        yield* this.annotations
+          .createReady({
+            id,
+            identity: {
+              root: session.grant.root,
+              entry: session.grant.routeEntry,
+            },
+            session: session.summary.id,
+          })
+          .pipe(
+            Effect.onExit((exit) =>
+              Exit.isFailure(exit)
+                ? Scope.close(live.scope, exit)
+                : Effect.void,
+            ),
+          );
+        this.#liveReviews.set(id, live);
+        return this.#reviewResult(id, live, session, false);
       }),
     );
   }
 
-  #activateReview(
-    record: ReviewRecord,
+  #acquireReview(
     session: LiveSession,
-  ): Effect.Effect<void, ContentListenerError> {
+  ): Effect.Effect<LiveReview, ContentListenerError> {
     return Effect.gen({ self: this }, function* () {
       const scope = yield* Scope.fork(this.#scope, "parallel");
       this.#pendingScopes.add(scope);
@@ -654,11 +655,9 @@ class SessionRegistry {
             code: "http.readiness_failed",
             message: "The review origins were not isolated",
           });
-        record.status = "ready";
-        record.session = session.summary.id;
-        record.live = { scope, shell, content };
+        return { scope, shell, content };
       });
-      yield* activate.pipe(
+      return yield* activate.pipe(
         Effect.onExit((exit) =>
           Exit.isSuccess(exit) ? Effect.void : Scope.close(scope, exit),
         ),
@@ -672,17 +671,16 @@ class SessionRegistry {
   }
 
   #reviewResult(
-    record: ReviewRecord,
+    id: string,
+    live: LiveReview,
     session: LiveSession,
     reused: boolean,
   ): ReviewControlResult {
-    if (record.status !== "ready" || record.live === undefined)
-      throw new Error("Ready review is missing its live origins");
     return {
       review: {
-        id: record.id,
+        id,
         status: "ready",
-        url: record.live.shell.url,
+        url: live.shell.url,
         reused,
       },
       session: {
@@ -697,51 +695,64 @@ class SessionRegistry {
     };
   }
 
-  #detachReview(liveSession: LiveSession): Scope.Closeable | undefined {
-    const reviewId = this.#openReview.get(liveSession.identityKey);
-    if (reviewId === undefined) return undefined;
-    const record = this.#reviews.get(reviewId);
-    if (
-      record === undefined ||
-      record.status !== "ready" ||
-      record.live === undefined
-    )
-      return undefined;
-    const live = record.live;
-    record.status = "stopped";
-    record.live = undefined;
-    return live.scope;
+  #readyReview(liveSession: LiveSession):
+    | {
+        readonly id: string;
+        readonly scope: Scope.Closeable;
+      }
+    | undefined {
+    const record = this.annotations.openReview({
+      root: liveSession.grant.root,
+      entry: liveSession.grant.routeEntry,
+    });
+    if (record?.status !== "ready") return undefined;
+    const live = this.#liveReviews.get(record.id);
+    return live === undefined
+      ? undefined
+      : { id: record.id, scope: live.scope };
   }
 
-  stop(sessionId: string): Effect.Effect<TargetedStopControlResult> {
+  stop(
+    sessionId: string,
+  ): Effect.Effect<TargetedStopControlResult, RuntimeStateError> {
     return this.#mutations.withPermit(
       Effect.gen({ self: this }, function* () {
         const live = this.#sessions.get(sessionId);
         if (live === undefined) return { stopped: 0 };
-        const reviewScope = this.#detachReview(live);
+        const review = this.#readyReview(live);
+        const persistence = yield* Effect.result(
+          this.annotations.stopReady(review === undefined ? [] : [review.id]),
+        );
+        if (review !== undefined) this.#liveReviews.delete(review.id);
         const failures = yield* closeScopeFailures(
-          reviewScope === undefined ? [] : [reviewScope],
+          review === undefined ? [] : [review.scope],
         );
         this.#sessions.delete(sessionId);
         this.#identity.delete(live.identityKey);
         failures.push(...(yield* closeScopeFailures([live.scope])));
         yield* failCleanup(failures);
+        if (Result.isFailure(persistence)) return yield* persistence.failure;
         return { stopped: 1 };
       }),
     );
   }
 
-  stopAll(): Effect.Effect<StopControlResult> {
+  stopAll(): Effect.Effect<StopControlResult, RuntimeStateError> {
     this.#closing = true;
     return Effect.gen({ self: this }, function* () {
       const failures = yield* closeScopeFailures([...this.#pendingScopes]);
       return yield* this.#mutations.withPermit(
         Effect.gen({ self: this }, function* () {
           const stopped = this.#sessions.size;
-          const reviewScopes = [...this.#sessions.values()].flatMap((live) => {
-            const scope = this.#detachReview(live);
-            return scope === undefined ? [] : [scope];
+          const reviews = [...this.#sessions.values()].flatMap((live) => {
+            const review = this.#readyReview(live);
+            return review === undefined ? [] : [review];
           });
+          const persistence = yield* Effect.result(
+            this.annotations.stopReady(reviews.map((review) => review.id)),
+          );
+          this.#liveReviews.clear();
+          const reviewScopes = reviews.map((review) => review.scope);
           failures.push(...(yield* closeScopeFailures(reviewScopes)));
           failures.push(
             ...(yield* closeScopeFailures(
@@ -752,6 +763,7 @@ class SessionRegistry {
           this.#identity.clear();
           failures.push(...(yield* closeScopeFailures([this.#scope])));
           yield* failCleanup(failures);
+          if (Result.isFailure(persistence)) return yield* persistence.failure;
           return { stopped };
         }),
       );
@@ -776,12 +788,7 @@ async function startSupervisorPromise(
   const paths = options.paths ?? statePaths();
   await runPromise(ensurePrivateStateDirectory(paths));
   const instanceId = randomUUID();
-  const sessions = new SessionRegistry(
-    options.startSessionServer ?? startStaticServer,
-    options.startReviewOriginServer ?? startReviewOriginServer,
-    options.maximumSessions ?? maximumConcurrentSessions,
-    options.maximumReviews ?? maximumRetainedReviews,
-  );
+  let sessions!: SessionRegistry;
   const resolveGrantBase = options.resolveGrant ?? resolveServingGrant;
   const canonicalStateDirectory = await realpath(paths.directory);
   const resolveGrant: typeof resolveServingGrant = (...arguments_) =>
@@ -1141,6 +1148,23 @@ async function startSupervisorPromise(
   } finally {
     if (bootstrapScope !== undefined)
       await runPromise(Scope.close(bootstrapScope, Exit.void));
+  }
+
+  try {
+    const annotationState = await runPromise(loadAnnotationState(paths));
+    const annotations = new AnnotationRegistry(
+      paths,
+      annotationState,
+      options.maximumReviews ?? maximumRetainedReviews,
+    );
+    sessions = new SessionRegistry(
+      options.startSessionServer ?? startStaticServer,
+      options.startReviewOriginServer ?? startReviewOriginServer,
+      options.maximumSessions ?? maximumConcurrentSessions,
+      annotations,
+    );
+  } catch (error) {
+    throw startupFailure(error, await cleanupStartupResources(ownershipScope));
   }
 
   await runPromise(listenControlServer(control, paths.controlSocket)).catch(

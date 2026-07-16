@@ -11,9 +11,10 @@ import {
   ControlErrorCode,
   PathErrorCode,
   ReviewErrorCode,
+  RuntimeStateErrorCode,
 } from "../errors.js";
 
-export const supervisorProtocol = "htmlview-supervisor-v3";
+export const supervisorProtocol = "htmlview-supervisor-v4";
 export const controlHost = "htmlview-control";
 export const maximumConcurrentSessions = 32;
 export const maximumRetainedReviews = maximumReviews;
@@ -229,6 +230,7 @@ export const WireErrorCodeSchema = Schema.Union([
   ControlErrorCode,
   ContentListenerErrorCode,
   ReviewErrorCode,
+  RuntimeStateErrorCode,
 ]);
 export type WireErrorCode = typeof WireErrorCodeSchema.Type;
 
