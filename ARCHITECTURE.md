@@ -189,8 +189,11 @@ supervisor health remain private-socket operations.
 The review entry transform inserts one external probe reference without parsing
 and reserializing the document. It never weakens authored CSP. Unsupported
 encoding, policy, framing, or markup produces an explicit review limitation;
-the raw URL remains usable. Instrumentation covers the selected entry and its
-live SPA DOM, not later HTML-document navigation.
+the raw URL remains usable and annotation-only actions are disabled. The shell
+tracks iframe document replacement: a selected-entry reload recovers when its
+new probe reports ready, while later HTML-document navigation is reported as
+an explicit unsupported-navigation limitation. Instrumentation covers the
+selected entry and its live SPA DOM, not the navigated document.
 
 ### Annotation store and feedback delivery (implemented)
 

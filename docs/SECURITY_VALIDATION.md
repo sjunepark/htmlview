@@ -5,8 +5,7 @@ repeatable evidence. `pnpm run check` runs the automated macOS/current-platform
 set; Linux package installation is the separate
 `pnpm run validate:package:linux` release check. The first table is the
 implemented raw-serving, native CLI, logging, annotation, and browser-review
-baseline. The second table is the remaining release-hardening evidence required
-before `0.1.0`.
+baseline. The separate release commands still must pass before `0.1.0`.
 
 | Control or adversarial case                                             | Evidence                                                                                                                    |
 | ----------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------- |
@@ -38,14 +37,15 @@ before `0.1.0`.
 | Selected-entry instrumentation remains isolated and byte preserving     | Token-aware transform corpus, raw before/after integration comparison, and Playwright raw-byte comparison                   |
 | Annotation state and feedback are durable and bounded                   | Permission/schema/recovery/limit tests; atomic send/end/discard; cursor retry, cancellation, restart, and tombstones        |
 | Human browser feedback reaches the foreground agent                     | Playwright element/freeform queue, shell-only comment, send, explicit-discard End, listener closure, and CLI feedback flow  |
+| Review browser authorization is adversarially complete                  | Ambiguous authority/fetch headers, content-type/method/query variants, no-CORS, and browser capability tests                |
+| Hostile authored content cannot read typed comments                     | Playwright shell API attempts, sandbox/frame-busting, message spoofing, stored XSS, and forged targets                      |
+| Instrumentation failure remains explicit                                | Playwright CSP/encoding/markup limits, navigation/recovery, native controls, modes, and stale revisions                     |
 
 ## Required `0.1.0` evidence (pending)
 
-| Control or adversarial case                            | Required evidence                                                                                                           |
-| ------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------- |
-| Review browser authorization is adversarially complete | Wrong/missing/duplicate Origin and fetch metadata, ambiguous raw headers, content-type variants, CORS, and capability tests |
-| Hostile authored content cannot read typed comments    | Real-browser attempts to reach shell DOM/state/mutation routes plus stored-XSS and forged-target cases                      |
-| Instrumentation failure remains explicit               | Authored CSP, encoding, malformed markup, framing, navigation, native-control, and Explore/Annotate browser cases           |
+No control-specific row remains pending. The complete release-command matrix
+recorded in the repository implementation plan remains required before
+publication.
 
 ## Residual risks
 

@@ -366,6 +366,229 @@ describe("review origins", () => {
       assert.equal(state.body.includes(Buffer.from("htmlview-review-")), false);
     }));
 
+  it("rejects missing, wrong, and ambiguous browser mutation authority", async () =>
+    withSurface("<!doctype html><h1>Hello</h1>", async ({ shell, content }) => {
+      const endpoint = "/.htmlview/api/drafts";
+      const valid = {
+        ...browserHeaders,
+        origin: shell.origin,
+        "content-type": "application/json",
+      };
+      for (const name of [
+        "origin",
+        "sec-fetch-site",
+        "sec-fetch-mode",
+        "sec-fetch-dest",
+        "content-type",
+      ]) {
+        const headers = { ...valid } as Record<string, string>;
+        delete headers[name];
+        assert.equal(
+          (
+            await send(shell, "POST", endpoint, {
+              headers,
+              body: "{}",
+            })
+          ).status,
+          403,
+          `missing ${name}`,
+        );
+      }
+      for (const [name, values] of Object.entries({
+        origin: [content.origin, `${shell.origin}/`, "null"],
+        "sec-fetch-site": ["cross-site", "same-site", "none"],
+        "sec-fetch-mode": ["navigate", "no-cors", "same-origin"],
+        "sec-fetch-dest": ["document", "iframe", "script"],
+        "content-type": [
+          "text/plain",
+          "Application/JSON",
+          "application/json;charset=utf-8",
+          "application/json; charset=UTF-8",
+          "application/json; profile=test",
+        ],
+      }))
+        for (const value of values) {
+          const headers = { ...valid, [name]: value };
+          assert.equal(
+            (
+              await send(shell, "POST", endpoint, {
+                headers,
+                body: "{}",
+              })
+            ).status,
+            403,
+            `${name}: ${value}`,
+          );
+        }
+
+      for (const contentType of [
+        "application/json",
+        "application/json; charset=utf-8",
+      ])
+        assert.equal(
+          (
+            await send(shell, "POST", endpoint, {
+              headers: { ...valid, "content-type": contentType },
+              body: "{}",
+            })
+          ).status,
+          400,
+        );
+
+      const duplicateCases = [
+        ["Origin", shell.origin, "Origin", shell.origin],
+        ["Sec-Fetch-Site", "same-origin", "Sec-Fetch-Site", "same-origin"],
+        ["Sec-Fetch-Mode", "cors", "Sec-Fetch-Mode", "cors"],
+        ["Sec-Fetch-Dest", "empty", "Sec-Fetch-Dest", "empty"],
+        [
+          "Content-Type",
+          "application/json",
+          "Content-Type",
+          "application/json",
+        ],
+      ];
+      const standard = [
+        ["Origin", shell.origin],
+        ["Sec-Fetch-Site", "same-origin"],
+        ["Sec-Fetch-Mode", "cors"],
+        ["Sec-Fetch-Dest", "empty"],
+        ["Content-Type", "application/json"],
+      ];
+      for (const duplicate of duplicateCases) {
+        const duplicateName = duplicate[0];
+        const headers = standard
+          .filter(([name]) => name !== duplicateName)
+          .concat([
+            [duplicate[0] ?? "", duplicate[1] ?? ""],
+            [duplicate[2] ?? "", duplicate[3] ?? ""],
+          ])
+          .map(([name, value]) => `${name}: ${value}`)
+          .join("\r\n");
+        assert.equal(
+          await rawStatus(
+            shell.port,
+            `POST ${endpoint} HTTP/1.1\r\nHost: ${shell.hostname}:${shell.port}\r\n${headers}\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}`,
+          ),
+          403,
+          `duplicate ${duplicateName}`,
+        );
+      }
+
+      for (const [name, value] of Object.entries({
+        origin: `${shell.origin}, ${shell.origin}`,
+        "sec-fetch-site": "same-origin, cross-site",
+        "sec-fetch-mode": "cors, no-cors",
+        "sec-fetch-dest": "empty, iframe",
+        "content-type": "application/json, application/json",
+      }))
+        assert.equal(
+          (
+            await send(shell, "POST", endpoint, {
+              headers: { ...valid, [name]: value },
+              body: "{}",
+            })
+          ).status,
+          403,
+          `joined ${name}`,
+        );
+
+      assert.equal(
+        (
+          await send(shell, "POST", endpoint, {
+            headers: {
+              ...valid,
+              host: `foreign.localhost:${shell.port}`,
+            },
+            body: "{}",
+          })
+        ).status,
+        421,
+      );
+      assert.equal(
+        await rawStatus(
+          shell.port,
+          `POST ${endpoint} HTTP/1.1\r\nHost: ${shell.hostname}:${shell.port}\r\nHost: foreign.localhost:${shell.port}\r\nOrigin: ${shell.origin}\r\nSec-Fetch-Site: same-origin\r\nSec-Fetch-Mode: cors\r\nSec-Fetch-Dest: empty\r\nContent-Type: application/json\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}`,
+        ),
+        421,
+      );
+
+      for (const route of [
+        "/.htmlview/api/drafts",
+        "/.htmlview/api/send",
+        "/.htmlview/api/end",
+      ]) {
+        for (const method of ["GET", "PUT", "DELETE", "OPTIONS"])
+          assert.equal(
+            (await send(shell, method, route, { headers: valid })).status,
+            405,
+            `${method} ${route}`,
+          );
+        assert.equal(
+          (
+            await send(shell, "POST", `${route}?forged=1`, {
+              headers: valid,
+              body: "{}",
+            })
+          ).status,
+          405,
+          `query ${route}`,
+        );
+      }
+
+      for (const [route, body] of [
+        [
+          "/.htmlview/api/drafts",
+          {
+            kind: "freeform",
+            comment: "x",
+            revision: `sha256:${"0".repeat(64)}`,
+            review: "forged",
+          },
+        ],
+        ["/.htmlview/api/send", { drafts: [], session: "forged" }],
+        [
+          "/.htmlview/api/end",
+          { drafts: [], discard_remaining: true, root: "/forged" },
+        ],
+      ] as const)
+        assert.equal(
+          (
+            await send(shell, "POST", route, {
+              headers: valid,
+              body: JSON.stringify(body),
+            })
+          ).status,
+          400,
+          `excess schema ${route}`,
+        );
+
+      const preflight = await send(shell, "OPTIONS", endpoint, {
+        headers: {
+          origin: content.origin,
+          "access-control-request-method": "POST",
+          "access-control-request-headers": "content-type",
+        },
+      });
+      assert.equal(preflight.status, 405);
+      assert.equal(preflight.headers["access-control-allow-origin"], undefined);
+      assert.equal(
+        preflight.headers["access-control-allow-methods"],
+        undefined,
+      );
+      assert.equal(
+        preflight.headers["access-control-allow-headers"],
+        undefined,
+      );
+      assert.equal(
+        preflight.headers["access-control-allow-credentials"],
+        undefined,
+      );
+      const state = await send(shell, "GET", "/.htmlview/api/state", {
+        headers: browserHeaders,
+      });
+      assert.deepEqual(jsonBody(state).drafts, []);
+    }));
+
   it("instruments only the entry and validates every browser mutation", async () =>
     withSurface(
       "<!doctype html><html><body><h1>Hello</h1></body></html>",

@@ -8,6 +8,23 @@
   <body>
     <h1 id="title">fixture</h1>
     <output id="result">pending</output>
+    <section hidden>
+      <style>
+        /* STYLE_SOURCE_CANARY_MUST_NOT_PERSIST */
+      </style>
+      <template>TEMPLATE_SOURCE_CANARY_MUST_NOT_PERSIST</template>
+      <input value="INPUT_VALUE_CANARY_MUST_NOT_PERSIST" />
+      <textarea>TEXTAREA_VALUE_CANARY_MUST_NOT_PERSIST</textarea>
+      <select>
+        <option>SELECT_VALUE_CANARY_MUST_NOT_PERSIST</option>
+      </select>
+      <button type="button">BUTTON_VISIBLE_CANARY</button>
+      <a
+        href="https://user:password@example.invalid/CREDENTIAL_URL_CANARY"
+        data-secret="DATA_ATTRIBUTE_CANARY_MUST_NOT_PERSIST"
+        >BENIGN_LINK_TEXT</a
+      >
+    </section>
     <script>
       // INLINE_SCRIPT_CANARY_MUST_NOT_PERSIST
       (async () => {

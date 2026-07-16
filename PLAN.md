@@ -18,22 +18,24 @@ first-release feature. Its public contracts are accepted. The Effect CLI,
 native output boundary, symmetric state/grant exclusion, foreground/private
 diagnostic sinks, durable annotation delivery, and the trusted browser review
 surface are implemented. Release hardening remains, so `0.1.0` is not ready to
-publish.
+publish. The annotation authorization, hostile-content, and explicit
+instrumentation-limitation matrices now pass; packaging and the final release
+matrix remain.
 
 Documentation now has explicit ownership and current-versus-target status; see
 [`docs/README.md`](docs/README.md). There is no external blocker.
 The organized surface, contract tests, link/fragment checks, and packaged-link
 closure pass the complete current-platform `pnpm run check` gate.
 
-| Slice                             | Status      | Detail                                                                 |
-| --------------------------------- | ----------- | ---------------------------------------------------------------------- |
-| Raw serving and supervisor        | Complete    | Fidelity, confinement, private control, lifecycle, packaging           |
-| Effect execution model            | Complete    | Typed failures, schemas, cancellation, scopes, release measurements    |
-| Annotation and CLI contracts      | Complete    | Product, CLI, architecture, threat model, ADRs 0008–0009               |
-| Documentation organization        | Complete    | Canonical map, ADR index, contract cleanup, validation hardening       |
-| Effect CLI and diagnostic logging | Complete    | Native CLI, private logs, measurements, and complete release evidence  |
-| Annotation runtime                | In progress | Phases 1–3 complete; Phase 4 adversarial and release hardening remains |
-| Publication                       | Pending     | Complete release matrix and explicit publish action                    |
+| Slice                             | Status      | Detail                                                                |
+| --------------------------------- | ----------- | --------------------------------------------------------------------- |
+| Raw serving and supervisor        | Complete    | Fidelity, confinement, private control, lifecycle, packaging          |
+| Effect execution model            | Complete    | Typed failures, schemas, cancellation, scopes, release measurements   |
+| Annotation and CLI contracts      | Complete    | Product, CLI, architecture, threat model, ADRs 0008–0009              |
+| Documentation organization        | Complete    | Canonical map, ADR index, contract cleanup, validation hardening      |
+| Effect CLI and diagnostic logging | Complete    | Native CLI, private logs, measurements, and complete release evidence |
+| Annotation runtime                | In progress | Phase 4 adversarial evidence complete; packaging/release gate remains |
+| Publication                       | Pending     | Complete release matrix and explicit publish action                   |
 
 ## Release invariants
 
@@ -95,5 +97,5 @@ and a size comparison justifies changing it.
 
 ## Next action
 
-Complete the remaining hostile-content, instrumentation-limitation, packaging,
-and release-matrix evidence for annotation. Do not publish automatically.
+Complete packaging and the release-command matrix for annotation. Do not
+publish automatically.

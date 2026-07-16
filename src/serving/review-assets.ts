@@ -12,7 +12,7 @@ const shellHtml = `<!doctype html>
     <div class="identity"><strong>htmlview</strong><span id="review-status">Loading review…</span></div>
     <div class="mode-switch" role="group" aria-label="Review interaction mode">
       <button id="mode-explore" type="button" aria-pressed="false">Explore</button>
-      <button id="mode-annotate" type="button" aria-pressed="true">Annotate</button>
+      <button id="mode-annotate" type="button" aria-pressed="true" disabled>Annotate</button>
     </div>
     <button id="draft-toggle" class="quiet" type="button" aria-expanded="true" aria-controls="drafts">Drafts <span id="draft-count">0</span></button>
   </header>
@@ -34,7 +34,7 @@ const shellHtml = `<!doctype html>
     <aside id="drafts" aria-label="Annotation drafts">
       <div class="draft-heading">
         <div><h1>Review notes</h1><p>Saved privately until you send them.</p></div>
-        <button id="freeform" class="quiet" type="button">Page note</button>
+        <button id="freeform" class="quiet" type="button" disabled>Page note</button>
       </div>
       <div id="draft-list" class="draft-list"></div>
       <p id="empty-drafts" class="empty">Select an element on the page, or add a page note.</p>
@@ -161,6 +161,8 @@ const shellJs = embeddedJavaScript(String.raw`(() => {
   const comment = byId("comment");
   const targetLabel = byId("target-label");
   const highlight = byId("highlight");
+  const annotateButton = byId("mode-annotate");
+  const freeformButton = byId("freeform");
   const encoder = new TextEncoder();
   let state;
   let contentOrigin;
@@ -169,6 +171,9 @@ const shellJs = embeddedJavaScript(String.raw`(() => {
   let selectedTarget;
   let editorGeneration = 0;
   let readyTimer;
+  let navigationPending = false;
+  let localLimitation;
+  let loadGeneration = 0;
 
   const announce = (message) => { live.textContent = message; };
   const exactKeys = (value, keys) => {
@@ -214,6 +219,29 @@ const shellJs = embeddedJavaScript(String.raw`(() => {
     return row;
   }
 
+  function limitationReason() {
+    return localLimitation || state?.limitation;
+  }
+
+  function renderAnnotationAvailability() {
+    const unavailable = !revision || Boolean(limitationReason());
+    annotateButton.disabled = unavailable;
+    freeformButton.disabled = unavailable;
+    if (unavailable) {
+      editorGeneration += 1;
+      selectedTarget = undefined;
+      editor.hidden = true;
+      highlight.removeAttribute("data-visible");
+    }
+  }
+
+  function renderLimitation() {
+    const reason = limitationReason();
+    limitation.hidden = !reason;
+    if (reason) limitation.textContent = \`This page cannot be annotated: \${reason.replaceAll("_", " ")}. The raw page remains available.\`;
+    renderAnnotationAvailability();
+  }
+
   function render() {
     status.textContent = state.review.status === "ready" ? "Annotation review" : \`Review \${state.review.status}\`;
     draftCount.textContent = String(state.drafts.length);
@@ -221,10 +249,7 @@ const shellJs = embeddedJavaScript(String.raw`(() => {
     emptyDrafts.hidden = state.drafts.length !== 0;
     byId("send").disabled = state.drafts.length === 0;
     byId("end").disabled = state.review.status !== "ready";
-    if (state.limitation) {
-      limitation.hidden = false;
-      limitation.textContent = \`This page cannot be annotated: \${state.limitation.replaceAll("_", " ")}. The raw page remains available.\`;
-    }
+    renderLimitation();
   }
 
   async function refresh() {
@@ -274,8 +299,10 @@ const shellJs = embeddedJavaScript(String.raw`(() => {
       const changed = revision !== data.revision;
       const replaced = revision !== undefined && changed;
       revision = data.revision;
+      navigationPending = false;
+      localLimitation = undefined;
+      if (state) delete state.limitation;
       clearTimeout(readyTimer);
-      limitation.hidden = true;
       if (replaced) {
         editorGeneration += 1;
         selectedTarget = undefined;
@@ -286,6 +313,7 @@ const shellJs = embeddedJavaScript(String.raw`(() => {
         announce("Annotation tools ready");
         sendMode();
       }
+      renderLimitation();
       return;
     }
     if ((data.type === "target_preview" || data.type === "target_selected") && exactKeys(data, ["anchor", "channel", "handle", "rect", "type", "version"]) && bounded(data.handle, 64) && validAnchor(data.anchor) && validRect(data.rect)) {
@@ -298,8 +326,10 @@ const shellJs = embeddedJavaScript(String.raw`(() => {
   });
 
   iframe.addEventListener("load", () => {
+    const generation = ++loadGeneration;
+    navigationPending = navigationPending || revision !== undefined;
     revision = undefined;
-    editorGeneration += 1;
+    renderAnnotationAvailability();
     selectedTarget = undefined;
     editor.hidden = true;
     highlight.removeAttribute("data-visible");
@@ -308,9 +338,11 @@ const shellJs = embeddedJavaScript(String.raw`(() => {
     const interval = setInterval(sendMode, 100);
     readyTimer = setTimeout(() => {
       clearInterval(interval);
+      if (generation !== loadGeneration) return;
       refresh().catch(() => undefined).finally(() => {
-        limitation.hidden = false;
-        if (!state?.limitation) limitation.textContent = "Annotation probe did not start. Authored policy or navigation may have blocked instrumentation; the raw page remains available.";
+        if (generation !== loadGeneration || revision) return;
+        if (!state?.limitation) localLimitation = navigationPending ? "unsupported_navigation" : "instrumentation_unavailable";
+        renderLimitation();
       });
     }, 1800);
     setTimeout(() => clearInterval(interval), 2000);
@@ -388,7 +420,7 @@ const probeJs = embeddedJavaScript(String.raw`(() => {
   const revision = script?.dataset.htmlviewRevision;
   if (!/^sha256:[0-9a-f]{64}$/.test(revision || "")) return;
   const encoder = new TextEncoder();
-  const excludedTextElements = new Set(["INPUT", "TEXTAREA", "SELECT", "OPTION", "BUTTON", "SCRIPT", "STYLE", "TEMPLATE"]);
+  const excludedTextElements = new Set(["INPUT", "TEXTAREA", "SELECT", "OPTION", "SCRIPT", "STYLE", "TEMPLATE"]);
   let parentOrigin;
   let mode = "annotate";
   let sequence = 0;
@@ -478,7 +510,7 @@ const probeJs = embeddedJavaScript(String.raw`(() => {
     event.preventDefault(); event.stopImmediatePropagation(); send("target_selected", event.target);
   }, true);
   addEventListener("keydown", (event) => {
-    if (mode !== "annotate" || event.key !== "Enter" || !(event.target instanceof Element)) return;
+    if (mode !== "annotate" || (event.key !== "Enter" && event.key !== " ") || !(event.target instanceof Element)) return;
     event.preventDefault(); event.stopImmediatePropagation(); send("target_selected", event.target);
   }, true);
 })();`);

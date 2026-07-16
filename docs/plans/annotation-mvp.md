@@ -151,13 +151,13 @@ channel that later needs replacing.
 
 ## Phase 4: security, fidelity, and release hardening
 
-- Complete every pending row in
+- **Complete:** close every control-specific row in
   [`docs/SECURITY_VALIDATION.md`](../SECURITY_VALIDATION.md), including hostile
   authored code, CSRF/origin checks, postMessage spoofing, persistence bounds,
   concurrency, interruption, restart, and log canaries.
-- Compare the raw contract before and after review creation at the byte, header,
+- **Complete:** compare the raw contract before and after review creation at the byte, header,
   URL, path, Host, cache, method, confinement, and lifecycle boundaries.
-- Add black-box and real-browser workflows for element/freeform feedback,
+- **Complete:** add black-box and real-browser workflows for element/freeform feedback,
   native controls, reload/closure/restart, cursor retry, stale revision, CSP
   failure, End, explicit discard, and retained-work discovery.
 - Update build/package checks, examples, install guidance, and macOS/Node 22
@@ -178,8 +178,8 @@ channel that later needs replacing.
 
 ## Next action
 
-Phases 1–3 are complete. Finish the Phase 4 hostile-content, limitation,
-packaging, and release-matrix evidence, then run the final implementation and
+Phases 1–3 and the Phase 4 adversarial matrix are complete. Finish packaging
+and the release-command matrix, then run the final implementation and
 complexity review.
 
 ## Completion gate

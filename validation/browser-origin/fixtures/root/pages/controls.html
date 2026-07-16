@@ -1,0 +1,28 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>Review controls fixture</title>
+  </head>
+  <body>
+    <h1 id="controls-title">Review controls fixture</h1>
+    <button id="counter" type="button">Save changes</button>
+    <output id="counter-value">0</output>
+    <label><input id="enabled" type="checkbox" /> Enabled</label>
+    <label>Title <input id="field" value="private form value" /></label>
+    <a id="navigate" href="/pages/navigated.html">Open another document</a>
+    <output id="frame-bust">pending</output>
+    <script>
+      let count = 0;
+      document.querySelector("#counter").addEventListener("click", () => {
+        document.querySelector("#counter-value").textContent = String(++count);
+      });
+      try {
+        top.location = "/pages/navigated.html";
+        document.querySelector("#frame-bust").textContent = "unexpected";
+      } catch (error) {
+        document.querySelector("#frame-bust").textContent = error.name;
+      }
+    </script>
+  </body>
+</html>
