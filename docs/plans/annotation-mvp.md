@@ -1,6 +1,6 @@
 # Annotation MVP plan
 
-- Status: Phase 0 complete; blocked on Effect CLI/logging Phase 10
+- Status: Phase 0 complete; Phase 1 awaits the final Browser Use prerequisite
 - Updated: 2026-07-16
 - Parent: [`PLAN.md`](../../PLAN.md)
 - Decision: [ADR 0008](../decisions/0008-separate-raw-serving-from-instrumented-review.md)
@@ -81,7 +81,7 @@ counts discoverable.
 | Phase                                     | Status   | Outcome                                         |
 | ----------------------------------------- | -------- | ----------------------------------------------- |
 | 0. Contracts and decisions                | Complete | Public specs, ADRs, domain language, doc tests  |
-| Prerequisite: Effect CLI/logging          | Next     | One final command model and diagnostic boundary |
+| Prerequisite: Effect CLI/logging          | Complete | One final command model and diagnostic boundary |
 | 1. Authorized reads and review lifecycle  | Pending  | Review identity, origins, scopes, protocol      |
 | 2. Durable feedback and agent delivery    | Pending  | Store, transitions, CLI/control operations      |
 | 3. Instrumented content and trusted shell | Pending  | Entry probe, shell UI, browser boundaries       |
@@ -164,9 +164,9 @@ channel that later needs replacing.
 
 ## Next action
 
-Do not start Phase 1 until Effect CLI/logging Phase 10 and its full gate pass.
-Then begin with raw-boundary characterization tests before extracting authorized
-reads or adding review protocol types.
+Complete the user-approved Browser Use validation for Phase 10, then begin with
+raw-boundary characterization tests before extracting authorized reads or
+adding review protocol types.
 
 ## Completion gate
 

@@ -22,6 +22,12 @@ export function isWithinRoot(root: string, target: string): boolean {
   );
 }
 
+export function canonicalTreesOverlap(left: string, right: string): boolean {
+  return (
+    left === right || isWithinRoot(left, right) || isWithinRoot(right, left)
+  );
+}
+
 export function isBroadServingRoot(root: string, home: string): boolean {
   return root === home || isWithinRoot(root, home);
 }

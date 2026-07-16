@@ -1,4 +1,6 @@
 import assert from "node:assert/strict";
+import { readFile, readdir } from "node:fs/promises";
+import path from "node:path";
 import { describe, it } from "vitest";
 import { Effect, Logger } from "effect";
 import { logDiagnostic, makeDiagnosticLogger } from "../src/diagnostics.js";
@@ -13,6 +15,19 @@ async function capture(effect: Effect.Effect<void>): Promise<string[]> {
     ),
   );
   return lines;
+}
+
+async function sourceFiles(directory: string): Promise<ReadonlyArray<string>> {
+  const entries = await readdir(directory, { withFileTypes: true });
+  const nested = await Promise.all(
+    entries.map((entry) => {
+      const file = path.join(directory, entry.name);
+      return entry.isDirectory()
+        ? sourceFiles(file)
+        : Promise.resolve(entry.name.endsWith(".ts") ? [file] : []);
+    }),
+  );
+  return nested.flat();
 }
 
 describe("diagnostic event seam", () => {
@@ -74,4 +89,37 @@ describe("diagnostic event seam", () => {
     );
     assert.deepEqual(lines, []);
   });
+
+  it("does not let a failed sink replace the logged operation", async () => {
+    await Effect.runPromise(
+      logDiagnostic("Error", {
+        operation: "cli.runtime",
+        code: "runtime.internal",
+      }).pipe(
+        Effect.provide(
+          Logger.layer([
+            makeDiagnosticLogger(() => {
+              throw new Error("sink failed");
+            }),
+          ]),
+        ),
+      ),
+    );
+  });
+});
+
+it("keeps direct Effect logging behind the diagnostic seam", async () => {
+  const source = path.resolve("src");
+  const violations: Array<string> = [];
+  for (const file of await sourceFiles(source)) {
+    if (file === path.join(source, "diagnostics.ts")) continue;
+    const body = await readFile(file, "utf8");
+    if (
+      /\bEffect\.log(?:WithLevel|Trace|Debug|Info|Warning|Error|Fatal)?\s*\(/.test(
+        body,
+      )
+    )
+      violations.push(path.relative(source, file));
+  }
+  assert.deepEqual(violations, []);
 });

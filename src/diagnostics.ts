@@ -13,6 +13,8 @@ const diagnosticOperations = [
   "cli.serve",
   "cli.stop",
   "cli.runtime",
+  "supervisor.start",
+  "supervisor.stop",
   "supervisor.run",
   "state.cleanup",
   "http.cleanup",
@@ -124,7 +126,12 @@ export function makeDiagnosticLogger(
 ): Logger.Logger<unknown, void> {
   return Logger.make(({ date, logLevel, message }) => {
     const line = serializedDiagnostic(date, logLevel, message);
-    if (line !== undefined) sink(line);
+    if (line === undefined) return;
+    try {
+      sink(line);
+    } catch {
+      // Diagnostics never replace the operation they describe.
+    }
   });
 }
 

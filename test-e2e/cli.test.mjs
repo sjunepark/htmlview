@@ -259,8 +259,8 @@ test("detached CLI lifecycle converges, recovers, and remains project-clean", as
   ]);
 
   const [firstCall, secondCall] = await Promise.all([
-    jsonCli(["serve", "report.html"]),
-    jsonCli(["serve", "report.html"]),
+    jsonCli(["serve", "report.html", "--log-level", "none"]),
+    jsonCli(["serve", "report.html", "--log-level", "none"]),
   ]);
   assert.equal(firstCall.code, 0);
   assert.equal(secondCall.code, 0);
@@ -269,6 +269,26 @@ test("detached CLI lifecycle converges, recovers, and remains project-clean", as
   assert.deepEqual(
     [firstCall.value.session.reused, secondCall.value.session.reused].sort(),
     [false, true],
+  );
+  const logDirectory = path.join(stateDirectory, "logs");
+  const logFile = path.join(logDirectory, "supervisor.jsonl");
+  assert.equal((await stat(logDirectory)).mode & 0o777, 0o700);
+  assert.equal((await stat(logFile)).mode & 0o777, 0o600);
+  const supervisorEvents = (await readFile(logFile, "utf8"))
+    .trim()
+    .split("\n")
+    .map((line) => JSON.parse(line));
+  assert.equal(
+    supervisorEvents.some(
+      (event) =>
+        event.level === "info" && event.operation === "supervisor.start",
+    ),
+    true,
+  );
+  assert.equal(JSON.stringify(supervisorEvents).includes(firstRoot), false);
+  assert.equal(
+    JSON.stringify(supervisorEvents).includes(stateDirectory),
+    false,
   );
   const toonReuse = await toonCli(["serve", "report.html"]);
   const jsonReuse = await jsonCli(["serve", "report.html"]);

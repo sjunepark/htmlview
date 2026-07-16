@@ -15,7 +15,7 @@ import {
   SupervisorError,
   type OperationalError,
 } from "../errors.js";
-import { isWithinRoot } from "../serving/grant.js";
+import { canonicalTreesOverlap } from "../serving/grant.js";
 import { htmlviewVersion } from "../version.js";
 import {
   acquireSupervisorLock,
@@ -105,11 +105,11 @@ function assertStateOutsideRoot(
           }),
       ),
     );
-    if (root === stateDirectory || isWithinRoot(root, stateDirectory))
+    if (canonicalTreesOverlap(root, stateDirectory))
       return yield* new PathError({
         code: "path.root_contains_state",
         message:
-          "Serving root cannot contain the htmlview runtime state directory",
+          "Serving root and htmlview runtime state directory must be disjoint",
       });
   });
 }

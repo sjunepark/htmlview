@@ -10,6 +10,7 @@ import {
 import path from "node:path";
 import { Data, Effect, FiberSet, type Scope } from "effect";
 import { contentType } from "mime-types";
+import { logDiagnostic } from "../diagnostics.js";
 import { ContentListenerError } from "../errors.js";
 import { isWithinRoot, type ServingGrant } from "./grant.js";
 
@@ -139,13 +140,11 @@ type AuthorizedFile =
       readonly metadata: BigIntStats;
     };
 
-function reportCleanupFailure(operation: string): Effect.Effect<void> {
-  return Effect.sync(() => {
-    try {
-      process.stderr.write(`htmlview: ${operation} cleanup failed\n`);
-    } catch {
-      // The request's primary outcome remains authoritative.
-    }
+function reportCleanupFailure(): Effect.Effect<void> {
+  return logDiagnostic("Error", {
+    operation: "http.cleanup",
+    code: "runtime.internal",
+    failureCount: 1,
   });
 }
 
@@ -155,7 +154,7 @@ function closeOwnedFile(owned: OwnedFileHandle): Effect.Effect<void> {
     try: () => owned.handle.close(),
     catch: (cause) => new FileAccessError({ cause }),
   }).pipe(
-    Effect.catch(() => reportCleanupFailure("authorized file")),
+    Effect.catch(() => reportCleanupFailure()),
     Effect.asVoid,
   );
 }
@@ -350,11 +349,7 @@ function closeServer(server: Server): Effect.Effect<void> {
   return Effect.callback<void>((resume) => {
     try {
       server.close((error) =>
-        resume(
-          error === undefined
-            ? Effect.void
-            : reportCleanupFailure("content listener"),
-        ),
+        resume(error === undefined ? Effect.void : reportCleanupFailure()),
       );
       server.closeAllConnections();
     } catch {

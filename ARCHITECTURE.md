@@ -3,9 +3,8 @@
 ## Status and boundary
 
 The raw-serving core, per-user supervisor, Effect execution model, Effect CLI,
-foreground diagnostic seam, and release packaging are implemented. The
-accepted `0.1.0` target still needs private supervisor logging, then review and
-feedback. The repository
+foreground/private diagnostic sinks, and release packaging are implemented.
+The accepted `0.1.0` target still needs review and feedback. The repository
 [implementation plan](https://github.com/sjunepark/htmlview/blob/main/PLAN.md)
 owns their sequencing.
 
@@ -143,13 +142,14 @@ one finalizer fails.
 
 ## Accepted `0.1.0` additions
 
-### Detached diagnostic logging (`0.1.0` target)
+### Detached diagnostic logging
 
-The implemented foreground CLI routes validated Effect diagnostic events only
-to stderr. The remaining detached supervisor work writes the same allowlisted
-shape as bounded, rotated JSONL beneath private state at a fixed threshold.
-Logs are neither feedback nor an audit/event store. The supervisor executable
-must project causes before the Node runtime can print a raw unhandled cause.
+The foreground CLI routes validated Effect diagnostic events only to stderr.
+The detached supervisor writes the same allowlisted shape to at most three
+64-KiB JSONL files beneath a private `0700` log directory; files are `0600` and
+the threshold is fixed at info. Logs are neither feedback nor an audit/event
+store. Both executable roots project causes before the Node runtime can print a
+raw unhandled cause.
 
 ### Review service (`0.1.0` target)
 
@@ -209,8 +209,8 @@ ended reviews do not resume.
 
 1. Resolve and authorize the entry/root grant locally.
 2. Discover or start the supervisor through the private ownership boundary.
-3. Reject a broad grant or one containing private state, then reuse or acquire a
-   ready raw listener. Phase 10 adds the inverse private-state containment case.
+3. Reject a broad grant or any canonical overlap with private state, then reuse
+   or acquire a ready raw listener.
 4. Return the session URL and exact grant as one domain result.
 5. For each browser request, validate authority and method, authorize the opened
    target against the grant, and stream its original bytes.
@@ -293,7 +293,10 @@ flags.
 - `src/supervisor/protocol.ts`: validated private wire contract.
 - `src/supervisor/client.ts`, `src/supervisor/server.ts`: supervisor discovery,
   ownership, control, session registry, and cleanup.
-- `src/supervisor/state.ts`: private paths, records, and lifetime lock.
+- `src/supervisor/state.ts`, `src/supervisor/logging.ts`: private paths,
+  records, lifetime lock, and bounded diagnostic persistence.
+- `src/supervisor/supervisor-main.ts`: detached runtime, diagnostic layer, and
+  sanitized process-failure boundary.
 - `test/`: unit/integration tests with Vitest and `@effect/vitest`.
 - `test-e2e/`: black-box executable and detached-process lifecycle tests.
 - `validation/`: browser-origin, controller interoperability, build,

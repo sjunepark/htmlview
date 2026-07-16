@@ -29,7 +29,7 @@ The npm package excludes work plans. In the repository, use:
 - [the implementation plan](https://github.com/sjunepark/htmlview/blob/main/PLAN.md)
   for current milestones, validation, blockers, and the next action;
 - [the Effect v4 plan](https://github.com/sjunepark/htmlview/blob/main/docs/plans/effect-v4-adoption.md)
-  for the remaining CLI/logging migration; and
+  for the completed execution-model, native CLI, and logging migration; and
 - [the annotation MVP plan](https://github.com/sjunepark/htmlview/blob/main/docs/plans/annotation-mvp.md)
   for implementation sequencing and completion gates.
 

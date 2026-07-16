@@ -5,6 +5,7 @@ import path from "node:path";
 import { afterEach, describe, it } from "vitest";
 import { Effect } from "effect";
 import {
+  canonicalTreesOverlap,
   isBroadServingRoot,
   resolveServingGrant as resolveServingGrantEffect,
   type ServingGrant,
@@ -36,6 +37,16 @@ afterEach(async () => {
 });
 
 describe("serving grants", () => {
+  it("detects equality and containment in either canonical direction", () => {
+    const root = path.join(path.sep, "tmp", "grant");
+    const child = path.join(root, "child");
+    const disjoint = path.join(path.sep, "tmp", "other");
+    assert.equal(canonicalTreesOverlap(root, root), true);
+    assert.equal(canonicalTreesOverlap(root, child), true);
+    assert.equal(canonicalTreesOverlap(child, root), true);
+    assert.equal(canonicalTreesOverlap(root, disjoint), false);
+  });
+
   it("rejects roots equal to or broader than the user home", async () => {
     const home = await realpath(homedir());
     assert.equal(isBroadServingRoot(home, home), true);

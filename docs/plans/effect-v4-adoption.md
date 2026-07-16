@@ -1,7 +1,7 @@
 # Effect v4 Adoption Plan
 
-- Status: In progress; execution-model phases 0–9 and the Phase 10 native CLI
-  migration are complete; private diagnostic logging remains
+- Status: Phase 10 implementation complete; Browser Use consent remains for
+  the final interoperability check
 - Updated: 2026-07-16
 - Parent plan: [`PLAN.md`](../../PLAN.md)
 - Decisions: [ADR 0007](../decisions/0007-adopt-effect-v4.md),
@@ -54,19 +54,19 @@ annotation runtime work.
 
 ## Phase status
 
-| Phase                                 | Status      | Result/target                                             |
-| ------------------------------------- | ----------- | --------------------------------------------------------- |
-| 0. Baseline and API verification      | Complete    | Green baseline, beta.98 source inspection, package choice |
-| 1. Decision records and toolchain     | Complete    | Exact pins, diagnostics, bundle and test foundation       |
-| 2. Errors and protocol schemas        | Complete    | Tagged failures and one validated wire contract           |
-| 3. Runtime-state and lock lifecycle   | Complete    | Typed, interruption-safe private state ownership          |
-| 4. Grant and raw-server resources     | Complete    | Scoped files/listeners with byte fidelity intact          |
-| 5. Supervisor registry and server     | Complete    | Scoped sessions, control work, idle shutdown              |
-| 6. Supervisor client                  | Complete    | Cancellable transport, schedules, launch handoff          |
-| 7. App services and entry points      | Complete    | One Effect runtime path per executable                    |
-| 8. Test-suite migration               | Complete    | One Effect-aware TypeScript runner                        |
-| 9. Packaging, docs, and release gate  | Complete    | Execution-model release gate and artifact audit passed    |
-| 10. Effect CLI and diagnostic logging | In progress | Native CLI complete; private log sink and hardening next  |
+| Phase                                 | Status       | Result/target                                             |
+| ------------------------------------- | ------------ | --------------------------------------------------------- |
+| 0. Baseline and API verification      | Complete     | Green baseline, beta.98 source inspection, package choice |
+| 1. Decision records and toolchain     | Complete     | Exact pins, diagnostics, bundle and test foundation       |
+| 2. Errors and protocol schemas        | Complete     | Tagged failures and one validated wire contract           |
+| 3. Runtime-state and lock lifecycle   | Complete     | Typed, interruption-safe private state ownership          |
+| 4. Grant and raw-server resources     | Complete     | Scoped files/listeners with byte fidelity intact          |
+| 5. Supervisor registry and server     | Complete     | Scoped sessions, control work, idle shutdown              |
+| 6. Supervisor client                  | Complete     | Cancellable transport, schedules, launch handoff          |
+| 7. App services and entry points      | Complete     | One Effect runtime path per executable                    |
+| 8. Test-suite migration               | Complete     | One Effect-aware TypeScript runner                        |
+| 9. Packaging, docs, and release gate  | Complete     | Execution-model release gate and artifact audit passed    |
+| 10. Effect CLI and diagnostic logging | Gate pending | Implementation complete; Browser Use check remains        |
 
 ## Version and package decisions
 
@@ -98,45 +98,47 @@ slightly smaller package numbers. The table uses the recorded baseline where
 available and matched installed-artifact samples for the added readiness/RSS
 comparison.
 
-| Measure                                  | Phase 0      | Phase 9 artifact | Change   |
-| ---------------------------------------- | ------------ | ---------------- | -------- |
-| Tarball                                  | 77,330 bytes | 819,664 bytes    | 10.60x   |
-| Packed files                             | 61           | 23               | 38 fewer |
-| Installed size incl. dependencies        | 840 KiB      | 3,092 KiB        | 3.68x    |
-| Installed files                          | 78           | 40               | 38 fewer |
-| Historical structured version, 11 spawns | 65.36 ms     | 74.29 ms         | +13.7%   |
-| Empty query median, 7 fresh daemons      | 84.23 ms     | 84.234 ms        | <+0.01%  |
-| Fresh `serve` readiness median, 7        | 204.37 ms    | 218.85 ms        | +7.08%   |
-| Empty-supervisor RSS median, 7           | 65,632 KiB   | 75,184 KiB       | +14.55%  |
+| Measure                                 | Phase 0      | Phase 9 artifact | Phase 10 artifact | Phase 9→10 |
+| --------------------------------------- | ------------ | ---------------- | ----------------- | ---------- |
+| Tarball                                 | 77,330 bytes | 819,664 bytes    | 1,058,473 bytes   | +29.1%     |
+| Packed files                            | 61           | 23               | 29                | +6         |
+| Installed size incl. dependencies       | 840 KiB      | 3,092 KiB        | 3,908 KiB         | +26.4%     |
+| Installed files                         | 78           | 40               | 47                | +7         |
+| Version command median, 11 spawns       | 65.36 ms     | 74.29 ms         | 98.07 ms          | +32.0%     |
+| Empty query median, 7 fresh state roots | 84.23 ms     | 84.234 ms        | 132.88 ms         | +57.8%     |
+| Fresh `serve` readiness median, 7       | 204.37 ms    | 218.85 ms        | 236.43 ms         | +8.03%     |
+| Empty-supervisor RSS median, 7          | 65,632 KiB   | 75,184 KiB       | 75,968 KiB        | +1.04%     |
 
 These are local process samples, not benchmarks. The larger tarball is mainly
 two standalone copies of the bundled runtime and their debuggable external
 maps. The selected form avoids a shared-chunk discovery contract and installs
 only two small external runtime dependency trees. Minification, removal of
 unused declarations, and an explicit documentation allowlist reduced the
-pre-audit Effect artifact from 938,138 bytes/39 files/4,320 KiB/56 installed
-files to the figures above. Cold command and readiness impact is bounded; the
+pre-audit Effect artifact to the Phase 9 figures. Cold command and readiness
+impact is bounded; the
 measured empty-daemon memory increase is retained as a release reference.
-These figures predate Phase 10. Remeasure with native `--version`, no-argument
-home output, fresh `serve`, and an idle supervisor after the CLI/logging slice;
-`--version --json` is not a target contract.
+Phase 10 uses native `--version`, no-argument JSON home output, fresh `serve`,
+and a supervisor measured after its only session stops. The command-tree and
+standalone source-map growth is visible in cold commands and package size;
+readiness remains close to Phase 9 and idle RSS is nearly unchanged.
 
 ## Phase 10: Effect CLI and diagnostic logging
 
-Current progress:
+Completed result:
 
-- Complete: the custom parser/manual help model is removed; one pinned Effect
+- The custom parser/manual help model is removed; one pinned Effect
   command tree owns grammar, native help/version/completions/log-level, syntax
   rejection, and dispatch.
-- Complete: domain TOON/JSON behavior, native channel separation, exit `1`,
+- Domain TOON/JSON behavior, native channel separation, exit `1`,
   sanitized defect projection, foreground log-level routing, package smoke,
   build concurrency, and black-box native CLI tests pass.
-- Complete: the build license gate and notices include the additional
+- The build license gate and notices include the additional
   INI/TOML/YAML parsers brought into the standalone CLI by
   `NodeServices.layer`.
-- Next: enforce symmetric grant/private-state exclusion, finish the closed
-  diagnostic seam migration, and add bounded rotated supervisor JSONL with its
-  permissions, rotation, restart, structural, and canary tests.
+- Canonical grant/private-state overlap is rejected in both directions before
+  logging; the closed diagnostic seam, three-file 64-KiB rotation, private
+  permissions, restart cleanup, nested-runtime propagation, structural checks,
+  and content canaries are covered by tests.
 
 1. Characterize current domain values, idempotency, supervisor interactions,
    and operational error projections independently from the custom parser.
@@ -210,19 +212,18 @@ Current progress:
 | Distribution            | Exact/reproducible pack, install/reinstall/uninstall, size/startup evidence |
 | Beta upgrade safety     | Exact pins, source/API inspection, audit and full validation on each update |
 
-The Phase 9 current-platform repository gate passed its Vitest and black-box
-E2E suites, seven Playwright checks, strict Effect diagnostics, documentation
-validation, build validation, and clean package lifecycle. The
-Node 22 Linux lifecycle check passes with complete PID/socket/lock cleanup, and
-`pnpm audit` reports no known vulnerabilities. Browser Use 0.1.5 consumes the
-installed CLI URL and passes the complete interoperability fixture through the
-user-approved Chrome DevTools endpoint. Phase 10 must rerun this evidence after
-the CLI grammar and logger sinks change.
+The Phase 10 current-platform repository gate passes 131 Vitest tests,
+black-box E2E, seven Playwright checks, strict Effect diagnostics,
+documentation/build validation, and clean package lifecycle. The Node 22 Linux
+lifecycle check passes with complete PID/socket/lock cleanup, and `pnpm audit`
+reports no known vulnerabilities. The external Browser Use check reached
+Chrome's required remote-debugging consent and remains the only uncompleted
+Phase 10 validation row.
 
 ## Next action
 
-Finish the Phase 10 logging/security remainder above, then rerun the complete
-gate and measurements. Preserve the completed execution model, native CLI, raw
-serving, private control, and filesystem-security baseline. After the full gate
-passes, begin Phase 1 of the [annotation MVP](annotation-mvp.md). Do not publish
+Complete the user-approved Browser Use check. Then begin Phase 1 of the
+[annotation MVP](annotation-mvp.md) with raw-boundary characterization while
+preserving the completed execution model, native CLI, diagnostic sinks, raw
+serving, private control, and filesystem-security baseline. Do not publish
 automatically.

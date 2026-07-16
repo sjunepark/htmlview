@@ -10,20 +10,24 @@ import {
 import {
   Cause,
   Clock,
+  Context,
   Data,
   Deferred,
   Effect,
   Exit,
   FiberSet,
+  Logger,
+  References,
   Result,
   Scope,
   Semaphore,
 } from "effect";
 import type { Fiber as EffectFiber } from "effect/Fiber";
+import { logDiagnostic } from "../diagnostics.js";
 import { ContentListenerError, ControlError, PathError } from "../errors.js";
 import {
+  canonicalTreesOverlap,
   resolveServingGrant,
-  isWithinRoot,
   type ServingGrant,
 } from "../serving/grant.js";
 import {
@@ -485,9 +489,12 @@ class SessionRegistry {
 
 async function startSupervisorPromise(
   options: SupervisorOptions = {},
+  runPromise: <A, E>(
+    effect: Effect.Effect<A, E>,
+  ) => Promise<A> = Effect.runPromise,
 ): Promise<RunningSupervisor> {
   const paths = options.paths ?? statePaths();
-  await Effect.runPromise(ensurePrivateStateDirectory(paths));
+  await runPromise(ensurePrivateStateDirectory(paths));
   const instanceId = randomUUID();
   const sessions = new SessionRegistry(
     options.startSessionServer ?? startStaticServer,
@@ -498,14 +505,11 @@ async function startSupervisorPromise(
   const resolveGrant: typeof resolveServingGrant = (...arguments_) =>
     Effect.gen(function* () {
       const grant = yield* resolveGrantBase(...arguments_);
-      if (
-        grant.root === canonicalStateDirectory ||
-        isWithinRoot(grant.root, canonicalStateDirectory)
-      )
+      if (canonicalTreesOverlap(grant.root, canonicalStateDirectory))
         return yield* new PathError({
           code: "path.root_contains_state",
           message:
-            "Serving root cannot contain the htmlview runtime state directory",
+            "Serving root and htmlview runtime state directory must be disjoint",
         });
       return grant;
     });
@@ -526,8 +530,8 @@ async function startSupervisorPromise(
   let runIdle: IdleRuntime;
   if (options.idleRuntime !== undefined) runIdle = options.idleRuntime;
   else {
-    idleScope = await Effect.runPromise(Scope.make());
-    runIdle = await Effect.runPromise(
+    idleScope = await runPromise(Scope.make());
+    runIdle = await runPromise(
       Scope.provide(idleScope)(FiberSet.makeRuntime<never, void, never>()),
     );
   }
@@ -552,7 +556,7 @@ async function startSupervisorPromise(
 
   async function closeIdleScope(): Promise<void> {
     if (idleScope !== undefined)
-      await Effect.runPromise(Scope.close(idleScope, Exit.void));
+      await runPromise(Scope.close(idleScope, Exit.void));
   }
 
   function scheduleIdleShutdown(): void {
@@ -737,8 +741,8 @@ async function startSupervisorPromise(
     );
   }
 
-  const controlScope = await Effect.runPromise(Scope.make());
-  const runControlRequest = await Effect.runPromise(
+  const controlScope = await runPromise(Scope.make());
+  const runControlRequest = await runPromise(
     Scope.provide(controlScope)(FiberSet.makeRuntime<never, void, never>()),
   );
   const control = createServer((request, response) => {
@@ -751,7 +755,7 @@ async function startSupervisorPromise(
   control.requestTimeout = 10_000;
   control.keepAliveTimeout = 2_000;
   control.setTimeout(10_000, (socket) => socket.destroy());
-  await Effect.runPromise(
+  await runPromise(
     Scope.provide(controlScope)(
       Effect.addFinalizer(() =>
         Effect.promise(() => closeServer(control, shutdownGraceMilliseconds)),
@@ -765,11 +769,11 @@ async function startSupervisorPromise(
     const failures: unknown[] = [];
     const cleanupOperations: Array<() => Promise<void>> = [
       closeIdleScope,
-      () => Effect.runPromise(Scope.close(controlScope, Exit.void)),
+      () => runPromise(Scope.close(controlScope, Exit.void)),
     ];
     if (ownership !== undefined)
       cleanupOperations.push(() =>
-        Effect.runPromise(Scope.close(ownership, Exit.void)),
+        runPromise(Scope.close(ownership, Exit.void)),
       );
     for (const cleanup of cleanupOperations) {
       try {
@@ -798,14 +802,14 @@ async function startSupervisorPromise(
   let ownershipScope: Scope.Closeable;
   try {
     if (options.ownershipNonce === undefined) {
-      bootstrapScope = await Effect.runPromise(Scope.make());
-      bootstrapLock = await Effect.runPromise(
+      bootstrapScope = await runPromise(Scope.make());
+      bootstrapLock = await runPromise(
         Scope.provide(bootstrapScope)(acquireSupervisorLock(paths)),
       );
     }
-    const candidateScope = await Effect.runPromise(Scope.make());
+    const candidateScope = await runPromise(Scope.make());
     try {
-      await Effect.runPromise(
+      await runPromise(
         Scope.provide(candidateScope)(
           transferSupervisorLock(
             paths,
@@ -816,21 +820,24 @@ async function startSupervisorPromise(
       );
       ownershipScope = candidateScope;
     } catch (error) {
-      await Effect.runPromise(Scope.close(candidateScope, Exit.void));
+      await runPromise(Scope.close(candidateScope, Exit.void));
       throw error;
     }
   } catch (error) {
     throw startupFailure(error, await cleanupStartupResources());
   } finally {
     if (bootstrapScope !== undefined)
-      await Effect.runPromise(Scope.close(bootstrapScope, Exit.void));
+      await runPromise(Scope.close(bootstrapScope, Exit.void));
   }
 
-  await Effect.runPromise(
-    listenControlServer(control, paths.controlSocket),
-  ).catch(async (error: unknown) => {
-    throw startupFailure(error, await cleanupStartupResources(ownershipScope));
-  });
+  await runPromise(listenControlServer(control, paths.controlSocket)).catch(
+    async (error: unknown) => {
+      throw startupFailure(
+        error,
+        await cleanupStartupResources(ownershipScope),
+      );
+    },
+  );
   try {
     await chmod(paths.controlSocket, 0o600);
     const socketMetadata = await lstat(paths.controlSocket);
@@ -856,17 +863,17 @@ async function startSupervisorPromise(
           failures.push(error);
         }
         try {
-          await Effect.runPromise(sessions.stopAll());
+          await runPromise(sessions.stopAll());
         } catch (error) {
           failures.push(error);
         }
         try {
-          await Effect.runPromise(Scope.close(controlScope, Exit.void));
+          await runPromise(Scope.close(controlScope, Exit.void));
         } catch (error) {
           failures.push(error);
         }
         try {
-          await Effect.runPromise(Scope.close(ownershipScope, Exit.void));
+          await runPromise(Scope.close(ownershipScope, Exit.void));
         } catch (error) {
           failures.push(error);
         }
@@ -901,23 +908,49 @@ async function startSupervisorPromise(
   };
 }
 
-export function startSupervisor(
+export const startSupervisor = Effect.fn("supervisor.start")((
   options: SupervisorOptions = {},
-): Effect.Effect<RunningSupervisor, SupervisorLifecycleError> {
-  return Effect.tryPromise({
-    try: () => startSupervisorPromise(options),
-    catch: (cause) => new SupervisorLifecycleError({ phase: "startup", cause }),
+) => {
+  return Effect.gen(function* () {
+    const currentLoggers = yield* Logger.CurrentLoggers;
+    const logToStderr = yield* Logger.LogToStderr;
+    const minimumLogLevel = yield* References.MinimumLogLevel;
+    const diagnosticContext = Context.make(
+      Logger.CurrentLoggers,
+      currentLoggers,
+    ).pipe(
+      Context.add(Logger.LogToStderr, logToStderr),
+      Context.add(References.MinimumLogLevel, minimumLogLevel),
+    );
+    const runWithDiagnostics = Effect.runPromiseWith(diagnosticContext) as <
+      A,
+      E,
+    >(
+      effect: Effect.Effect<A, E>,
+    ) => Promise<A>;
+    return yield* Effect.tryPromise({
+      try: () => startSupervisorPromise(options, runWithDiagnostics),
+      catch: (cause) =>
+        new SupervisorLifecycleError({ phase: "startup", cause }),
+    });
   });
-}
+});
 
-export function runSupervisor(
+export const runSupervisor = Effect.fn("supervisor.run")((
   options: SupervisorOptions = {},
-): Effect.Effect<void, SupervisorLifecycleError, Scope.Scope> {
+) => {
   return Effect.gen(function* () {
     const supervisor = yield* Effect.acquireRelease(
       startSupervisor(options),
-      (running) => running.close.pipe(Effect.orDie),
+      (running) =>
+        running.close.pipe(
+          Effect.ensuring(
+            logDiagnostic("Info", { operation: "supervisor.stop" }),
+          ),
+          Effect.orDie,
+        ),
     );
+    yield* logDiagnostic("Info", { operation: "supervisor.start" });
     yield* supervisor.closed;
   });
-}
+});

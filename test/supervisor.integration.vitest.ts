@@ -6,6 +6,7 @@ import {
   lstat,
   mkdir,
   mkdtemp,
+  readFile,
   realpath,
   readdir,
   rm,
@@ -20,6 +21,7 @@ import { homedir, tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, it } from "vitest";
 import { Effect, Exit, Scope } from "effect";
+import { logDiagnostic } from "../src/diagnostics.js";
 import { ContentListenerError } from "../src/errors.js";
 import { resolveServingGrant } from "../src/serving/grant.js";
 import { startStaticServer } from "../src/serving/http.js";
@@ -27,6 +29,7 @@ import {
   ProcessStartError,
   SupervisorClient,
 } from "../src/supervisor/client.js";
+import { supervisorDiagnosticLayer } from "../src/supervisor/logging.js";
 import {
   controlHost,
   maximumControlResponseBytes,
@@ -573,6 +576,52 @@ describe("supervisor lifecycle", () => {
     await assert.rejects(lstat(paths.directory));
   });
 
+  it("rejects roots equal to or nested beneath configured runtime state", async () => {
+    for (const nested of [false, true]) {
+      const parent = await temporaryDirectory("hv-state-inverse-");
+      const state = path.join(parent, nested ? "state" : "equal");
+      const root = nested ? path.join(state, "served") : state;
+      await mkdir(root, { recursive: true });
+      const entry = path.join(root, "report.html");
+      await writeFile(entry, "<!doctype html>");
+      const paths = statePaths({ HTMLVIEW_STATE_DIR: state });
+      let starts = 0;
+      const client = new SupervisorClient(paths, () =>
+        Effect.sync(() => (starts += 1)),
+      );
+
+      await assert.rejects(
+        runEffect(client.serve(entry, await realpath(root))),
+        {
+          code: "path.root_contains_state",
+        },
+      );
+      assert.equal(starts, 0);
+      assert.deepEqual(await readdir(root), ["report.html"]);
+    }
+  });
+
+  it("rejects a state symlink whose canonical tree contains the grant", async () => {
+    const parent = await temporaryDirectory("hv-state-inverse-link-");
+    const actualState = path.join(parent, "actual");
+    const aliasState = path.join(parent, "alias");
+    const root = path.join(actualState, "served");
+    await mkdir(root, { recursive: true });
+    await symlink(actualState, aliasState, "dir");
+    const entry = path.join(root, "report.html");
+    await writeFile(entry, "<!doctype html>");
+    const paths = statePaths({ HTMLVIEW_STATE_DIR: aliasState });
+    let starts = 0;
+    const client = new SupervisorClient(paths, () =>
+      Effect.sync(() => (starts += 1)),
+    );
+
+    await assert.rejects(runEffect(client.serve(entry, await realpath(root))), {
+      code: "path.root_contains_state",
+    });
+    assert.equal(starts, 0);
+  });
+
   it("revalidates runtime-state overlap at the supervisor seam", async () => {
     const root = await temporaryDirectory("hv-state-recheck-");
     const paths = statePaths({
@@ -582,6 +631,29 @@ describe("supervisor lifecycle", () => {
     await writeFile(entry, "<!doctype html>");
     const supervisor = await runEffect(startSupervisor({ paths }));
     supervisors.push(supervisor);
+    const response = await controlRequest(paths, "POST", "/sessions", {
+      entry,
+      root,
+    });
+    assert.equal(response.status, 400);
+    assert.equal(
+      (response.value as { error: { code: string } }).error.code,
+      "path.root_contains_state",
+    );
+  });
+
+  it("revalidates a grant nested beneath state at the supervisor seam", async () => {
+    const parent = await temporaryDirectory("hv-state-inverse-recheck-");
+    const paths = statePaths({
+      HTMLVIEW_STATE_DIR: path.join(parent, "state"),
+    });
+    const supervisor = await runEffect(startSupervisor({ paths }));
+    supervisors.push(supervisor);
+    const root = path.join(paths.directory, "served");
+    await mkdir(root);
+    const entry = path.join(root, "report.html");
+    await writeFile(entry, "<!doctype html>");
+
     const response = await controlRequest(paths, "POST", "/sessions", {
       entry,
       root,
@@ -1289,6 +1361,53 @@ describe("supervisor lifecycle", () => {
     assert.equal(await socketExists(paths), false);
     await assert.rejects(lstat(paths.supervisorLock));
     await assert.rejects(fetch(served.session.url));
+  });
+
+  it("preserves the private logger inside supervisor callback runtimes", async () => {
+    const parent = await temporaryDirectory("hv-nested-log-");
+    const paths = statePaths({
+      HTMLVIEW_STATE_DIR: path.join(parent, "state"),
+    });
+    const root = await temporaryDirectory("hv-nested-log-entry-");
+    const entry = path.join(root, "report.html");
+    await writeFile(entry, "<!doctype html>");
+    const supervisor = await runEffect(
+      startSupervisor({
+        paths,
+        idleMilliseconds: 10_000,
+        startSessionServer: (grant) =>
+          Effect.gen(function* () {
+            const server = yield* startStaticServer(grant);
+            yield* Effect.addFinalizer(() =>
+              logDiagnostic("Error", {
+                operation: "http.cleanup",
+                code: "runtime.internal",
+                failureCount: 1,
+              }),
+            );
+            return server;
+          }),
+      }).pipe(Effect.provide(supervisorDiagnosticLayer(paths))),
+    );
+    supervisors.push(supervisor);
+    const client = new SupervisorClient(paths);
+    const served = await runEffect(client.serve(entry, root));
+    assert.equal(
+      (await runEffect(client.stopSession(served.session.id))).stopped,
+      1,
+    );
+
+    const events = (await readFile(paths.diagnosticLogFile, "utf8"))
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line) as Record<string, unknown>);
+    assert.equal(
+      events.some(
+        (event) =>
+          event.operation === "http.cleanup" && event.failure_count === 1,
+      ),
+      true,
+    );
   });
 });
 

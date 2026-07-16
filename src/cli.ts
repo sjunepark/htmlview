@@ -21,4 +21,4 @@ const program = runApp(process.argv.slice(2), {
   ),
 );
 
-runMain(program);
+runMain(program, { disableErrorReporting: true });
