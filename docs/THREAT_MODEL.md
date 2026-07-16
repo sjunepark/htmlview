@@ -115,6 +115,7 @@ The service should provide the browser protections that do not transform page
 bodies or contradict normal static hosting:
 
 - accurate `Content-Type` and `X-Content-Type-Options: nosniff`;
+- `Cache-Control: no-cache` so stored raw files are revalidated after edits;
 - no permissive CORS response;
 - no directory listings;
 - explicit rejection of unsupported methods; and

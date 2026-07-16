@@ -5,6 +5,7 @@ import {
   mkdtemp,
   lstat,
   readdir,
+  readFile,
   realpath,
   stat,
   writeFile,
@@ -121,6 +122,15 @@ async function waitForPath(pathname, timeoutMilliseconds = 2_000) {
     await new Promise((resolve) => setTimeout(resolve, 20));
   }
   await lstat(pathname);
+}
+
+async function activeSupervisorEntry() {
+  const launcher = await readFile(path.resolve("dist/cli.js"), "utf8");
+  const match = launcher.match(
+    /^#!\/usr\/bin\/env node\nimport "\.\/(generations\/[0-9a-f]{64})\/cli\.js";\n$/,
+  );
+  assert.notEqual(match, null, "build launcher does not select one generation");
+  return path.resolve("dist", match[1], "supervisor-main.js");
 }
 
 before(async () => {
@@ -271,14 +281,10 @@ test("supervisor runtime signals close owned state before exit", async () => {
       HTMLVIEW_IDLE_MS: "30000",
     };
     delete childEnvironment.HTMLVIEW_SUPERVISOR_LOCK_NONCE;
-    const child = spawn(
-      process.execPath,
-      [path.resolve("dist/supervisor-main.js")],
-      {
-        env: childEnvironment,
-        stdio: "ignore",
-      },
-    );
+    const child = spawn(process.execPath, [await activeSupervisorEntry()], {
+      env: childEnvironment,
+      stdio: "ignore",
+    });
     const exited = new Promise((resolve, reject) => {
       child.once("error", reject);
       child.once("exit", (code, exitSignal) =>

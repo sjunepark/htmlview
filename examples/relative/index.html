@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>htmlview relative-assets example</title>
+    <link rel="stylesheet" href="./assets/site.css" />
+  </head>
+  <body>
+    <main>
+      <img src="./assets/mark.svg" alt="Green geometric htmlview mark" />
+      <p class="eyebrow">Relative asset fixture</p>
+      <h1>HTML, CSS, SVG, modules, and fetch</h1>
+      <p id="message">Loading JSON…</p>
+      <dl>
+        <div>
+          <dt>Module status</dt>
+          <dd id="module-status">waiting</dd>
+        </div>
+        <div>
+          <dt>Current origin</dt>
+          <dd id="origin"></dd>
+        </div>
+      </dl>
+    </main>
+    <script type="module" src="./scripts/app.js"></script>
+  </body>
+</html>

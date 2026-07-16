@@ -27,13 +27,17 @@ Every command accepts `--json` and `--help`. `--version` is a top-level
 structured query. The home view accepts
 `--fields entry,root` to add those fields to each session row. Unknown
 commands, arguments, flags, and field names are usage errors; they are never
-ignored.
+ignored. `--fields` may be provided at most once.
 
 `--help` succeeds without requiring operational arguments or contacting the
 supervisor. It is the universal discovery flag, not an operation.
 
 Commands never prompt. Repeating a successful `serve` or `stop` request is a
 successful no-op.
+
+`serve` is non-blocking after readiness: the CLI process returns the structured
+result, while the detached supervisor keeps the session URL alive. It does not
+behave like a terminal-attached development server.
 
 ## Logical result model
 
@@ -101,13 +105,17 @@ count: 2
 sessions[2]{id,status,url}:
   7sp4k2,ready,"http://h-k7w4m2.localhost:49152/report.html"
   c2m9qa,ready,"http://h-p9c3qa.localhost:49153/public/index.html"
-help[1]: "Run `htmlview stop <session>` to stop a session"
+help[2]:
+  - "Run `htmlview stop <session>` to stop a session"
+  - "Run `htmlview --fields entry,root` to show session paths"
 ```
 
 Entry and root paths belong behind `--fields`; they are not part of the default
 list schema. Add future optional fields only when they remove a demonstrated
 follow-up query. The requested fields are selected by the supervisor rather
-than discarded after transport.
+than discarded after transport. When multiple minimal rows are active, the
+home view suggests the field-expanded command; it omits that suggestion once
+optional fields are already present.
 
 Contextual commands preserve fixed choices that affect the next result, such
 as `--json`, while leaving runtime values as placeholders such as `<session>`.

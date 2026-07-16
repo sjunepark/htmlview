@@ -43,6 +43,7 @@ function send(
   response.writeHead(status, {
     "content-type": "text/plain; charset=utf-8",
     "content-length": String(body.length),
+    "cache-control": "no-cache",
     "x-content-type-options": "nosniff",
     ...extraHeaders,
   });
@@ -313,6 +314,7 @@ export function createStaticHandler(
           "content-length": opened.metadata.size.toString(),
           "last-modified": modified.toUTCString(),
           etag: tag,
+          "cache-control": "no-cache",
           "x-content-type-options": "nosniff",
           "cross-origin-resource-policy": "same-origin",
         };
@@ -322,6 +324,7 @@ export function createStaticHandler(
             response.writeHead(304, {
               etag: tag,
               "last-modified": modified.toUTCString(),
+              "cache-control": "no-cache",
               "x-content-type-options": "nosniff",
             });
             response.end();

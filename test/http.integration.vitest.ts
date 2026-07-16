@@ -177,6 +177,7 @@ describe("faithful static HTTP", () => {
       ),
     );
     assert.equal(response.headers["content-type"], "text/html; charset=utf-8");
+    assert.equal(response.headers["cache-control"], "no-cache");
     assert.equal(
       response.headers["content-length"],
       String(response.body.length),
@@ -206,6 +207,7 @@ describe("faithful static HTTP", () => {
     });
     assert.equal(byTag.status, 304);
     assert.equal(byTag.body.length, 0);
+    assert.equal(byTag.headers["cache-control"], "no-cache");
     const byWeakTag = await rawRequest(grant.entryUrlPath, {
       headers: { "if-none-match": `W/${String(first.headers.etag)}` },
     });
@@ -260,6 +262,17 @@ describe("faithful static HTTP", () => {
       (await rawRequest("/assets/app.css")).body.toString(),
       "body { color: blue }\n",
     );
+  });
+
+  it("requires revalidation when a missing file is created", async () => {
+    const missing = await rawRequest("/assets/later.css");
+    assert.equal(missing.status, 404);
+    assert.equal(missing.headers["cache-control"], "no-cache");
+
+    await writeFile(path.join(root, "assets", "later.css"), "body {}\n");
+    const created = await rawRequest("/assets/later.css");
+    assert.equal(created.status, 200);
+    assert.equal(created.body.toString(), "body {}\n");
   });
 
   it("rejects malformed paths, traversal, separators, and NULs", async () => {

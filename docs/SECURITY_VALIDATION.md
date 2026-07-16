@@ -11,6 +11,7 @@ set; Linux package installation is the separate
 | Exact content and control `Host` validation                             | `test/http.integration.vitest.ts` forged-host cases and `test/supervisor.integration.vitest.ts` private-socket control requests |
 | Fresh, high-entropy session names                                       | `generateSessionHostname()` uses 128 random bits; lifecycle and browser-origin tests require distinct observed hostnames        |
 | No permissive CORS; foreign page cannot read content                    | response-header integration test and Playwright cross-origin fetch test                                                         |
+| Raw browser responses require cache revalidation                        | `Cache-Control: no-cache` assertions in HTTP integration and Playwright raw-handler checks                                      |
 | Entry/root disclosure, broad-root rejection, and in-root hidden files   | `test/grant.vitest.ts`, supervisor state-overlap test, raw HTTP tests, and complete browser fixture                             |
 | Plain/encoded traversal, malformed UTF-8, controls, separators, Unicode | generated single-decode and Unicode filename cases in `test/http.integration.vitest.ts`                                         |
 | Root containment and entry escape                                       | 500 generated containment shapes plus default/explicit grant tests                                                              |

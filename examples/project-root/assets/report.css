@@ -1,0 +1,32 @@
+:root {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  color: #2b2118;
+  background: #f7f0e3;
+}
+
+body {
+  max-width: 52rem;
+  margin: 0 auto;
+  padding: clamp(2rem, 8vw, 6rem) 1.5rem;
+}
+
+header {
+  border-bottom: 3px solid #c45e35;
+}
+
+h1 {
+  max-width: 16ch;
+  font-size: clamp(2.3rem, 8vw, 5rem);
+  line-height: 0.98;
+}
+
+main {
+  display: grid;
+  gap: 1.5rem;
+  margin-top: 2rem;
+}
+
+output {
+  padding-left: 1rem;
+  border-left: 3px solid #c45e35;
+}

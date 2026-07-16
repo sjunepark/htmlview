@@ -43,7 +43,8 @@ test("the htmlview raw handler loads the complete fixture in a generic browser",
 }) => {
   const server = await startStaticServer();
   try {
-    await page.goto(server.url);
+    const navigation = await page.goto(server.url);
+    expect(navigation?.headers()["cache-control"]).toBe("no-cache");
     await page.waitForFunction(() => window.fixtureResults !== undefined);
     expect(await page.evaluate(() => window.fixtureResults)).toEqual({
       protocol: "http:",

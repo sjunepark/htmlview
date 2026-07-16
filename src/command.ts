@@ -138,6 +138,14 @@ function parseHome(
       continue;
     }
     if (argument === "--fields") {
+      if (fields.length > 0) {
+        return usageFailure(
+          "usage.duplicate_flag",
+          "Flag --fields may be provided only once",
+          { valid_flags: homeFlags },
+          commandHelp("htmlview --help", format, "for complete examples"),
+        );
+      }
       const value = takeValue(args, index);
       if (value === undefined)
         return missingValue(

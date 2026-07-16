@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>htmlview standalone example</title>
+    <style>
+      :root {
+        color-scheme: light dark;
+        font-family: ui-sans-serif, system-ui, sans-serif;
+      }
+
+      body {
+        display: grid;
+        min-height: 100vh;
+        margin: 0;
+        place-items: center;
+        background: #10231c;
+        color: #f0f7f3;
+      }
+
+      main {
+        max-width: 38rem;
+        padding: 3rem;
+      }
+
+      code {
+        color: #9ce8bf;
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <p>Single-file fixture</p>
+      <h1>htmlview is serving this page</h1>
+      <p>
+        This document has no external assets. Its location is
+        <code id="location"></code>.
+      </p>
+    </main>
+    <script>
+      document.querySelector("#location").textContent = window.location.href;
+    </script>
+  </body>
+</html>

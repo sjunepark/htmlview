@@ -28,6 +28,14 @@ complete. The `0.1.0` artifact has not been published.
 - The package is two minified standalone ESM executables with external source
   maps, exact consumer documentation, bundled-dependency notices, and only
   TOON/MIME runtime dependencies.
+- Builds validate unique staged output and publish immutable,
+  content-addressed generations behind one atomically replaced `dist/cli.js`
+  launcher. Concurrent builds retain runnable, generation-consistent artifacts
+  without a publication lock. Deterministic publication tests cover failure
+  between installation and activation, competing distinct generations, and
+  tampered generation reuse.
+- Committed examples exercise standalone, relative-asset, and explicit-root
+  workflows through source-checkout scripts and the black-box E2E suite.
 - The Effect migration comparison and final implementation details are in
   [`docs/plans/effect-v4-adoption.md`](docs/plans/effect-v4-adoption.md).
 
@@ -68,6 +76,11 @@ is stable. Any future workflow must consume the existing raw URL, keep state
 outside served projects, preserve an uninstrumented route, and receive a
 separate fidelity and threat-model review. No annotation interface is part of
 the current release.
+
+TOON readability optimization is also deferred until after `0.1.0`. Revisit
+the quoted structural-character hardening only with evidence that supported
+decoders preserve hostile values and with size comparisons showing the default
+format remains worthwhile; retain the current hardening until then.
 
 ## Next action
 
