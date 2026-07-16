@@ -1,4 +1,6 @@
+import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
+import { tmpdir } from "node:os";
 import path from "node:path";
 
 const commands = {
@@ -24,9 +26,13 @@ if (args === undefined || process.argv.length !== 3) {
   process.exitCode = 2;
 } else {
   const user = process.getuid?.() ?? "user";
+  const checkout = createHash("sha256")
+    .update(process.cwd())
+    .digest("hex")
+    .slice(0, 12);
   const stateDirectory =
     process.env.HTMLVIEW_EXAMPLE_STATE_DIR ??
-    path.join("/tmp", `htmlview-example-${user}`);
+    path.join(tmpdir(), `htmlview-example-${user}-${checkout}`);
   const result = spawnSync(process.execPath, ["dist/cli.js", ...args], {
     cwd: process.cwd(),
     encoding: "utf8",

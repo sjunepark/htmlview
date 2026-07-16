@@ -12,8 +12,10 @@ pnpm example:root
 
 Each command builds the current source and prints indented JSON containing a
 ready, directly copyable `.localhost` URL.
-The examples use dedicated per-user runtime state under `/tmp`, isolated from
-ordinary htmlview sessions. List or stop only the example sessions with:
+The examples use dedicated per-user, per-checkout runtime state under the
+operating system's temporary directory, isolated from ordinary htmlview
+sessions and other checkouts. List or stop only this checkout's example
+sessions with:
 
 ```sh
 pnpm example:list

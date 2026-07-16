@@ -7,6 +7,8 @@ import { after, before, test } from "node:test";
 
 const repository = process.cwd();
 const examples = path.join(repository, "examples");
+const commandTimeoutMilliseconds = 30_000;
+const requestTimeoutMilliseconds = 10_000;
 
 let temporary;
 let environment;
@@ -29,10 +31,22 @@ function example(command) {
     child.stderr.setEncoding("utf8").on("data", (chunk) => {
       stderr += chunk;
     });
-    child.once("error", reject);
-    child.once("exit", (code, signal) =>
-      resolve({ code, signal, stdout, stderr }),
-    );
+    const timeout = setTimeout(() => {
+      child.kill("SIGKILL");
+      reject(
+        new Error(
+          `Example command ${command} timed out after ${commandTimeoutMilliseconds}ms\nstdout:\n${stdout}\nstderr:\n${stderr}`,
+        ),
+      );
+    }, commandTimeoutMilliseconds);
+    child.once("error", (error) => {
+      clearTimeout(timeout);
+      reject(error);
+    });
+    child.once("exit", (code, signal) => {
+      clearTimeout(timeout);
+      resolve({ code, signal, stdout, stderr });
+    });
   });
 }
 
@@ -44,10 +58,24 @@ async function serve(command) {
 }
 
 async function assertServed(url, source, contentType) {
-  const response = await fetch(url);
-  assert.equal(response.status, 200, url);
-  assert.equal(response.headers.get("content-type"), contentType, url);
-  assert.equal(await response.text(), await readFile(source, "utf8"), url);
+  const controller = new AbortController();
+  const timeout = setTimeout(
+    () =>
+      controller.abort(
+        new Error(
+          `HTTP request ${url} timed out after ${requestTimeoutMilliseconds}ms`,
+        ),
+      ),
+    requestTimeoutMilliseconds,
+  );
+  try {
+    const response = await fetch(url, { signal: controller.signal });
+    assert.equal(response.status, 200, url);
+    assert.equal(response.headers.get("content-type"), contentType, url);
+    assert.equal(await response.text(), await readFile(source, "utf8"), url);
+  } finally {
+    clearTimeout(timeout);
+  }
 }
 
 before(async () => {
