@@ -138,7 +138,7 @@ channel that later needs replacing.
 
 ## Phase 3: instrumented content and trusted shell
 
-- Add an HTML-token-aware entry transform that inserts one external probe
+- **Complete:** add an HTML-token-aware entry transform that inserts one external probe
   reference without reserializing original bytes or weakening CSP.
 - Bundle immutable in-memory shell/probe assets; write nothing beside served
   content.
@@ -178,9 +178,9 @@ channel that later needs replacing.
 
 ## Next action
 
-Phases 1–2 are complete. Begin Phase 3 with the HTML entry transform and
-immutable shell/probe assets, then connect the trusted shell to the shared
-durable draft/send/end transitions.
+Phases 1–2 and the Phase 3 byte-preserving entry transform are complete. Add
+immutable shell/probe assets and content-origin routing next, then connect the
+trusted shell to the shared durable draft/send/end transitions.
 
 ## Completion gate
 

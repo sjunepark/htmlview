@@ -57,7 +57,8 @@
   },
   "dependencies": {
     "@toon-format/toon": "2.3.0",
-    "mime-types": "3.0.2"
+    "mime-types": "3.0.2",
+    "parse5": "8.0.1"
   },
   "devDependencies": {
     "@effect/language-service": "0.87.0",

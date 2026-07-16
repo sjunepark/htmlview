@@ -13,7 +13,7 @@ if (
 const packageBuild = arguments_[0] === "--package";
 const root = process.cwd();
 const outputDirectory = path.join(root, "dist");
-const externalPackages = ["@toon-format/toon", "mime-types"];
+const externalPackages = ["@toon-format/toon", "mime-types", "parse5"];
 const licensedBundledPackages = new Set([
   "@effect/platform-node",
   "@effect/platform-node-shared",
