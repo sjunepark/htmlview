@@ -4,9 +4,9 @@ This matrix maps the required checks in [THREAT_MODEL.md](THREAT_MODEL.md) to
 repeatable evidence. `pnpm run check` runs the automated macOS/current-platform
 set; Linux package installation is the separate
 `pnpm run validate:package:linux` release check. The first table is the
-implemented raw-serving, native CLI, persistence, and feedback baseline. The
-second table is the remaining release-hardening evidence required before
-`0.1.0`.
+implemented raw-serving, native CLI, logging, annotation, and browser-review
+baseline. The second table is the remaining release-hardening evidence required
+before `0.1.0`.
 
 | Control or adversarial case                                             | Evidence                                                                                                                    |
 | ----------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------- |
@@ -33,21 +33,19 @@ second table is the remaining release-hardening evidence required before
 | Reproducible package version and lifecycle                              | clean-prefix pack/install/serve/reinstall/uninstall checks on the current platform and Node 22 Debian                       |
 | Bundle dependency, license, and map policy                              | exact Effect pins, build-time import/license-set checks, third-party notices, linked maps without embedded source content   |
 | Distribution size and process cost                                      | Clean-package measurements recorded in the repository Effect plan cover size, file count, cold commands, readiness, and RSS |
+| State and serving grants are canonically disjoint                       | Equality, inverse nesting, symlink directions, descendant-root, and ordinary disjoint cases at service and supervisor seams |
+| Foreground and detached diagnostics stay separate, private, and bounded | All-level channel tests, closed-event canaries, exact rotation limits, private modes, restart, cleanup, and overlap checks  |
+| Selected-entry instrumentation remains isolated and byte preserving     | Token-aware transform corpus, raw before/after integration comparison, and Playwright raw-byte comparison                   |
+| Annotation state and feedback are durable and bounded                   | Permission/schema/recovery/limit tests; atomic send/end/discard; cursor retry, cancellation, restart, and tombstones        |
+| Human browser feedback reaches the foreground agent                     | Playwright element/freeform queue, shell-only comment, send, explicit-discard End, listener closure, and CLI feedback flow  |
 
 ## Required `0.1.0` evidence (pending)
 
-| Control or adversarial case                              | Required evidence                                                                                                                                                                             |
-| -------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| State and serving grants are canonically disjoint        | Equality, inverse nesting, both symlink directions, state descendants selected as roots, and ordinary disjoint roots                                                                          |
-| Foreground logging cannot corrupt stdout                 | Captured-channel tests at every log level, including `none`, domain failures, defects, interruption, and hostile input                                                                        |
-| Detached logs stay private and bounded                   | Restart/rotation tests for exact size/file-count constants, `0700` directories, `0600` files, cleanup, and state-root exclusion                                                               |
-| Logs exclude sensitive and attacker-controlled content   | Generated canary tests covering comments, prompts, anchors, selectors, DOM/HTML, forms, headers, cookies, paths, files, protocol payloads, dependency errors, newlines, and terminal controls |
-| Review origins cannot reach raw or supervisor authority  | Exact Host/Origin/fetch-metadata, CORS, cross-origin iframe, postMessage source/schema, and capability-separation tests                                                                       |
-| Review creation preserves raw fidelity                   | Before/after byte, header, path, Host, cache, method, confinement, URL, and lifecycle comparisons                                                                                             |
-| Annotation state is private, bounded, and crash-safe     | Permission, schema/version, atomic-recovery, corruption, restart-adoption, global/per-review bounds, and no served-root writes                                                                |
-| Feedback delivery is non-destructive and never log-based | Draft durability, atomic send, cursor retry/duplicates, wait cancellation, one-consumer conflict, explicit discard, and tombstone expiry                                                      |
-| Hostile authored content cannot read typed comments      | Real-browser attempts to reach shell DOM/state/mutation routes plus stored-XSS and forged-target cases                                                                                        |
-| Instrumentation failure remains explicit                 | Authored CSP, encoding, malformed markup, framing, navigation, native-control, and Explore/Annotate browser cases                                                                             |
+| Control or adversarial case                            | Required evidence                                                                                                           |
+| ------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------- |
+| Review browser authorization is adversarially complete | Wrong/missing/duplicate Origin and fetch metadata, ambiguous raw headers, content-type variants, CORS, and capability tests |
+| Hostile authored content cannot read typed comments    | Real-browser attempts to reach shell DOM/state/mutation routes plus stored-XSS and forged-target cases                      |
+| Instrumentation failure remains explicit               | Authored CSP, encoding, malformed markup, framing, navigation, native-control, and Explore/Annotate browser cases           |
 
 ## Residual risks
 
@@ -70,6 +68,8 @@ accepted residual risk. This file records evidence and pending gates only.
   selectors to 2 KiB, DOM paths to 4 KiB, normalized text to 512 bytes, and
   stored entry/root paths to 8 KiB. Content mutations reserve capacity beneath
   the hard byte ceilings for mandatory cursor, status, and lifecycle commits.
+  Each review admits one selected-entry read/parse/transform at a time and
+  rejects entries larger than 8 MiB before parsing.
   Each review-origin start/readiness sequence is bounded at 2 seconds, and the
   private two-origin client operation is bounded at 6 seconds.
 - Control shutdown gives admitted sockets 2 seconds before forcing them closed;

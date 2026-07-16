@@ -44,6 +44,7 @@ import {
   type StaticSessionServer,
 } from "../serving/http.js";
 import {
+  ReviewSurfaceState,
   startReviewOriginServer,
   type ReviewOriginRole,
   type ReviewOriginServer,
@@ -135,6 +136,7 @@ type StartSessionServer = (
 
 type StartReviewOriginServer = (
   role: ReviewOriginRole,
+  state: ReviewSurfaceState,
 ) => Effect.Effect<ReviewOriginServer, ContentListenerError, Scope.Scope>;
 
 type IdleRuntime = (effect: Effect.Effect<void>) => EffectFiber<void, never>;
@@ -608,14 +610,14 @@ class SessionRegistry {
 
         const existing = this.annotations.openReview({
           root: session.grant.root,
-          entry: session.grant.routeEntry,
+          entry: session.grant.entryUrlPath,
         });
         if (existing !== undefined) {
           const currentLive = this.#liveReviews.get(existing.id);
           if (existing.status === "ready" && currentLive !== undefined)
             return this.#reviewResult(existing.id, currentLive, session, true);
           if (existing.status === "stopped") {
-            const live = yield* this.#acquireReview(session);
+            const live = yield* this.#acquireReview(session, existing.id);
             yield* this.annotations
               .resumeReady(existing.id, session.summary.id)
               .pipe(
@@ -633,13 +635,13 @@ class SessionRegistry {
         let id: string;
         do id = generateReviewId();
         while (this.annotations.hasIdentifier(id));
-        const live = yield* this.#acquireReview(session);
+        const live = yield* this.#acquireReview(session, id);
         yield* this.annotations
           .createReady({
             id,
             identity: {
               root: session.grant.root,
-              entry: session.grant.routeEntry,
+              entry: session.grant.entryUrlPath,
             },
             session: session.summary.id,
           })
@@ -658,16 +660,47 @@ class SessionRegistry {
 
   #acquireReview(
     session: LiveSession,
+    reviewId: string,
   ): Effect.Effect<LiveReview, ContentListenerError> {
     return Effect.gen({ self: this }, function* () {
       const scope = yield* Scope.fork(this.#scope, "parallel");
       this.#pendingScopes.add(scope);
       const activate = Effect.gen({ self: this }, function* () {
-        const startReadyOrigin = (role: ReviewOriginRole) =>
-          Scope.provide(scope)(this.startReviewOrigin(role)).pipe(
-            Effect.tap((server) =>
-              verifyListenerReady(server, server.readinessPath, 204),
-            ),
+        const surface = new ReviewSurfaceState();
+        const startOrigin = (role: ReviewOriginRole) =>
+          Scope.provide(scope)(this.startReviewOrigin(role, surface));
+        const shell = yield* startOrigin("shell");
+        const content = yield* startOrigin("content");
+        const rawHostname = new URL(session.summary.url).hostname;
+        if (
+          shell.hostname === content.hostname ||
+          shell.hostname === rawHostname ||
+          content.hostname === rawHostname
+        )
+          return yield* new ContentListenerError({
+            code: "http.readiness_failed",
+            message: "The review origins were not isolated",
+          });
+        surface.configure({
+          reviewId,
+          grant: session.grant,
+          shellOrigin: shell.origin,
+          contentOrigin: content.origin,
+          service: {
+            record: () => this.annotations.review(reviewId),
+            queue: (input) => this.annotations.queueDraft(reviewId, input),
+            send: (draftIds, options) =>
+              this.annotations.sendDrafts(reviewId, draftIds, options),
+            closeAfterEnd: Effect.gen({ self: this }, function* () {
+              const current = this.#liveReviews.get(reviewId);
+              if (current?.scope !== scope) return;
+              this.#liveReviews.delete(reviewId);
+              yield* Scope.close(scope, Exit.void);
+            }),
+          },
+        });
+        const verify = (server: ReviewOriginServer) =>
+          verifyListenerReady(server, server.readinessPath, 204).pipe(
             Effect.timeoutOrElse({
               duration: reviewOriginReadyTimeoutMilliseconds,
               orElse: () =>
@@ -679,21 +712,22 @@ class SessionRegistry {
                 ),
             }),
           );
-        const shell = yield* startReadyOrigin("shell");
-        const content = yield* startReadyOrigin("content");
-        const rawHostname = new URL(session.summary.url).hostname;
-        if (
-          shell.hostname === content.hostname ||
-          shell.hostname === rawHostname ||
-          content.hostname === rawHostname
-        )
-          return yield* new ContentListenerError({
-            code: "http.readiness_failed",
-            message: "The review origins were not isolated",
-          });
+        yield* Effect.all([verify(shell), verify(content)], {
+          concurrency: "unbounded",
+        });
         return { scope, shell, content };
       });
       return yield* activate.pipe(
+        Effect.timeoutOrElse({
+          duration: reviewOriginReadyTimeoutMilliseconds,
+          orElse: () =>
+            Effect.fail(
+              new ContentListenerError({
+                code: "http.readiness_failed",
+                message: "The review listener did not become ready",
+              }),
+            ),
+        }),
         Effect.onExit((exit) =>
           Exit.isSuccess(exit) ? Effect.void : Scope.close(scope, exit),
         ),
@@ -739,7 +773,7 @@ class SessionRegistry {
     | undefined {
     const record = this.annotations.openReview({
       root: liveSession.grant.root,
-      entry: liveSession.grant.routeEntry,
+      entry: liveSession.grant.entryUrlPath,
     });
     if (record?.status !== "ready") return undefined;
     const live = this.#liveReviews.get(record.id);
@@ -1279,7 +1313,8 @@ async function startSupervisorPromise(
     );
     sessions = new SessionRegistry(
       options.startSessionServer ?? startStaticServer,
-      options.startReviewOriginServer ?? startReviewOriginServer,
+      options.startReviewOriginServer ??
+        ((role, state) => startReviewOriginServer(role, { state })),
       options.maximumSessions ?? maximumConcurrentSessions,
       annotations,
     );

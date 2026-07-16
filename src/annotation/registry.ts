@@ -270,9 +270,16 @@ export class AnnotationRegistry {
   sendDrafts(
     reviewId: string,
     draftIds: readonly string[],
-    end = false,
+    options: {
+      readonly end?: boolean;
+      readonly discardRemaining?: boolean;
+    } = {},
   ): Effect.Effect<
-    { readonly sent: number; readonly status: PersistedReview["status"] },
+    {
+      readonly sent: number;
+      readonly discarded: number;
+      readonly status: PersistedReview["status"];
+    },
     ReviewError | RuntimeStateError
   > {
     return this.#mutations.withPermit(
@@ -297,15 +304,23 @@ export class AnnotationRegistry {
             code: "review.draft_not_found",
             message: "One or more annotation drafts are not available",
           });
-        const remaining = review.drafts.filter(
+        const end = options.end === true;
+        const discardRemaining = options.discardRemaining === true;
+        if (discardRemaining && !end)
+          return yield* new ReviewError({
+            code: "review.unsent_drafts",
+            message: "Draft discard is only available while ending a review",
+          });
+        const unsent = review.drafts.filter(
           (draft) => !selectedIds.has(draft.id),
         );
-        if (end && remaining.length > 0)
+        if (end && !discardRemaining && unsent.length > 0)
           return yield* new ReviewError({
             code: "review.unsent_drafts",
             message:
               "Send or remove every queued draft before ending the review",
           });
+        const remaining = discardRemaining ? [] : unsent;
         if (
           review.events.length + selected.length > maximumEventsPerReview ||
           review.nextCursor + selected.length > Number.MAX_SAFE_INTEGER
@@ -343,7 +358,11 @@ export class AnnotationRegistry {
           yield* this.#replaceWithCompletedTombstone(index, updated, now);
         } else yield* this.#replaceReview(index, updated);
         if (selected.length > 0 || end) this.#wake(reviewId);
-        return { sent: selected.length, status: end ? "ended" : "ready" };
+        return {
+          sent: selected.length,
+          discarded: discardRemaining ? unsent.length : 0,
+          status: end ? "ended" : "ready",
+        };
       }),
     );
   }

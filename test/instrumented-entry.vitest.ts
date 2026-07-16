@@ -7,12 +7,13 @@ import {
   transformReviewEntry,
 } from "../src/serving/instrumented-entry.js";
 
+const contentOrigin = `http://c-${"0".repeat(32)}.localhost:4321`;
 const insertedTag = (revision: string) =>
-  `<script src="${reviewProbePath}" data-htmlview-revision="${revision}"></script>`;
+  `<script src="${contentOrigin}${reviewProbePath}" data-htmlview-revision="${revision}"></script>`;
 
 function instrumented(source: Buffer | string) {
   const bytes = typeof source === "string" ? Buffer.from(source) : source;
-  const result = transformReviewEntry(bytes);
+  const result = transformReviewEntry(bytes, contentOrigin);
   if (result.outcome !== "instrumented") throw new Error(result.reason);
   return { source: bytes, ...result };
 }
@@ -20,6 +21,7 @@ function instrumented(source: Buffer | string) {
 function unsupported(source: Buffer | string, reason: string): void {
   const result = transformReviewEntry(
     typeof source === "string" ? Buffer.from(source) : source,
+    contentOrigin,
   );
   assert.deepEqual(result, { outcome: "unsupported", reason });
 }
@@ -74,7 +76,7 @@ describe("instrumented review entry transform", () => {
       const result = instrumented(source);
       assert.match(
         result.body.toString(),
-        /<script src="\/\.htmlview\/probe\.js"/,
+        /<script src="http:\/\/c-0{32}\.localhost:4321\/\.htmlview\/probe\.js"/,
       );
       assert.match(result.body.toString(), /<\/script><\/b[oO][dD][yY]>$/i);
     }
@@ -93,6 +95,22 @@ describe("instrumented review entry transform", () => {
       );
       assert.equal(result.body.toString().endsWith("</script>"), true);
     }
+  });
+
+  it("uses an absolute content-origin probe URL despite an authored base", () => {
+    const result = instrumented(
+      '<!doctype html><head><base href="https://attacker.example/"></head><body>safe</body>',
+    );
+    assert.match(
+      result.body.toString(),
+      new RegExp(
+        `<script src="${contentOrigin.replaceAll(".", "\\.")}\\/\\.htmlview\\/probe\\.js"`,
+      ),
+    );
+    assert.doesNotMatch(
+      result.body.toString(),
+      /<script src="\/\.htmlview\/probe\.js"/,
+    );
   });
 
   it("rejects unsupported byte encodings and declared charsets", () => {

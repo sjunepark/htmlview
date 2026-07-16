@@ -1,6 +1,6 @@
 # Annotation MVP plan
 
-- Status: Phases 1–2 complete; Phase 3 next
+- Status: Phases 1–3 complete; Phase 4 next
 - Updated: 2026-07-17
 - Parent: [`PLAN.md`](../../PLAN.md)
 - Decision: [ADR 0008](../decisions/0008-separate-raw-serving-from-instrumented-review.md)
@@ -84,7 +84,7 @@ counts discoverable.
 | Prerequisite: Effect CLI/logging          | Complete | One final command model and diagnostic boundary |
 | 1. Authorized reads and review lifecycle  | Complete | Review identity, origins, scopes, protocol      |
 | 2. Durable feedback and agent delivery    | Complete | Store, transitions, CLI/control operations      |
-| 3. Instrumented content and trusted shell | Pending  | Entry probe, shell UI, browser boundaries       |
+| 3. Instrumented content and trusted shell | Complete | Entry probe, shell UI, browser boundaries       |
 | 4. Security, fidelity, release hardening  | Pending  | Adversarial evidence and complete release gate  |
 
 ## Prerequisite: Effect CLI and logging
@@ -140,14 +140,14 @@ channel that later needs replacing.
 
 - **Complete:** add an HTML-token-aware entry transform that inserts one external probe
   reference without reserializing original bytes or weakening CSP.
-- Bundle immutable in-memory shell/probe assets; write nothing beside served
+- **Complete:** bundle immutable in-memory shell/probe assets; write nothing beside served
   content.
-- Implement the sandboxed cross-origin iframe, exact source/origin message
+- **Complete:** implement the sandboxed cross-origin iframe, exact source/origin message
   validation, Explore/Annotate selection, shell-owned tooltip/freeform editor,
   draft list, Send, and Send & End.
-- Report unsupported CSP, encoding, markup, framing, and multi-document
+- **Complete:** report unsupported CSP, encoding, markup, framing, and multi-document
   navigation explicitly while leaving the raw URL usable.
-- Keep the browser surface dependency-light and controller-independent.
+- **Complete:** keep the browser surface dependency-light and controller-independent.
 
 ## Phase 4: security, fidelity, and release hardening
 
@@ -178,9 +178,9 @@ channel that later needs replacing.
 
 ## Next action
 
-Phases 1–2 and the Phase 3 byte-preserving entry transform are complete. Add
-immutable shell/probe assets and content-origin routing next, then connect the
-trusted shell to the shared durable draft/send/end transitions.
+Phases 1–3 are complete. Finish the Phase 4 hostile-content, limitation,
+packaging, and release-matrix evidence, then run the final implementation and
+complexity review.
 
 ## Completion gate
 

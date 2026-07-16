@@ -347,8 +347,25 @@ it.effect(
           entry: "/report.html",
           revision,
         });
-        expect(yield* registry.sendDrafts(firstId, [draft.id], true)).toEqual({
+        yield* registry.queueDraft(firstId, {
+          kind: "freeform",
+          comment: "explicitly discarded",
+          entry: "/report.html",
+          revision,
+        });
+        expect(
+          (yield* registry
+            .sendDrafts(firstId, [draft.id], { end: true })
+            .pipe(Effect.flip)).code,
+        ).toBe("review.unsent_drafts");
+        expect(
+          yield* registry.sendDrafts(firstId, [draft.id], {
+            end: true,
+            discardRemaining: true,
+          }),
+        ).toEqual({
           sent: 1,
+          discarded: 1,
           status: "ended",
         });
         const delivered = yield* registry.feedback(firstId);

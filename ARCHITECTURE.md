@@ -3,9 +3,9 @@
 ## Status and boundary
 
 The raw-serving core, per-user supervisor, Effect execution model, Effect CLI,
-foreground/private diagnostic sinks, review lifecycle, and release packaging
-are implemented. The accepted `0.1.0` target still needs the trusted review
-surface that produces durable drafts. The repository
+foreground/private diagnostic sinks, review lifecycle, trusted browser review
+surface, and release packaging are implemented. The accepted `0.1.0` target
+still needs final adversarial and release-matrix evidence. The repository
 [implementation plan](https://github.com/sjunepark/htmlview/blob/main/PLAN.md)
 owns their sequencing.
 
@@ -39,12 +39,11 @@ short-lived agent CLI
         +-- raw-session registry --> raw listener --> raw browser origin
         |
         +-- review lifecycle
-                +-- [target] trusted shell origin
-                +-- [target] instrumented-content origin --> granted files
+                +-- trusted shell origin
+                +-- instrumented-content origin --> granted files
                 +-- durable feedback queue --> foreground agent wait
 ```
 
-Square-bracketed components are accepted targets, not current browser behavior.
 The annotation snapshot is the durable authority for review lifecycle records;
 the supervisor retains only live scopes in memory. Browser tools consume
 returned URLs and never become runtime dependencies.
@@ -95,10 +94,11 @@ select files; URL fragments never reach the server.
 
 `src/serving/listener.ts` owns the shared numeric-loopback listener resource,
 request fibers, deadlines, and connection limits without owning route or
-authority policy. Phase 1 review creation uses it for separate fresh
+authority policy. Review creation uses it for separate fresh
 `r-<random>.localhost` shell and `c-<random>.localhost` content authorities.
-Until the Phase 3 browser surface lands, those listeners expose only an
-exact-Host readiness probe and no raw or placeholder UI routes.
+The shared surface is configured only after both listeners exist; readiness
+stays unavailable until the grant, origins, and durable transition service are
+installed.
 
 The raw service has no filename or dotfile denylist and never opens a served
 file for writing. Later file changes appear on reload without creating a new
@@ -164,7 +164,7 @@ the threshold is fixed at info. Logs are neither feedback nor an audit/event
 store. Both executable roots project causes before the Node runtime can print a
 raw unhandled cause.
 
-### Review service (`0.1.0` target)
+### Review service (implemented)
 
 One open review attaches to a raw session's canonical-root/public-entry identity
 and owns a stable review ID plus two fresh loopback origins:
@@ -230,7 +230,7 @@ ended reviews do not resume.
 5. For each browser request, validate authority and method, authorize the opened
    target against the grant, and stream its original bytes.
 
-### Review lifecycle (Phases 1–2 implemented; browser surface target)
+### Review lifecycle (implemented)
 
 1. The private v4 protocol snapshots an existing raw identity and lazily
    acquires or resumes its review listeners; it never accepts a root or entry.
@@ -312,7 +312,12 @@ flags.
   scope-bound authorized reads.
 - `src/serving/listener.ts`: scoped numeric-loopback listener mechanics.
 - `src/serving/http.ts`: byte-faithful raw HTTP policy and response assembly.
-- `src/serving/review.ts`: isolated review-origin authority and readiness routes.
+- `src/serving/review.ts`: isolated review-origin routing, browser authorization,
+  state projection, and durable mutation bridge.
+- `src/serving/instrumented-entry.ts`: byte-preserving selected-entry probe
+  insertion and explicit instrumentation limitations.
+- `src/serving/review-assets.ts`, `src/serving/review-browser-protocol.ts`:
+  immutable trusted-shell/probe assets and strict browser request schemas.
 - `src/supervisor/protocol.ts`: validated private wire contract.
 - `src/supervisor/client.ts`, `src/supervisor/server.ts`: supervisor discovery,
   ownership, control, session registry, and cleanup.

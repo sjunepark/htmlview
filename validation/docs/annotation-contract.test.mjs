@@ -57,14 +57,11 @@ test("architecture and threat model preserve raw fidelity and review isolation",
   ]);
 
   assert.match(architecture, /\*\*Raw file bodies are unmodified\.\*\*/);
-  assert.match(architecture, /^### Review service \(`0\.1\.0` target\)$/m);
+  assert.match(architecture, /^### Review service \(implemented\)$/m);
   assert.match(architecture, /trusted shell origin/);
   assert.match(architecture, /instrumented-content origin/);
   assert.match(architecture, /never opens a served file for writing/);
-  assert.match(
-    architecture,
-    /Square-bracketed components are accepted targets/,
-  );
+  assert.doesNotMatch(architecture, /\[target\]/);
   assert.match(
     architecture,
     /0008-separate-raw-serving-from-instrumented-review\.md|Decision index/,

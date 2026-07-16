@@ -333,9 +333,11 @@ describe("supervisor lifecycle", () => {
 
   it("creates reviews lazily, reuses live origins, and resumes stable identity", async () => {
     let reviewStarts = 0;
-    const startReview = (role: "shell" | "content") => {
+    const startReview: NonNullable<
+      SupervisorOptions["startReviewOriginServer"]
+    > = (role, state) => {
       reviewStarts += 1;
-      return startReviewOriginServer(role);
+      return startReviewOriginServer(role, { state });
     };
     const { client, root, entry, paths, supervisor } = await setup({
       startReviewOriginServer: startReview,
@@ -397,6 +399,10 @@ describe("supervisor lifecycle", () => {
         unacknowledged: 0,
       },
     ]);
+    assert.equal(
+      (await runEffect(loadAnnotationState(paths))).reviews[0]?.identity.entry,
+      "/report.html",
+    );
 
     await runEffect(client.stopSession(served.session.id));
     await assert.rejects(fetch(first.review.url));
@@ -619,7 +625,7 @@ describe("supervisor lifecycle", () => {
     let shellUrl: string | undefined;
     const { client, root, entry } = await setup({
       maximumReviews: 1,
-      startReviewOriginServer: (role) =>
+      startReviewOriginServer: (role, state) =>
         role === "content"
           ? Effect.fail(
               new ContentListenerError({
@@ -627,7 +633,7 @@ describe("supervisor lifecycle", () => {
                 message: "The loopback content listener could not start",
               }),
             )
-          : startReviewOriginServer(role).pipe(
+          : startReviewOriginServer(role, { state }).pipe(
               Effect.tap((server) =>
                 Effect.sync(() => {
                   shellUrl = server.url;
@@ -671,14 +677,14 @@ describe("supervisor lifecycle", () => {
           );
           return yield* startStaticServer(grant);
         }),
-      startReviewOriginServer: (role) =>
+      startReviewOriginServer: (role, state) =>
         Effect.gen(function* () {
           yield* Effect.addFinalizer(() =>
             Effect.sync(() => {
               closed.push(role);
             }),
           );
-          return yield* startReviewOriginServer(role);
+          return yield* startReviewOriginServer(role, { state });
         }),
     });
     const served = await runEffect(client.serve(entry, root));
@@ -1917,9 +1923,9 @@ describe("supervisor lifecycle", () => {
       startSupervisor({
         paths,
         idleMilliseconds: 10_000,
-        startReviewOriginServer: (role) =>
+        startReviewOriginServer: (role, state) =>
           Effect.gen(function* () {
-            const server = yield* startReviewOriginServer(role);
+            const server = yield* startReviewOriginServer(role, { state });
             if (role === "shell")
               yield* Effect.addFinalizer(() => Effect.die(defect));
             return server;
@@ -1954,7 +1960,7 @@ describe("supervisor lifecycle", () => {
     });
     await assert.rejects(fetch(first.reviewUrl));
     await assert.rejects(fetch(first.rawUrl));
-    assert.equal((await fetch(second.reviewUrl)).status, 404);
+    assert.equal((await fetch(second.reviewUrl)).status, 200);
     assert.equal((await fetch(second.rawUrl)).status, 200);
 
     supervisors.pop();

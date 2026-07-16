@@ -225,7 +225,23 @@ function insertionOffset(
   return sourceLength;
 }
 
-export function transformReviewEntry(source: Buffer): ReviewEntryTransform {
+function exactContentOrigin(value: string): URL {
+  const origin = new URL(value);
+  if (
+    origin.origin !== value ||
+    origin.protocol !== "http:" ||
+    origin.username !== "" ||
+    origin.password !== "" ||
+    !/^c-[0-9a-f]{32}\.localhost$/.test(origin.hostname)
+  )
+    throw new TypeError("Invalid review content origin");
+  return origin;
+}
+
+export function transformReviewEntry(
+  source: Buffer,
+  contentOrigin: string,
+): ReviewEntryTransform {
   if (source.length > maximumInstrumentedEntryBytes)
     return { outcome: "unsupported", reason: "entry_too_large" };
   if (
@@ -264,8 +280,9 @@ export function transformReviewEntry(source: Buffer): ReviewEntryTransform {
 
   const revision =
     `sha256:${createHash("sha256").update(source).digest("hex")}` as const;
+  const probeUrl = new URL(reviewProbePath, exactContentOrigin(contentOrigin));
   const script = Buffer.from(
-    `<script src="${reviewProbePath}" data-htmlview-revision="${revision}"></script>`,
+    `<script src="${probeUrl.href}" data-htmlview-revision="${revision}"></script>`,
   );
   const characterOffset = insertionOffset(document, decoded.length);
   const byteOffset =
