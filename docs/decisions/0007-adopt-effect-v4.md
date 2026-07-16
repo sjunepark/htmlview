@@ -42,16 +42,33 @@ raw byte-serving and confinement behavior is security-sensitive. Use only
 `@effect/platform-node/NodeRuntime` from the Node platform package; do not adopt
 Effect CLI or an Effect HTTP data plane in this migration.
 
-Publish two minified, tree-shaken ESM bundles, `dist/cli.js` and
-`dist/supervisor-main.js`, plus linked external source maps without embedded
-source content. This is a bin-only package with no supported module or type
-export, so do not ship declarations for internal modules. Bundle Effect and
-the Node runtime integration so a global or one-shot install does not carry
-Effect's full source package. Keep `@toon-format/toon` and `mime-types`
-external as declared runtime dependencies. The flat supervisor bundle path is
-part of detached-process discovery inside the CLI bundle. Ship notices for
-every bundled dependency and fail the build if that set or the external import
+Publish two minified, tree-shaken ESM bundles plus linked external source maps
+without embedded source content. Store each complete artifact set beneath
+`dist/generations/<sha256>/`. The stable package executable `dist/cli.js` is a
+two-line activation launcher that imports exactly one generation. This is a
+bin-only package with no supported module or type export, so do not ship
+declarations for internal modules. Bundle Effect and the Node runtime
+integration so a global or one-shot install does not carry Effect's full source
+package. Keep `@toon-format/toon` and `mime-types` external as declared runtime
+dependencies. The supervisor remains next to its matching CLI bundle so
+detached-process discovery cannot cross generations. Ship notices for every
+bundled dependency and fail the build if that set or the external import
 contract drifts.
+
+Build both bundles and their maps in a unique staging directory, validate the
+complete staged result, derive its content address, then serialize publication
+into `dist`. Rename the immutable generation into place before atomically
+replacing the launcher. A crash before activation leaves the old generation
+selected; a crash afterward selects the complete new generation. Concurrent
+builders can install the same verified content address, and the last atomic
+launcher replacement wins without mixing artifacts, so publication needs no
+lock or stale-lock recovery. Retain older generations because a CLI process
+that started before activation must still be able to spawn its matching
+supervisor. Package builds require a quiescent clean checkout containing only
+the activated generation so the published file set remains exact and
+reproducible. Keep installation and activation behind one publication module;
+an injected internal pre-activation seam provides deterministic failure and
+distinct-generation concurrency validation without production flags.
 
 Use Vitest with `@effect/vitest` for TypeScript unit and integration tests so
 scoped tests and `TestClock` are first-class. Keep black-box `.mjs` lifecycle

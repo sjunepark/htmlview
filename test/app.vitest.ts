@@ -149,6 +149,40 @@ describe("CLI application contract", () => {
     );
   });
 
+  it("reveals path fields when multiple minimal session rows need disambiguation", async () => {
+    const sessions: SessionSummary[] = [
+      {
+        id: "first1",
+        status: "ready",
+        url: "http://h-first.localhost:4000/report.html",
+        entry: "/tmp/first/report.html",
+        root: "/tmp/first",
+      },
+      {
+        id: "second2",
+        status: "ready",
+        url: "http://h-second.localhost:4001/report.html",
+        entry: "/tmp/second/report.html",
+        root: "/tmp/second",
+      },
+    ];
+    const minimal = decodeOutput(
+      (await invoke([], sessions)).stdout,
+      "toon",
+    ) as Record<string, unknown>;
+    const expanded = decodeOutput(
+      (await invoke(["--fields", "entry,root"], sessions)).stdout,
+      "toon",
+    ) as Record<string, unknown>;
+    assert.deepEqual(minimal.help, [
+      "Run `htmlview stop <session>` to stop a session",
+      "Run `htmlview --fields entry,root` to show session paths",
+    ]);
+    assert.deepEqual(expanded.help, [
+      "Run `htmlview stop <session>` to stop a session",
+    ]);
+  });
+
   it("dispatches stop selectors through valid-by-construction operations", async () => {
     const session = await invoke(["stop", "abc123"]);
     const all = await invoke(["stop", "--all"]);

@@ -21,6 +21,23 @@ describe("command parsing", () => {
     });
   });
 
+  it("rejects repeated field selections instead of silently replacing them", () => {
+    const result = parseCommand([
+      "--fields",
+      "entry",
+      "--fields",
+      "root",
+      "--json",
+    ]);
+    assert.ok("exitCode" in result);
+    assert.equal(result.exitCode, 2);
+    assert.deepEqual(result.result.error, {
+      code: "usage.duplicate_flag",
+      message: "Flag --fields may be provided only once",
+      valid_flags: ["--fields", "--json", "--help", "--version"],
+    });
+  });
+
   it("reports missing serve arguments with complete usage", () => {
     const result = parseCommand(["serve"]);
     assert.ok("exitCode" in result);

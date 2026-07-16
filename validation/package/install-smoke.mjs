@@ -130,12 +130,22 @@ try {
   const packResult = JSON.parse(packed.stdout);
   assert.equal(packResult.name, packageMetadata.name);
   assert.equal(packResult.version, packageMetadata.version);
+  const launcher = await readFile(path.join(source, "dist", "cli.js"), "utf8");
+  const activation = launcher.match(
+    /^#!\/usr\/bin\/env node\nimport "\.\/(generations\/[0-9a-f]{64})\/cli\.js";\n$/,
+  );
+  assert.notEqual(activation, null, "package launcher is not atomic");
+  const generation = path.posix.join("dist", activation[1]);
+  const generationArtifacts = [
+    `${generation}/cli.js`,
+    `${generation}/cli.js.map`,
+    `${generation}/supervisor-main.js`,
+    `${generation}/supervisor-main.js.map`,
+  ];
   const paths = new Set(packResult.files.map(({ path: file }) => file));
   for (const required of [
     "dist/cli.js",
-    "dist/cli.js.map",
-    "dist/supervisor-main.js",
-    "dist/supervisor-main.js.map",
+    ...generationArtifacts,
     "docs/INSTALL.md",
     "LICENSE",
     "README.md",
@@ -148,9 +158,7 @@ try {
     "README.md",
     "THIRD_PARTY_NOTICES.md",
     "dist/cli.js",
-    "dist/cli.js.map",
-    "dist/supervisor-main.js",
-    "dist/supervisor-main.js.map",
+    ...generationArtifacts,
     "docs/CLI.md",
     "docs/decisions/0001-separate-serving-from-browser-control.md",
     "docs/decisions/0002-per-user-loopback-supervisor.md",
@@ -174,7 +182,10 @@ try {
       `package contains unexpected file ${file}`,
     );
   assert.equal(paths.size, exactFiles.size, "package file set is incomplete");
-  for (const sourceMap of ["dist/cli.js.map", "dist/supervisor-main.js.map"])
+  for (const sourceMap of [
+    `${generation}/cli.js.map`,
+    `${generation}/supervisor-main.js.map`,
+  ])
     assert.equal(
       Object.hasOwn(
         JSON.parse(await readFile(path.join(source, sourceMap), "utf8")),
@@ -183,13 +194,39 @@ try {
       false,
       `${sourceMap} embeds source content`,
     );
-  for (const executable of ["dist/cli.js", "dist/supervisor-main.js"])
+  for (const executable of [
+    `${generation}/cli.js`,
+    `${generation}/supervisor-main.js`,
+  ])
     assert.match(
       await readFile(path.join(source, executable), "utf8"),
       /\/\/# sourceMappingURL=[^\n]+\.js\.map\s*$/,
       `${executable} does not link its external source map`,
     );
   const tarball = path.resolve(artifacts, packResult.filename);
+  const launcherBeforeFailedPack = await readFile(
+    path.join(source, "dist", "cli.js"),
+  );
+  const inactiveGeneration = path.join(
+    source,
+    "dist",
+    "generations",
+    "0".repeat(64),
+  );
+  await mkdir(inactiveGeneration);
+  await assert.rejects(
+    packageManager(
+      ["pack", "--json", "--pack-destination", repeatedArtifacts],
+      source,
+    ),
+    /Package builds require a clean checkout with no inactive htmlview generations/,
+  );
+  assert.deepEqual(
+    await readFile(path.join(source, "dist", "cli.js")),
+    launcherBeforeFailedPack,
+  );
+  await rm(inactiveGeneration, { recursive: true });
+
   const repeatedPack = JSON.parse(
     (
       await packageManager(

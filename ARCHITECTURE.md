@@ -356,9 +356,14 @@ origin-keyed state from concurrent services and later port reuse.
 - `test/` holds Vitest unit and integration coverage, including Effect scopes,
   clocks, schemas, native HTTP, and TOON v3.3 conformance.
 - `test-e2e/` holds black-box executable and detached-process lifecycle tests.
-- `scripts/build.mjs` emits the two minified executable bundles and external
-  source maps, and rejects undeclared external imports or unlicensed bundled
+- `scripts/build.mjs` creates and validates the two minified executable bundles
+  and external source maps, rejecting undeclared imports and unlicensed bundled
   dependency drift.
+- `scripts/build-publication.mjs` owns content-address verification, immutable
+  generation installation, package-generation checks, and atomic activation
+  through the stable `dist/cli.js` launcher. Its internal pre-activation seam
+  gives deterministic fault and concurrency validation the same publication
+  implementation as production.
 - `validation/browser-origin/` holds browser behavior evidence and remains
   outside the runtime.
 - `validation/interoperability/` passes real CLI-returned URLs to independent

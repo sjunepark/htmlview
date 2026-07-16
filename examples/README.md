@@ -20,6 +20,8 @@ pnpm example:list
 pnpm example:stop
 ```
 
+`example:standalone` grants only its single-file fixture directory.
+
 `example:relative` demonstrates relative CSS, SVG, JavaScript module, and JSON
 requests. Edit `relative/data/message.json` and reload its URL to see source
 changes without restarting htmlview.

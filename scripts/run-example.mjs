@@ -11,7 +11,7 @@ const commands = {
     "examples/project-root",
     "--json",
   ],
-  standalone: ["serve", "examples/standalone.html", "--json"],
+  standalone: ["serve", "examples/standalone/index.html", "--json"],
   stop: ["stop", "--all", "--json"],
 };
 

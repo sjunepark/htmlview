@@ -65,10 +65,13 @@ after(async () => {
 
 test("committed examples exercise standalone, relative, and explicit-root serving", async () => {
   const standalone = await serve("standalone");
-  assert.equal(standalone.grant.root, await realpath(examples));
+  assert.equal(
+    standalone.grant.root,
+    await realpath(path.join(examples, "standalone")),
+  );
   await assertServed(
     standalone.session.url,
-    path.join(examples, "standalone.html"),
+    path.join(examples, "standalone", "index.html"),
     "text/html; charset=utf-8",
   );
 
@@ -153,8 +156,8 @@ test("committed examples exercise standalone, relative, and explicit-root servin
         root: await realpath(relativeRoot),
       },
       {
-        entry: await realpath(path.join(examples, "standalone.html")),
-        root: await realpath(examples),
+        entry: await realpath(path.join(examples, "standalone", "index.html")),
+        root: await realpath(path.join(examples, "standalone")),
       },
     ].sort((left, right) => left.entry.localeCompare(right.entry)),
   );

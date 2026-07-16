@@ -60,6 +60,11 @@ function homeResult(
         ? homeHelp(json)
         : [
             `Run \`htmlview stop <session>${json ? " --json" : ""}\` to stop a session`,
+            ...(selected.length > 1 && fields.length === 0
+              ? [
+                  `Run \`htmlview --fields entry,root${json ? " --json" : ""}\` to show session paths`,
+                ]
+              : []),
           ],
   };
 }

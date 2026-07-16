@@ -11,6 +11,10 @@ files directly; that is sufficient when file-origin behavior is acceptable.
 `htmlview` exists for the browser-neutral HTTP case and does not automate a
 browser itself.
 
+CLI commands are short-lived control operations, not foreground development
+servers. `htmlview serve` returns after the detached supervisor confirms the
+URL is ready; the URL remains live until its session is stopped.
+
 See [browser-controller interoperability](docs/INTEROPERABILITY.md) for the
 copy-paste URL handoff and independently validated controller paths.
 
@@ -18,7 +22,9 @@ To exercise a source checkout immediately, run `pnpm example:standalone`,
 `pnpm example:relative`, or `pnpm example:root`. The committed
 [examples](https://github.com/sjunepark/htmlview/tree/main/examples) cover
 single-file, relative-asset, and explicit serving-root workflows and are also
-used by the black-box E2E suite.
+used by the black-box E2E suite. Inspect active example sessions with
+`pnpm example:list` and clean them up with `pnpm example:stop`; the installed
+`htmlview` executable is not required for this source-checkout workflow.
 
 ## Status
 
