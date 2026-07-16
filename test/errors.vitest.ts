@@ -4,6 +4,7 @@ import { errorResult } from "../src/contracts.js";
 import {
   ContentListenerError,
   ControlError,
+  FeedbackError,
   operationalError,
   PathError,
   ReviewError,
@@ -79,6 +80,10 @@ describe("operational errors", () => {
       operationalError("control.session_limit", "full") instanceof ControlError,
     );
     assert.ok(operationalError("review.limit", "full") instanceof ReviewError);
+    assert.ok(
+      operationalError("feedback.cursor_ahead", "ahead") instanceof
+        FeedbackError,
+    );
     assert.equal(operationalError("runtime.internal", "defect"), undefined);
     assert.equal(operationalError("control.future", "unknown"), undefined);
   });

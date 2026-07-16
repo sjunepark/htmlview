@@ -15,6 +15,7 @@ import {
 import { CommandService } from "../src/service.js";
 import type {
   OptionalSessionField,
+  ReviewSummary,
   SessionSummary,
 } from "../src/supervisor/protocol.js";
 
@@ -22,16 +23,18 @@ async function invoke(
   args: string[],
   sessions: SessionSummary[] = [],
   serveFailure?: unknown,
+  reviews: ReviewSummary[] = [],
 ) {
   let stdout = "";
   let stderr = "";
   let listedFields: readonly OptionalSessionField[] | undefined;
   const stopCalls: string[] = [];
+  const annotationCalls: string[] = [];
   const service = Layer.succeed(CommandService, {
-    listSessions: (fields) =>
+    listState: (fields) =>
       Effect.sync(() => {
         listedFields = fields;
-        return sessions;
+        return { sessions, reviews };
       }),
     serve: () => {
       if (serveFailure !== undefined)
@@ -51,6 +54,51 @@ async function invoke(
         },
       });
     },
+    review: (session) =>
+      Effect.sync(() => {
+        annotationCalls.push(`review:${session}`);
+        return {
+          review: {
+            id: "rv_example",
+            status: "ready",
+            url: "http://r-example.localhost:4001/",
+            reused: false,
+          },
+          session: {
+            id: session,
+            url: "http://h-example.localhost:4000/report.html",
+          },
+          grant: {
+            root: "/tmp",
+            access: "read_all_regular_files_beneath_root",
+          },
+          fidelity: "instrumented_review",
+        };
+      }),
+    feedback: (review, options) =>
+      Effect.sync(() => {
+        annotationCalls.push(
+          `feedback:${review}:${String(options?.wait ?? false)}:${String(options?.after ?? "")}`,
+        );
+        return {
+          review: { id: review, status: "ready" },
+          cursor: 2,
+          count: 0,
+          feedback: [],
+        };
+      }),
+    deleteReview: (review, discard) =>
+      Effect.sync(() => {
+        annotationCalls.push(`delete:${review}:${String(discard)}`);
+        return {
+          delete: {
+            review,
+            deleted: 1,
+            status: "deleted",
+            discarded: { drafts: 0, feedback: 0 },
+          },
+        };
+      }),
     stopSession: (session) =>
       Effect.sync(() => {
         stopCalls.push(`session:${session}`);
@@ -86,7 +134,14 @@ async function invoke(
       },
     }).pipe(Effect.provide(Layer.merge(service, NodeServices.layer))),
   );
-  return { exitCode, stdout, stderr, listedFields, stopCalls };
+  return {
+    exitCode,
+    stdout,
+    stderr,
+    listedFields,
+    stopCalls,
+    annotationCalls,
+  };
 }
 
 function normalizeContextualHelp(
@@ -114,6 +169,8 @@ describe("CLI application contract", () => {
       description: "Serve local HTML through confined loopback HTTP",
       count: 0,
       sessions: [],
+      review_count: 0,
+      reviews: [],
       help: ["Run `htmlview serve <entry.html>`"],
     });
   });
@@ -150,6 +207,27 @@ describe("CLI application contract", () => {
     );
   });
 
+  it("keeps retained pending feedback discoverable without a raw session", async () => {
+    const reviews: ReviewSummary[] = [
+      {
+        id: `rv_${"r".repeat(22)}`,
+        status: "stopped",
+        session: "session1",
+        drafts: 1,
+        unacknowledged: 2,
+      },
+    ];
+    const result = decodeOutput(
+      (await invoke([], [], undefined, reviews)).stdout,
+      "toon",
+    ) as Record<string, unknown>;
+    assert.equal(result.review_count, 1);
+    assert.deepEqual(result.reviews, reviews);
+    assert.deepEqual(result.help, [
+      "Run `htmlview feedback <review>` to read pending feedback",
+    ]);
+  });
+
   it("reveals path fields when multiple minimal session rows need disambiguation", async () => {
     const sessions: SessionSummary[] = [
       {
@@ -176,10 +254,12 @@ describe("CLI application contract", () => {
       "toon",
     ) as Record<string, unknown>;
     assert.deepEqual(minimal.help, [
+      "Run `htmlview review <session>` for human annotation",
       "Run `htmlview stop <session>` to stop a session",
       "Run `htmlview --fields entry,root` to show session paths",
     ]);
     assert.deepEqual(expanded.help, [
+      "Run `htmlview review <session>` for human annotation",
       "Run `htmlview stop <session>` to stop a session",
     ]);
   });
@@ -189,6 +269,43 @@ describe("CLI application contract", () => {
     const all = await invoke(["stop", "--all"]);
     assert.deepEqual(session.stopCalls, ["session:abc123"]);
     assert.deepEqual(all.stopCalls, ["all"]);
+  });
+
+  it("dispatches review, feedback, and nested deletion as domain commands", async () => {
+    const review = await invoke(["review", "session1", "--json"]);
+    assert.deepEqual(review.annotationCalls, ["review:session1"]);
+    assert.equal(
+      (decodeOutput(review.stdout, "json") as { review: { id: string } }).review
+        .id,
+      "rv_example",
+    );
+
+    const feedback = await invoke([
+      "feedback",
+      "--wait",
+      "--after",
+      "2",
+      "rv_example",
+      "--json",
+    ]);
+    assert.deepEqual(feedback.annotationCalls, ["feedback:rv_example:true:2"]);
+
+    const deleted = await invoke([
+      "review",
+      "delete",
+      "--discard-feedback",
+      "rv_example",
+      "--json",
+    ]);
+    assert.deepEqual(deleted.annotationCalls, ["delete:rv_example:true"]);
+    assert.equal(
+      (
+        decodeOutput(deleted.stdout, "json") as {
+          delete: { status: string };
+        }
+      ).delete.status,
+      "deleted",
+    );
   });
 
   for (const args of [[], ["serve", "x.html"], ["stop", "missing"]]) {
@@ -345,8 +462,11 @@ describe("CLI application contract", () => {
     let stdout = "";
     let stderr = "";
     const pending = Layer.succeed(CommandService, {
-      listSessions: () => Effect.never,
+      listState: () => Effect.never,
       serve: () => Effect.never,
+      review: () => Effect.never,
+      feedback: () => Effect.never,
+      deleteReview: () => Effect.never,
       stopSession: () => Effect.never,
       stopAll: () => Effect.never,
     });

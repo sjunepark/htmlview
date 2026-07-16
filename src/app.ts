@@ -22,6 +22,7 @@ import { serialize } from "./output.js";
 import { CommandService } from "./service.js";
 import type {
   OptionalSessionField,
+  ReviewSummary,
   SessionSummary,
 } from "./supervisor/protocol.js";
 import { htmlviewVersion } from "./version.js";
@@ -48,6 +49,24 @@ type DomainInvocation =
       readonly format: OutputFormat;
       readonly session?: string;
       readonly all: boolean;
+    }
+  | {
+      readonly kind: "review";
+      readonly format: OutputFormat;
+      readonly session: string;
+    }
+  | {
+      readonly kind: "feedback";
+      readonly format: OutputFormat;
+      readonly review: string;
+      readonly wait: boolean;
+      readonly after?: number;
+    }
+  | {
+      readonly kind: "delete-review";
+      readonly format: OutputFormat;
+      readonly review: string;
+      readonly discardFeedback: boolean;
     };
 
 const JsonOutput = GlobalFlag.setting("json")({
@@ -73,6 +92,7 @@ function homeHelp(json: boolean): string[] {
 function homeResult(
   executablePath: string,
   sessions: readonly SessionSummary[],
+  reviews: readonly ReviewSummary[],
   fields: readonly OptionalSessionField[],
   json: boolean,
 ): JsonObject {
@@ -92,11 +112,23 @@ function homeResult(
     description: "Serve local HTML through confined loopback HTTP",
     count: selected.length,
     sessions: selected,
+    review_count: reviews.length,
+    reviews: reviews.map((review) => ({ ...review })),
     help:
-      selected.length === 0
+      selected.length === 0 && reviews.length === 0
         ? homeHelp(json)
         : [
-            `Run \`htmlview stop <session>${json ? " --json" : ""}\` to stop a session`,
+            ...(reviews.some((review) => review.unacknowledged > 0)
+              ? [
+                  `Run \`htmlview feedback <review>${json ? " --json" : ""}\` to read pending feedback`,
+                ]
+              : []),
+            ...(selected.length > 0
+              ? [
+                  `Run \`htmlview review <session>${json ? " --json" : ""}\` for human annotation`,
+                  `Run \`htmlview stop <session>${json ? " --json" : ""}\` to stop a session`,
+                ]
+              : []),
             ...(selected.length > 1 && fields.length === 0
               ? [
                   `Run \`htmlview --fields entry,root${json ? " --json" : ""}\` to show session paths`,
@@ -122,16 +154,33 @@ function runtimeHelp(
           ? `htmlview serve <entry.html>${invocation.root === undefined ? "" : " --root <directory>"}${jsonSuffix}`
           : invocation.kind === "stop"
             ? `htmlview stop${invocation.all ? " --all" : " <session>"}${jsonSuffix}`
-            : `htmlview${invocation.fields.length > 0 ? ` --fields ${invocation.fields.join(",")}` : ""}${jsonSuffix}`;
+            : invocation.kind === "home"
+              ? `htmlview${invocation.fields.length > 0 ? ` --fields ${invocation.fields.join(",")}` : ""}${jsonSuffix}`
+              : invocation.kind === "review"
+                ? `htmlview review <session>${jsonSuffix}`
+                : invocation.kind === "feedback"
+                  ? `htmlview feedback <review>${jsonSuffix}`
+                  : `htmlview review delete <review>${jsonSuffix}`;
       return [`Run \`${command}\` after correcting runtime-state permissions`];
     }
     case "ContentListenerError":
-      if (invocation.kind !== "serve") return [];
+      if (invocation.kind !== "serve" && invocation.kind !== "review")
+        return [];
       return [
-        `Run \`htmlview serve <entry.html>${invocation.root === undefined ? "" : " --root <directory>"}${jsonSuffix}\` to retry`,
+        invocation.kind === "review"
+          ? `Run \`htmlview review <session>${jsonSuffix}\` to retry`
+          : `Run \`htmlview serve <entry.html>${invocation.root === undefined ? "" : " --root <directory>"}${jsonSuffix}\` to retry`,
       ];
     case "ReviewError":
+      if (error.code === "review.pending_feedback")
+        return [
+          `Run \`htmlview feedback <review>${jsonSuffix}\` or retry deletion with --discard-feedback`,
+        ];
       return [];
+    case "FeedbackError":
+      return error.code === "feedback.cursor_ahead"
+        ? [`Run \`htmlview feedback <review>${jsonSuffix}\` without --after`]
+        : [];
     case "ControlError":
       return error.code === "control.session_limit"
         ? [
@@ -223,7 +272,7 @@ function domainHandler(
               errorResult(
                 publicError.code,
                 publicError.message,
-                {},
+                publicError.details ?? {},
                 runtimeHelp(error, selectedInvocation),
               ),
               format,
@@ -284,10 +333,11 @@ function makeHtmlviewCommand(context: AppContext, setFailure: () => void) {
       (format) => ({ kind: "home", format, fields }),
       (format) =>
         Effect.flatMap(CommandService, (service) =>
-          Effect.map(service.listSessions(fields), (sessions) =>
+          Effect.map(service.listState(fields), (state) =>
             homeResult(
               context.executablePath,
-              sessions,
+              state.sessions,
+              state.reviews,
               fields,
               format === "json",
             ),
@@ -348,6 +398,136 @@ function makeHtmlviewCommand(context: AppContext, setFailure: () => void) {
     ]),
   );
 
+  const deleteReviewCommand = Command.make(
+    "delete",
+    {
+      discardFeedback: Flag.boolean("discard-feedback").pipe(
+        Flag.withDescription(
+          "Explicitly discard queued and unacknowledged feedback",
+        ),
+        Flag.atMost(1),
+        Flag.map((values) => values[0] ?? false),
+      ),
+      review: Argument.string("review").pipe(
+        Argument.withDescription("Retained review identifier"),
+      ),
+    },
+    ({ discardFeedback, review }) =>
+      domainHandler(
+        context,
+        "cli.review.delete",
+        (format) => ({
+          kind: "delete-review",
+          format,
+          review,
+          discardFeedback,
+        }),
+        () =>
+          Effect.flatMap(CommandService, (service) =>
+            service.deleteReview(review, discardFeedback),
+          ),
+        setFailure,
+      ),
+  ).pipe(
+    Command.withDescription("Delete retained review state"),
+    Command.withExamples([
+      { command: "htmlview review delete <review>" },
+      { command: "htmlview review delete --discard-feedback <review>" },
+    ]),
+  );
+
+  const reviewCommand = Command.make(
+    "review",
+    {
+      session: Argument.string("session").pipe(
+        Argument.withDescription("Ready raw-session identifier"),
+      ),
+    },
+    ({ session }) =>
+      domainHandler(
+        context,
+        "cli.review",
+        (format) => ({ kind: "review", format, session }),
+        (format) =>
+          Effect.flatMap(CommandService, (service) =>
+            Effect.map(service.review(session), (result) => ({
+              ...result,
+              help: [
+                `Run \`htmlview feedback --wait <review>${format === "json" ? " --json" : ""}\``,
+              ],
+            })),
+          ),
+        setFailure,
+      ),
+  ).pipe(
+    Command.withDescription("Create or resume a human annotation review"),
+    Command.withExamples([{ command: "htmlview review <session>" }]),
+    Command.withSubcommands([deleteReviewCommand]),
+  );
+
+  const wait = Flag.boolean("wait").pipe(
+    Flag.withDescription("Wait until feedback or terminal review state"),
+    Flag.atMost(1),
+    Flag.map((values) => values[0] ?? false),
+  );
+  const after = Flag.integer("after").pipe(
+    Flag.withDescription("Acknowledge a previously delivered feedback cursor"),
+    Flag.atMost(1),
+    Flag.map((values) => values[0]),
+    Flag.mapTryCatch(
+      (value) => {
+        if (value !== undefined && (!Number.isSafeInteger(value) || value < 0))
+          throw new Error("a non-negative safe integer");
+        return value;
+      },
+      () => "a non-negative safe integer",
+    ),
+  );
+  const feedbackCommand = Command.make(
+    "feedback",
+    {
+      wait,
+      after,
+      review: Argument.string("review").pipe(
+        Argument.withDescription("Retained review identifier"),
+      ),
+    },
+    ({ wait, after, review }) =>
+      domainHandler(
+        context,
+        "cli.feedback",
+        (format) => ({
+          kind: "feedback",
+          format,
+          review,
+          wait,
+          ...(after === undefined ? {} : { after }),
+        }),
+        (format) =>
+          Effect.flatMap(CommandService, (service) =>
+            Effect.map(
+              service.feedback(review, {
+                wait,
+                ...(after === undefined ? {} : { after }),
+              }),
+              (result) => ({
+                ...result,
+                help: [
+                  `Run \`htmlview feedback --after <cursor> --wait <review>${format === "json" ? " --json" : ""}\``,
+                ],
+              }),
+            ),
+          ),
+        setFailure,
+      ),
+  ).pipe(
+    Command.withDescription("Read or wait for durable review feedback"),
+    Command.withExamples([
+      { command: "htmlview feedback <review>" },
+      { command: "htmlview feedback --wait <review>" },
+    ]),
+  );
+
   const all = Flag.boolean("all").pipe(
     Flag.withDescription("Stop every active raw session"),
     Flag.atMost(1),
@@ -395,7 +575,12 @@ function makeHtmlviewCommand(context: AppContext, setFailure: () => void) {
   );
 
   return rootCommand.pipe(
-    Command.withSubcommands([serveCommand, stopCommand]),
+    Command.withSubcommands([
+      serveCommand,
+      reviewCommand,
+      feedbackCommand,
+      stopCommand,
+    ]),
     Command.withGlobalFlags([JsonOutput]),
   );
 }

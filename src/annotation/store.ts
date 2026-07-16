@@ -22,12 +22,55 @@ import {
 
 export const maximumAnnotationStoreBytes = 8 * 1024 * 1024;
 export const maximumPersistedReviewBytes = 768 * 1024;
+// Content mutations leave room for one maximum-path review plus cursor/status
+// metadata, so mandatory delivery and shutdown commits cannot hit the hard cap.
+const annotationStoreMutationHeadroomBytes = 128 * 1024;
+const persistedReviewMutationHeadroomBytes = 1024;
 
 const strict = { onExcessProperty: "error" } as const;
 const decodeAnnotationState = Schema.decodeUnknownResult(
   AnnotationStateSchema,
   strict,
 );
+
+function annotationStateFitsBounds(
+  state: AnnotationState,
+  storeMaximumBytes: number,
+  reviewMaximumBytes: number,
+): boolean {
+  try {
+    if (
+      state.reviews.some(
+        (review) =>
+          Buffer.byteLength(JSON.stringify(review)) > reviewMaximumBytes,
+      )
+    )
+      return false;
+    return Buffer.byteLength(JSON.stringify(state)) <= storeMaximumBytes;
+  } catch {
+    return false;
+  }
+}
+
+export function annotationStateFitsStorageBounds(
+  state: AnnotationState,
+): boolean {
+  return annotationStateFitsBounds(
+    state,
+    maximumAnnotationStoreBytes,
+    maximumPersistedReviewBytes,
+  );
+}
+
+export function annotationStateFitsMutationBounds(
+  state: AnnotationState,
+): boolean {
+  return annotationStateFitsBounds(
+    state,
+    maximumAnnotationStoreBytes - annotationStoreMutationHeadroomBytes,
+    maximumPersistedReviewBytes - persistedReviewMutationHeadroomBytes,
+  );
+}
 
 function storeFailure(cause: unknown): RuntimeStateError {
   return new RuntimeStateError({
@@ -275,13 +318,10 @@ export function saveAnnotationState(
       try: () => Schema.encodeSync(AnnotationStateSchema, strict)(state),
       catch: storeFailure,
     });
-    for (const review of encoded.reviews)
-      if (
-        Buffer.byteLength(JSON.stringify(review)) > maximumPersistedReviewBytes
-      )
-        return yield* storeFailure(
-          new Error("A persisted annotation review exceeds its size limit"),
-        );
+    if (!annotationStateFitsStorageBounds(encoded))
+      return yield* storeFailure(
+        new Error("The persisted annotation state exceeds its size limit"),
+      );
     yield* writeSnapshot(paths, encoded);
   });
 }

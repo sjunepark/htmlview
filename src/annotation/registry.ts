@@ -1,12 +1,21 @@
-import { Effect, Semaphore } from "effect";
-import { ReviewError, RuntimeStateError } from "../errors.js";
+import { randomBytes } from "node:crypto";
+import { Clock, Deferred, Effect, Semaphore } from "effect";
+import { FeedbackError, ReviewError, RuntimeStateError } from "../errors.js";
 import type { StatePaths } from "../supervisor/state.js";
 import {
   maximumReviews,
+  maximumDraftsPerReview,
+  maximumEventsPerReview,
+  maximumTombstones,
+  type AnnotationDraft,
   type AnnotationState,
+  type FeedbackEvent,
   type PersistedReview,
 } from "./model.js";
-import { saveAnnotationState } from "./store.js";
+import {
+  annotationStateFitsMutationBounds,
+  saveAnnotationState,
+} from "./store.js";
 
 export interface ReviewIdentity {
   readonly root: string;
@@ -21,6 +30,66 @@ export interface ReviewSummaryRecord {
   readonly unacknowledged: number;
 }
 
+export type AnnotationDraftInput =
+  | Omit<Extract<AnnotationDraft, { readonly kind: "element" }>, "id">
+  | Omit<Extract<AnnotationDraft, { readonly kind: "freeform" }>, "id">;
+
+type DeliveredFeedbackFields = Omit<
+  Extract<FeedbackEvent, { readonly kind: "freeform" }>,
+  "position" | "kind"
+>;
+export type DeliveredFeedback =
+  | (DeliveredFeedbackFields & {
+      readonly kind: "element";
+      readonly anchor: {
+        readonly selector: string;
+        readonly dom_path: string;
+        readonly tag: string;
+        readonly text?: string;
+      };
+    })
+  | (DeliveredFeedbackFields & { readonly kind: "freeform" });
+
+export interface FeedbackReadResult {
+  readonly review: {
+    readonly id: string;
+    readonly status: PersistedReview["status"];
+  };
+  readonly cursor: number;
+  readonly count: number;
+  readonly feedback: readonly DeliveredFeedback[];
+}
+
+export interface DeleteReviewResult {
+  readonly review: string;
+  readonly deleted: 1;
+  readonly discardedDrafts: number;
+  readonly discardedFeedback: number;
+}
+
+interface ReviewWaiter {
+  readonly token: symbol;
+  readonly signal: Deferred.Deferred<void>;
+}
+
+type PreparedFeedback =
+  | { readonly kind: "result"; readonly result: FeedbackReadResult }
+  | { readonly kind: "wait"; readonly waiter: ReviewWaiter };
+
+const tombstoneRetentionMilliseconds = 24 * 60 * 60 * 1000;
+
+export function generateDraftId(
+  random: (size: number) => Buffer = randomBytes,
+): string {
+  return `dr_${random(16).toString("base64url")}`;
+}
+
+export function generateFeedbackId(
+  random: (size: number) => Buffer = randomBytes,
+): string {
+  return `fb_${random(16).toString("base64url")}`;
+}
+
 type SaveState = (
   paths: StatePaths,
   state: AnnotationState,
@@ -32,6 +101,7 @@ function sameIdentity(left: ReviewIdentity, right: ReviewIdentity): boolean {
 
 export class AnnotationRegistry {
   readonly #mutations = Semaphore.makeUnsafe(1);
+  readonly #waiters = new Map<string, ReviewWaiter>();
   #state: AnnotationState;
 
   constructor(
@@ -100,10 +170,16 @@ export class AnnotationRegistry {
           acknowledgedCursor: 0,
           highestDeliveredCursor: 0,
         };
-        yield* this.#replace({
+        const state = {
           ...this.#state,
           reviews: [...this.#state.reviews, record],
-        });
+        };
+        if (!annotationStateFitsMutationBounds(state))
+          return yield* new ReviewError({
+            code: "review.limit",
+            message: "The retained review storage limit has been reached",
+          });
+        yield* this.#replace(state);
         return record;
       }),
     );
@@ -148,7 +224,462 @@ export class AnnotationRegistry {
           changed = true;
           return { ...review, status: "stopped" as const };
         });
-        if (changed) yield* this.#replace({ ...this.#state, reviews });
+        if (changed) {
+          yield* this.#replace({ ...this.#state, reviews });
+          for (const id of selected) this.#wake(id);
+        }
+      }),
+    );
+  }
+
+  queueDraft(
+    reviewId: string,
+    input: AnnotationDraftInput,
+  ): Effect.Effect<AnnotationDraft, ReviewError | RuntimeStateError> {
+    return this.#mutations.withPermit(
+      Effect.gen({ self: this }, function* () {
+        const index = this.#reviewIndex(reviewId);
+        const review = this.#state.reviews[index];
+        if (review === undefined) return yield* this.#reviewNotFound(reviewId);
+        if (review.status !== "ready")
+          return yield* new ReviewError({
+            code: "review.not_ready",
+            message: "The review is not accepting annotations",
+          });
+        if (review.drafts.length >= maximumDraftsPerReview)
+          return yield* new ReviewError({
+            code: "review.annotation_limit",
+            message: `Queued annotation limit of ${maximumDraftsPerReview} reached`,
+          });
+        let id: string;
+        do id = generateDraftId();
+        while (review.drafts.some((draft) => draft.id === id));
+        const draft = { id, ...input } as AnnotationDraft;
+        const updated: PersistedReview = {
+          ...review,
+          drafts: [...review.drafts, draft],
+        };
+        if (!this.#fitsStorage(index, updated))
+          return yield* this.#annotationStorageLimit();
+        yield* this.#replaceReview(index, updated);
+        return draft;
+      }),
+    );
+  }
+
+  sendDrafts(
+    reviewId: string,
+    draftIds: readonly string[],
+    end = false,
+  ): Effect.Effect<
+    { readonly sent: number; readonly status: PersistedReview["status"] },
+    ReviewError | RuntimeStateError
+  > {
+    return this.#mutations.withPermit(
+      Effect.gen({ self: this }, function* () {
+        const index = this.#reviewIndex(reviewId);
+        const review = this.#state.reviews[index];
+        if (review === undefined) return yield* this.#reviewNotFound(reviewId);
+        if (review.status !== "ready")
+          return yield* new ReviewError({
+            code: "review.not_ready",
+            message: "The review is not accepting annotations",
+          });
+        const selectedIds = new Set(draftIds);
+        const selected = review.drafts.filter((draft) =>
+          selectedIds.has(draft.id),
+        );
+        if (
+          selectedIds.size !== draftIds.length ||
+          selected.length !== selectedIds.size
+        )
+          return yield* new ReviewError({
+            code: "review.draft_not_found",
+            message: "One or more annotation drafts are not available",
+          });
+        const remaining = review.drafts.filter(
+          (draft) => !selectedIds.has(draft.id),
+        );
+        if (end && remaining.length > 0)
+          return yield* new ReviewError({
+            code: "review.unsent_drafts",
+            message:
+              "Send or remove every queued draft before ending the review",
+          });
+        if (
+          review.events.length + selected.length > maximumEventsPerReview ||
+          review.nextCursor + selected.length > Number.MAX_SAFE_INTEGER
+        )
+          return yield* new ReviewError({
+            code: "review.annotation_limit",
+            message: `Unacknowledged feedback limit of ${maximumEventsPerReview} reached`,
+          });
+        const events = [...review.events];
+        const eventIds = new Set(events.map((event) => event.id));
+        for (let offset = 0; offset < selected.length; offset += 1) {
+          const draft = selected[offset];
+          if (draft === undefined) continue;
+          let id: string;
+          do id = generateFeedbackId();
+          while (eventIds.has(id));
+          eventIds.add(id);
+          events.push({
+            ...draft,
+            id,
+            position: review.nextCursor + offset,
+          });
+        }
+        const updated: PersistedReview = {
+          ...review,
+          status: end ? "ended" : review.status,
+          drafts: remaining,
+          events,
+          nextCursor: review.nextCursor + selected.length,
+        };
+        if (!this.#fitsStorage(index, updated))
+          return yield* this.#annotationStorageLimit();
+        if (end && events.length === 0) {
+          const now = yield* Clock.currentTimeMillis;
+          yield* this.#replaceWithCompletedTombstone(index, updated, now);
+        } else yield* this.#replaceReview(index, updated);
+        if (selected.length > 0 || end) this.#wake(reviewId);
+        return { sent: selected.length, status: end ? "ended" : "ready" };
+      }),
+    );
+  }
+
+  feedback(
+    reviewId: string,
+    options: { readonly after?: number; readonly wait?: boolean } = {},
+  ): Effect.Effect<
+    FeedbackReadResult,
+    ReviewError | FeedbackError | RuntimeStateError
+  > {
+    return Effect.gen({ self: this }, function* () {
+      const prepared = yield* this.#mutations.withPermit(
+        this.#prepareFeedback(reviewId, options.after, options.wait === true),
+      );
+      if (prepared.kind === "result") return prepared.result;
+      yield* Deferred.await(prepared.waiter.signal).pipe(
+        Effect.ensuring(this.#removeWaiter(reviewId, prepared.waiter)),
+      );
+      return yield* this.feedback(reviewId);
+    });
+  }
+
+  deleteReview(
+    reviewId: string,
+    discardFeedback: boolean,
+    beforeCommit: Effect.Effect<void> = Effect.void,
+  ): Effect.Effect<DeleteReviewResult, ReviewError | RuntimeStateError> {
+    return this.#mutations.withPermit(
+      Effect.gen({ self: this }, function* () {
+        const now = yield* Clock.currentTimeMillis;
+        yield* this.#expireTombstones(now);
+        const existingTombstone = this.#state.tombstones.find(
+          (tombstone) => tombstone.id === reviewId,
+        );
+        if (existingTombstone?.kind === "deleted")
+          return {
+            review: reviewId,
+            deleted: 1 as const,
+            discardedDrafts: existingTombstone.discardedDrafts,
+            discardedFeedback: existingTombstone.discardedFeedback,
+          };
+        const index = this.#reviewIndex(reviewId);
+        const review = this.#state.reviews[index];
+        if (review === undefined && existingTombstone === undefined)
+          return yield* this.#reviewNotFound(reviewId);
+        const drafts = review?.drafts.length ?? 0;
+        const feedback = review?.events.length ?? 0;
+        if (!discardFeedback && (drafts > 0 || feedback > 0))
+          return yield* new ReviewError({
+            code: "review.pending_feedback",
+            message: "The review still contains pending feedback",
+            details: { drafts, unacknowledged: feedback },
+          });
+        const reviews =
+          review === undefined
+            ? this.#state.reviews
+            : this.#state.reviews.filter((_, position) => position !== index);
+        const retained = this.#retainedTombstones(now).filter(
+          (tombstone) => tombstone.id !== reviewId,
+        );
+        if (retained.length >= maximumTombstones)
+          return yield* new ReviewError({
+            code: "review.limit",
+            message: `Retry tombstone limit of ${maximumTombstones} reached`,
+          });
+        yield* beforeCommit;
+        yield* this.#replace({
+          ...this.#state,
+          reviews,
+          tombstones: [
+            ...retained,
+            {
+              id: reviewId,
+              kind: "deleted",
+              expiresAt: new Date(
+                now + tombstoneRetentionMilliseconds,
+              ).toISOString(),
+              discardedDrafts: drafts,
+              discardedFeedback: feedback,
+            },
+          ],
+        });
+        this.#wake(reviewId);
+        return {
+          review: reviewId,
+          deleted: 1,
+          discardedDrafts: drafts,
+          discardedFeedback: feedback,
+        };
+      }),
+    );
+  }
+
+  #prepareFeedback(
+    reviewId: string,
+    after: number | undefined,
+    wait: boolean,
+  ): Effect.Effect<
+    PreparedFeedback,
+    ReviewError | FeedbackError | RuntimeStateError
+  > {
+    return Effect.gen({ self: this }, function* () {
+      const now = yield* Clock.currentTimeMillis;
+      yield* this.#expireTombstones(now);
+      const tombstone = this.#state.tombstones.find(
+        (candidate) => candidate.id === reviewId,
+      );
+      if (tombstone?.kind === "deleted")
+        return yield* this.#reviewNotFound(reviewId);
+      if (tombstone?.kind === "completed") {
+        if (after !== undefined && after > tombstone.terminalCursor)
+          return yield* this.#cursorAhead();
+        return {
+          kind: "result",
+          result: this.#feedbackResult(
+            reviewId,
+            "ended",
+            tombstone.terminalCursor,
+            [],
+          ),
+        };
+      }
+      const index = this.#reviewIndex(reviewId);
+      const review = this.#state.reviews[index];
+      if (review === undefined) return yield* this.#reviewNotFound(reviewId);
+      let acknowledgedCursor = review.acknowledgedCursor;
+      let events = review.events;
+      if (after !== undefined && after > acknowledgedCursor) {
+        if (after > review.highestDeliveredCursor)
+          return yield* this.#cursorAhead();
+        acknowledgedCursor = after;
+        events = events.filter((event) => event.position > after);
+      }
+      if (review.status === "ended" && events.length === 0) {
+        const completed = {
+          ...review,
+          acknowledgedCursor,
+          events,
+        };
+        yield* this.#replaceWithCompletedTombstone(index, completed, now);
+        return {
+          kind: "result",
+          result: this.#feedbackResult(
+            reviewId,
+            "ended",
+            acknowledgedCursor,
+            [],
+          ),
+        };
+      }
+      if (events.length > 0) {
+        const cursor = events.at(-1)?.position ?? acknowledgedCursor;
+        const updated: PersistedReview = {
+          ...review,
+          acknowledgedCursor,
+          events,
+          highestDeliveredCursor: Math.max(
+            review.highestDeliveredCursor,
+            cursor,
+          ),
+        };
+        if (
+          updated.acknowledgedCursor !== review.acknowledgedCursor ||
+          updated.highestDeliveredCursor !== review.highestDeliveredCursor
+        )
+          yield* this.#replaceReview(index, updated);
+        return {
+          kind: "result",
+          result: this.#feedbackResult(reviewId, review.status, cursor, events),
+        };
+      }
+      if (acknowledgedCursor !== review.acknowledgedCursor)
+        yield* this.#replaceReview(index, {
+          ...review,
+          acknowledgedCursor,
+          events,
+        });
+      if (!wait || review.status !== "ready")
+        return {
+          kind: "result",
+          result: this.#feedbackResult(
+            reviewId,
+            review.status,
+            acknowledgedCursor,
+            [],
+          ),
+        };
+      if (this.#waiters.has(reviewId))
+        return yield* new FeedbackError({
+          code: "feedback.consumer_busy",
+          message: "Another feedback wait is already active for this review",
+        });
+      const waiter = {
+        token: Symbol(reviewId),
+        signal: Deferred.makeUnsafe<void>(),
+      };
+      this.#waiters.set(reviewId, waiter);
+      return { kind: "wait", waiter };
+    });
+  }
+
+  #feedbackResult(
+    id: string,
+    status: PersistedReview["status"],
+    cursor: number,
+    events: readonly FeedbackEvent[],
+  ): FeedbackReadResult {
+    const feedback = events.map((event): DeliveredFeedback => {
+      if (event.kind === "freeform")
+        return {
+          id: event.id,
+          kind: "freeform",
+          comment: event.comment,
+          entry: event.entry,
+          revision: event.revision,
+        };
+      return {
+        id: event.id,
+        kind: "element",
+        comment: event.comment,
+        entry: event.entry,
+        revision: event.revision,
+        anchor: {
+          selector: event.anchor.selector,
+          dom_path: event.anchor.domPath,
+          tag: event.anchor.tag,
+          ...(event.anchor.text === undefined
+            ? {}
+            : { text: event.anchor.text }),
+        },
+      };
+    });
+    return {
+      review: { id, status },
+      cursor,
+      count: feedback.length,
+      feedback,
+    };
+  }
+
+  #replaceReview(
+    index: number,
+    review: PersistedReview,
+  ): Effect.Effect<void, RuntimeStateError> {
+    const reviews = [...this.#state.reviews];
+    reviews[index] = review;
+    return this.#replace({ ...this.#state, reviews });
+  }
+
+  #replaceWithCompletedTombstone(
+    index: number,
+    review: PersistedReview,
+    now: number,
+  ): Effect.Effect<void, ReviewError | RuntimeStateError> {
+    const retained = this.#retainedTombstones(now);
+    if (retained.length >= maximumTombstones)
+      return Effect.fail(
+        new ReviewError({
+          code: "review.limit",
+          message: `Retry tombstone limit of ${maximumTombstones} reached`,
+        }),
+      );
+    return this.#replace({
+      ...this.#state,
+      reviews: this.#state.reviews.filter((_, position) => position !== index),
+      tombstones: [
+        ...retained,
+        {
+          id: review.id,
+          kind: "completed",
+          session: review.session,
+          terminalCursor: review.acknowledgedCursor,
+          expiresAt: new Date(
+            now + tombstoneRetentionMilliseconds,
+          ).toISOString(),
+        },
+      ],
+    });
+  }
+
+  #retainedTombstones(now: number): AnnotationState["tombstones"] {
+    return this.#state.tombstones.filter(
+      (tombstone) => Date.parse(tombstone.expiresAt) > now,
+    );
+  }
+
+  #expireTombstones(now: number): Effect.Effect<void, RuntimeStateError> {
+    const tombstones = this.#retainedTombstones(now);
+    return tombstones.length === this.#state.tombstones.length
+      ? Effect.void
+      : this.#replace({ ...this.#state, tombstones });
+  }
+
+  #reviewIndex(id: string): number {
+    return this.#state.reviews.findIndex((review) => review.id === id);
+  }
+
+  #reviewNotFound(id: string): ReviewError {
+    return new ReviewError({
+      code: "review.not_found",
+      message: `Review is not retained: ${id}`,
+    });
+  }
+
+  #cursorAhead(): FeedbackError {
+    return new FeedbackError({
+      code: "feedback.cursor_ahead",
+      message: "The feedback cursor is ahead of the highest delivered position",
+    });
+  }
+
+  #fitsStorage(index: number, review: PersistedReview): boolean {
+    const reviews = [...this.#state.reviews];
+    reviews[index] = review;
+    return annotationStateFitsMutationBounds({ ...this.#state, reviews });
+  }
+
+  #annotationStorageLimit(): ReviewError {
+    return new ReviewError({
+      code: "review.annotation_limit",
+      message: "The durable annotation size limit has been reached",
+    });
+  }
+
+  #wake(id: string): void {
+    const waiter = this.#waiters.get(id);
+    if (waiter !== undefined)
+      Effect.runSync(Deferred.succeed(waiter.signal, undefined));
+  }
+
+  #removeWaiter(id: string, waiter: ReviewWaiter): Effect.Effect<void> {
+    return this.#mutations.withPermit(
+      Effect.sync(() => {
+        if (this.#waiters.get(id)?.token === waiter.token)
+          this.#waiters.delete(id);
       }),
     );
   }

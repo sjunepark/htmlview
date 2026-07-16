@@ -2,7 +2,8 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { expect, it } from "@effect/vitest";
-import { Effect, Scope } from "effect";
+import { Effect, Fiber, Scope } from "effect";
+import { TestClock } from "effect/testing";
 import { AnnotationRegistry } from "../src/annotation/registry.js";
 import { emptyAnnotationState } from "../src/annotation/model.js";
 import { loadAnnotationState } from "../src/annotation/store.js";
@@ -15,6 +16,7 @@ import {
 
 const firstId = `rv_${"a".repeat(22)}`;
 const secondId = `rv_${"b".repeat(22)}`;
+const revision = `sha256:${"0".repeat(64)}`;
 
 function withTemporaryState<A, E>(
   use: (paths: StatePaths) => Effect.Effect<A, E, Scope.Scope>,
@@ -117,4 +119,258 @@ it.effect("keeps memory unchanged when a durable replacement fails", () =>
       expect(registry.summaries()).toHaveLength(1);
     }),
   ),
+);
+
+it.effect("reserves lifecycle headroom at the durable annotation limit", () =>
+  withTemporaryState((paths) =>
+    Effect.gen(function* () {
+      const entry = `/${"\n".repeat(8 * 1024 - 1)}`;
+      const registry = new AnnotationRegistry(paths, emptyAnnotationState());
+      yield* registry.createReady({
+        id: firstId,
+        identity: { root: "/workspace", entry },
+        session: "session1",
+      });
+
+      let limit: RuntimeStateError | { readonly code: string } | undefined;
+      let sent = 0;
+      for (let index = 0; index < 32; index += 1) {
+        const queued = yield* Effect.result(
+          registry.queueDraft(firstId, {
+            kind: "element",
+            comment: "\n".repeat(4 * 1024),
+            entry,
+            revision,
+            anchor: {
+              selector: "\n".repeat(2 * 1024),
+              domPath: "\n".repeat(4 * 1024),
+              tag: "\n".repeat(128),
+              text: "\n".repeat(512),
+            },
+          }),
+        );
+        if (queued._tag === "Failure") {
+          limit = queued.failure;
+          break;
+        }
+        const delivered = yield* Effect.result(
+          registry.sendDrafts(firstId, [queued.success.id]),
+        );
+        if (delivered._tag === "Failure") {
+          limit = delivered.failure;
+          break;
+        }
+        sent += 1;
+      }
+
+      expect(limit?.code).toBe("review.annotation_limit");
+      expect(sent).toBeGreaterThan(0);
+      expect((yield* registry.feedback(firstId)).count).toBe(sent);
+      yield* registry.stopReady([firstId]);
+      const persisted = (yield* loadAnnotationState(paths)).reviews[0];
+      expect(persisted?.status).toBe("stopped");
+      expect(persisted?.highestDeliveredCursor).toBe(sent);
+      expect(persisted?.events).toHaveLength(sent);
+    }),
+  ),
+);
+
+it.effect(
+  "delivers ordered feedback with durable duplicate-before-ack semantics",
+  () =>
+    withTemporaryState((paths) =>
+      Effect.gen(function* () {
+        const registry = new AnnotationRegistry(paths, emptyAnnotationState());
+        yield* registry.createReady({
+          id: firstId,
+          identity: { root: "/workspace", entry: "/report.html" },
+          session: "session1",
+        });
+        const first = yield* registry.queueDraft(firstId, {
+          kind: "element",
+          comment: "first",
+          entry: "/report.html",
+          revision,
+          anchor: {
+            selector: "#first",
+            domPath: "html[0]/body[0]/button[0]",
+            tag: "button",
+          },
+        });
+        const second = yield* registry.queueDraft(firstId, {
+          kind: "freeform",
+          comment: "second",
+          entry: "/report.html",
+          revision,
+        });
+        yield* registry.sendDrafts(firstId, [second.id, first.id]);
+
+        const delivered = yield* registry.feedback(firstId);
+        expect(delivered.cursor).toBe(2);
+        expect(delivered.feedback.map((event) => event.comment)).toEqual([
+          "first",
+          "second",
+        ]);
+        const duplicate = yield* registry.feedback(firstId);
+        expect(duplicate.feedback.map((event) => event.id)).toEqual(
+          delivered.feedback.map((event) => event.id),
+        );
+        expect(
+          (yield* registry.feedback(firstId, { after: 3 }).pipe(Effect.flip))
+            .code,
+        ).toBe("feedback.cursor_ahead");
+
+        const acknowledged = yield* registry.feedback(firstId, { after: 2 });
+        expect(acknowledged).toMatchObject({ cursor: 2, count: 0 });
+        const third = yield* registry.queueDraft(firstId, {
+          kind: "freeform",
+          comment: "third",
+          entry: "/report.html",
+          revision,
+        });
+        yield* registry.sendDrafts(firstId, [third.id]);
+        const next = yield* registry.feedback(firstId, { after: 2 });
+        expect(next.cursor).toBe(3);
+        expect(next.feedback.map((event) => event.comment)).toEqual(["third"]);
+      }),
+    ),
+);
+
+it.effect("enforces one cancellable waiter and wakes on stopped state", () =>
+  withTemporaryState((paths) =>
+    Effect.gen(function* () {
+      const registry = new AnnotationRegistry(paths, emptyAnnotationState());
+      yield* registry.createReady({
+        id: firstId,
+        identity: { root: "/workspace", entry: "/report.html" },
+        session: "session1",
+      });
+      const cancelled = yield* registry
+        .feedback(firstId, { wait: true })
+        .pipe(Effect.forkChild);
+      yield* Effect.promise(
+        () => new Promise<void>((resolve) => setImmediate(resolve)),
+      );
+      expect(
+        (yield* registry.feedback(firstId, { wait: true }).pipe(Effect.flip))
+          .code,
+      ).toBe("feedback.consumer_busy");
+      yield* Fiber.interrupt(cancelled);
+
+      const waiting = yield* registry
+        .feedback(firstId, { wait: true })
+        .pipe(Effect.forkChild);
+      yield* Effect.promise(
+        () => new Promise<void>((resolve) => setImmediate(resolve)),
+      );
+      yield* registry.stopReady([firstId]);
+      expect(yield* Fiber.join(waiting)).toMatchObject({
+        review: { id: firstId, status: "stopped" },
+        cursor: 0,
+        count: 0,
+      });
+    }),
+  ),
+);
+
+it.effect(
+  "requires explicit discard and replays deletion tombstones for 24 hours",
+  () =>
+    withTemporaryState((paths) =>
+      Effect.gen(function* () {
+        yield* TestClock.setTime(0);
+        const registry = new AnnotationRegistry(paths, emptyAnnotationState());
+        yield* registry.createReady({
+          id: firstId,
+          identity: { root: "/workspace", entry: "/report.html" },
+          session: "session1",
+        });
+        const first = yield* registry.queueDraft(firstId, {
+          kind: "freeform",
+          comment: "send",
+          entry: "/report.html",
+          revision,
+        });
+        yield* registry.queueDraft(firstId, {
+          kind: "freeform",
+          comment: "draft",
+          entry: "/report.html",
+          revision,
+        });
+        yield* registry.sendDrafts(firstId, [first.id]);
+        const pending = yield* registry
+          .deleteReview(firstId, false)
+          .pipe(Effect.flip);
+        expect(pending.code).toBe("review.pending_feedback");
+        if (pending._tag !== "ReviewError") throw pending;
+        expect(pending.details).toEqual({ drafts: 1, unacknowledged: 1 });
+
+        let closed = 0;
+        const deleted = yield* registry.deleteReview(
+          firstId,
+          true,
+          Effect.sync(() => {
+            closed += 1;
+          }),
+        );
+        expect(closed).toBe(1);
+        expect(deleted).toMatchObject({
+          discardedDrafts: 1,
+          discardedFeedback: 1,
+        });
+        expect(yield* registry.deleteReview(firstId, false)).toEqual(deleted);
+        expect(closed).toBe(1);
+
+        yield* TestClock.adjust(24 * 60 * 60 * 1000);
+        expect(
+          (yield* registry.deleteReview(firstId, false).pipe(Effect.flip)).code,
+        ).toBe("review.not_found");
+      }),
+    ),
+);
+
+it.effect(
+  "ends with a final batch and compacts only after acknowledgement",
+  () =>
+    withTemporaryState((paths) =>
+      Effect.gen(function* () {
+        yield* TestClock.setTime(0);
+        const registry = new AnnotationRegistry(paths, emptyAnnotationState());
+        yield* registry.createReady({
+          id: firstId,
+          identity: { root: "/workspace", entry: "/report.html" },
+          session: "session1",
+        });
+        const draft = yield* registry.queueDraft(firstId, {
+          kind: "freeform",
+          comment: "final",
+          entry: "/report.html",
+          revision,
+        });
+        expect(yield* registry.sendDrafts(firstId, [draft.id], true)).toEqual({
+          sent: 1,
+          status: "ended",
+        });
+        const delivered = yield* registry.feedback(firstId);
+        expect(delivered).toMatchObject({
+          review: { status: "ended" },
+          cursor: 1,
+          count: 1,
+        });
+        const completed = yield* registry.feedback(firstId, { after: 1 });
+        expect(completed).toMatchObject({
+          review: { status: "ended" },
+          cursor: 1,
+          count: 0,
+        });
+        expect(registry.review(firstId)).toBeUndefined();
+        expect(yield* registry.feedback(firstId, { after: 1 })).toEqual(
+          completed,
+        );
+        expect(
+          (yield* registry.feedback(firstId, { after: 2 }).pipe(Effect.flip))
+            .code,
+        ).toBe("feedback.cursor_ahead");
+      }),
+    ),
 );

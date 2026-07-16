@@ -1,8 +1,8 @@
 # Agent-facing CLI contract
 
-> **Status:** This is the accepted `0.1.0` interface. The Effect CLI grammar,
-> serving commands, native output boundary, and foreground diagnostics are
-> implemented; review and feedback commands are not. Track implementation in
+> **Status:** This is the implemented `0.1.0` command interface. The browser
+> review shell that produces annotation drafts remains under implementation;
+> track that surface in
 > [the repository plan](https://github.com/sjunepark/htmlview/blob/main/PLAN.md).
 
 ## Purpose

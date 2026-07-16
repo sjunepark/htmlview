@@ -53,21 +53,33 @@ export const ReviewStatusSchema = Schema.Literals([
 ]);
 export type ReviewStatus = typeof ReviewStatusSchema.Type;
 
+export const AnnotationSelectorSchema =
+  nonEmptyBoundedString(maximumSelectorBytes);
+export const AnnotationDomPathSchema =
+  nonEmptyBoundedString(maximumDomPathBytes);
+export const AnnotationTagSchema = nonEmptyBoundedString(128);
+export const AnnotationTextSchema = boundedString(maximumAnchorTextBytes);
 export const AnnotationAnchorSchema = Schema.Struct({
-  selector: nonEmptyBoundedString(maximumSelectorBytes),
-  domPath: nonEmptyBoundedString(maximumDomPathBytes),
-  tag: nonEmptyBoundedString(128),
-  text: Schema.optionalKey(boundedString(maximumAnchorTextBytes)),
+  selector: AnnotationSelectorSchema,
+  domPath: AnnotationDomPathSchema,
+  tag: AnnotationTagSchema,
+  text: Schema.optionalKey(AnnotationTextSchema),
 });
 export type AnnotationAnchor = typeof AnnotationAnchorSchema.Type;
 
+export const AnnotationCommentSchema =
+  nonEmptyBoundedString(maximumCommentBytes);
+export const AnnotationEntrySchema = nonEmptyBoundedString(
+  maximumEntryBytes,
+).check(Schema.isPattern(/^\//), containsNoNull);
+export const AnnotationRevisionSchema = Schema.String.check(
+  Schema.isPattern(/^sha256:[0-9a-f]{64}$/),
+);
+
 const commentFields = {
-  comment: nonEmptyBoundedString(maximumCommentBytes),
-  entry: nonEmptyBoundedString(maximumEntryBytes).check(
-    Schema.isPattern(/^\//),
-    containsNoNull,
-  ),
-  revision: Schema.String.check(Schema.isPattern(/^sha256:[0-9a-f]{64}$/)),
+  comment: AnnotationCommentSchema,
+  entry: AnnotationEntrySchema,
+  revision: AnnotationRevisionSchema,
 };
 
 export const AnnotationDraftSchema = Schema.Union([
@@ -113,10 +125,7 @@ export const PersistedReviewSchema = Schema.Struct({
       Schema.makeFilter(path.isAbsolute, { expected: "an absolute path" }),
       containsNoNull,
     ),
-    entry: nonEmptyBoundedString(maximumEntryBytes).check(
-      Schema.isPattern(/^\//),
-      containsNoNull,
-    ),
+    entry: AnnotationEntrySchema,
   }),
   status: ReviewStatusSchema,
   session: SessionIdentifierSchema,

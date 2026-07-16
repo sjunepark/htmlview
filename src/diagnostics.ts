@@ -2,6 +2,7 @@ import { Effect, Layer, Logger } from "effect";
 import {
   contentListenerErrorCodes,
   controlErrorCodes,
+  feedbackErrorCodes,
   pathErrorCodes,
   reviewErrorCodes,
   runtimeStateErrorCodes,
@@ -12,6 +13,9 @@ import {
 const diagnosticOperations = [
   "cli.home",
   "cli.serve",
+  "cli.review",
+  "cli.feedback",
+  "cli.review.delete",
   "cli.stop",
   "cli.runtime",
   "supervisor.start",
@@ -29,6 +33,7 @@ const diagnosticCodes = [
   ...supervisorErrorCodes,
   ...contentListenerErrorCodes,
   ...reviewErrorCodes,
+  ...feedbackErrorCodes,
 ] as const;
 
 export type DiagnosticOperation = (typeof diagnosticOperations)[number];

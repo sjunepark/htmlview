@@ -300,6 +300,42 @@ test("detached CLI lifecycle converges, recovers, and remains project-clean", as
     "<!doctype html><p>first</p>",
   );
 
+  for (const [args, code] of [
+    [["review", "bad"], "review.session_not_found"],
+    [["feedback", "bad"], "review.not_found"],
+    [["review", "delete", "bad"], "review.not_found"],
+  ]) {
+    const missing = await jsonCli(args);
+    assert.equal(missing.code, 1);
+    assert.equal(missing.value.error.code, code);
+    assert.notEqual(missing.value.error.code, "runtime.internal");
+  }
+
+  const toonReview = await toonCli(["review", firstCall.value.session.id]);
+  const jsonReview = await jsonCli(["review", firstCall.value.session.id]);
+  assert.equal(toonReview.value.review.id, jsonReview.value.review.id);
+  assert.equal(toonReview.value.review.url, jsonReview.value.review.url);
+  assert.equal(jsonReview.value.review.reused, true);
+  const reviewId = jsonReview.value.review.id;
+  const toonFeedback = await toonCli(["feedback", reviewId]);
+  const jsonFeedback = await jsonCli(["feedback", reviewId]);
+  assert.deepEqual(
+    withoutHelp(toonFeedback.value),
+    withoutHelp(jsonFeedback.value),
+  );
+  assert.deepEqual(jsonFeedback.value.feedback, []);
+  assert.equal((await jsonCli([])).value.review_count, 1);
+  const deleted = await jsonCli(["review", "delete", reviewId]);
+  const deletedAgain = await toonCli(["review", "delete", reviewId]);
+  assert.deepEqual(deleted.value, deletedAgain.value);
+  assert.equal(deleted.value.delete.status, "deleted");
+  assert.equal(
+    await fetch(firstCall.value.session.url).then((response) =>
+      response.text(),
+    ),
+    "<!doctype html><p>first</p>",
+  );
+
   const home = await jsonCli(["--fields", "entry,root"]);
   assert.equal(home.value.count, 1);
   assert.equal(

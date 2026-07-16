@@ -43,6 +43,17 @@ export const contentListenerErrorCodes = [
 export const reviewErrorCodes = [
   "review.session_not_found",
   "review.limit",
+  "review.not_found",
+  "review.not_ready",
+  "review.pending_feedback",
+  "review.draft_not_found",
+  "review.annotation_limit",
+  "review.unsent_drafts",
+] as const;
+
+export const feedbackErrorCodes = [
+  "feedback.cursor_ahead",
+  "feedback.consumer_busy",
 ] as const;
 
 export const PathErrorCode = Schema.Literals(pathErrorCodes);
@@ -53,6 +64,7 @@ export const ContentListenerErrorCode = Schema.Literals(
   contentListenerErrorCodes,
 );
 export const ReviewErrorCode = Schema.Literals(reviewErrorCodes);
+export const FeedbackErrorCode = Schema.Literals(feedbackErrorCodes);
 
 interface OperationalErrorFields<Code> {
   readonly code: Code;
@@ -83,7 +95,16 @@ export class ContentListenerError extends Data.TaggedError(
 )<OperationalErrorFields<typeof ContentListenerErrorCode.Type>> {}
 
 export class ReviewError extends Data.TaggedError("ReviewError")<
-  OperationalErrorFields<typeof ReviewErrorCode.Type>
+  OperationalErrorFields<typeof ReviewErrorCode.Type> & {
+    readonly details?: {
+      readonly drafts: number;
+      readonly unacknowledged: number;
+    };
+  }
+> {}
+
+export class FeedbackError extends Data.TaggedError("FeedbackError")<
+  OperationalErrorFields<typeof FeedbackErrorCode.Type>
 > {}
 
 export type OperationalError =
@@ -92,11 +113,16 @@ export type OperationalError =
   | ControlError
   | SupervisorError
   | ContentListenerError
-  | ReviewError;
+  | ReviewError
+  | FeedbackError;
 
 export interface PublicOperationalError {
   readonly code: OperationalError["code"];
   readonly message: string;
+  readonly details?: {
+    readonly drafts: number;
+    readonly unacknowledged: number;
+  };
 }
 
 export function isOperationalError(error: unknown): error is OperationalError {
@@ -106,7 +132,8 @@ export function isOperationalError(error: unknown): error is OperationalError {
     error instanceof ControlError ||
     error instanceof SupervisorError ||
     error instanceof ContentListenerError ||
-    error instanceof ReviewError
+    error instanceof ReviewError ||
+    error instanceof FeedbackError
   );
 }
 
@@ -121,8 +148,14 @@ export function toPublicError(error: OperationalError): PublicOperationalError {
     case "ControlError":
     case "SupervisorError":
     case "ContentListenerError":
-    case "ReviewError":
+    case "FeedbackError":
       return { code: error.code, message: error.message };
+    case "ReviewError":
+      return {
+        code: error.code,
+        message: error.message,
+        ...(error.details === undefined ? {} : { details: error.details }),
+      };
     default:
       return unreachable(error);
   }
@@ -139,10 +172,12 @@ const decodeContentListenerErrorCode = Schema.decodeUnknownResult(
   ContentListenerErrorCode,
 );
 const decodeReviewErrorCode = Schema.decodeUnknownResult(ReviewErrorCode);
+const decodeFeedbackErrorCode = Schema.decodeUnknownResult(FeedbackErrorCode);
 
 export function operationalError(
   code: unknown,
   message: string,
+  details?: { readonly drafts: number; readonly unacknowledged: number },
 ): OperationalError | undefined {
   const pathCode = decodePathErrorCode(code);
   if (Result.isSuccess(pathCode))
@@ -169,7 +204,15 @@ export function operationalError(
 
   const reviewCode = decodeReviewErrorCode(code);
   if (Result.isSuccess(reviewCode))
-    return new ReviewError({ code: reviewCode.success, message });
+    return new ReviewError({
+      code: reviewCode.success,
+      message,
+      ...(details === undefined ? {} : { details }),
+    });
+
+  const feedbackCode = decodeFeedbackErrorCode(code);
+  if (Result.isSuccess(feedbackCode))
+    return new FeedbackError({ code: feedbackCode.success, message });
 
   return undefined;
 }

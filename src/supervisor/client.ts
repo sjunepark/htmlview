@@ -8,6 +8,7 @@ import {
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { Clock, Data, Effect, Result, Schedule, Scope } from "effect";
+import { loadAnnotationState } from "../annotation/store.js";
 import {
   operationalError,
   PathError,
@@ -29,6 +30,8 @@ import {
 import {
   controlHost,
   decodeControlError,
+  decodeDeleteReviewControlResult,
+  decodeFeedbackControlResult,
   decodeReviewControlResult,
   decodeServeControlResult,
   decodeSessionListResult,
@@ -36,12 +39,16 @@ import {
   decodeStopControlResult,
   decodeTargetedStopControlResult,
   decodeSupervisorIdentity,
-  encodeCreateSessionRequest,
   encodeCreateReviewRequest,
+  encodeCreateSessionRequest,
+  encodeDeleteReviewRequest,
+  encodeFeedbackRequest,
   encodeShutdownRequest,
   encodeStopSessionRequest,
   maximumControlResponseBytes,
   supervisorProtocol,
+  type DeleteReviewControlResult,
+  type FeedbackControlResult,
   type OptionalSessionField,
   type ReviewControlResult,
   type ServeControlResult,
@@ -543,6 +550,7 @@ function ensureSupervisor(
             "The htmlview supervisor is alive but temporarily unavailable",
         });
 
+      yield* loadAnnotationState(paths);
       yield* removeStaleControlSocket(paths).pipe(
         Effect.andThen(startProcess(paths, ownership.lock.nonce)),
         Effect.mapError(
@@ -643,26 +651,33 @@ function acquireOwnershipOrObserve(
   });
 }
 
-function existingSupervisor(
+function observeSupervisorOr<A, E>(
   paths: StatePaths,
   allowVersionMismatch: boolean,
   acquireLock: AcquireSupervisorLock,
-): Effect.Effect<SupervisorIdentity | undefined, OperationalError> {
+  whenAbsent: Effect.Effect<A, E>,
+): Effect.Effect<
+  | { readonly kind: "identity"; readonly identity: SupervisorIdentity }
+  | { readonly kind: "absent"; readonly value: A },
+  OperationalError | E
+> {
   return Effect.scoped(
     Effect.gen(function* () {
       const current = yield* currentSupervisor(paths, allowVersionMismatch);
-      if (current !== undefined) return current;
+      if (current !== undefined)
+        return { kind: "identity" as const, identity: current };
 
       const ownership = yield* acquireOwnershipOrObserve(
         paths,
         allowVersionMismatch,
         acquireLock,
       );
-      if (ownership.kind === "identity") return ownership.identity;
+      if (ownership.kind === "identity") return ownership;
       const afterLock = yield* probeWithRetries(paths);
-      if (afterLock.status === "healthy") return afterLock.identity;
+      if (afterLock.status === "healthy")
+        return { kind: "identity" as const, identity: afterLock.identity };
       if (afterLock.status === "version_mismatch" && allowVersionMismatch)
-        return afterLock.identity;
+        return { kind: "identity" as const, identity: afterLock.identity };
       if (
         afterLock.status === "version_mismatch" ||
         afterLock.status === "incompatible"
@@ -675,8 +690,25 @@ function existingSupervisor(
             "The htmlview supervisor is alive but temporarily unavailable",
         });
       if (afterLock.status === "stale") yield* removeStaleControlSocket(paths);
-      return undefined;
+      return { kind: "absent" as const, value: yield* whenAbsent };
     }),
+  );
+}
+
+function existingSupervisor(
+  paths: StatePaths,
+  allowVersionMismatch: boolean,
+  acquireLock: AcquireSupervisorLock,
+): Effect.Effect<SupervisorIdentity | undefined, OperationalError> {
+  return observeSupervisorOr(
+    paths,
+    allowVersionMismatch,
+    acquireLock,
+    Effect.void,
+  ).pipe(
+    Effect.map((observation) =>
+      observation.kind === "identity" ? observation.identity : undefined,
+    ),
   );
 }
 
@@ -686,6 +718,7 @@ function controlError(value: unknown, fallback: string): OperationalError {
     const error = operationalError(
       decoded.success.error.code,
       decoded.success.error.message,
+      decoded.success.error.details,
     );
     if (error !== undefined) return error;
   }
@@ -911,11 +944,24 @@ export class SupervisorClient {
     fields: readonly OptionalSessionField[] = [],
   ): Effect.Effect<SupervisorStateResult, OperationalError> {
     const paths = this.#paths;
+    const startProcess = this.#startProcess;
     const acquireLock = this.#acquireLock;
     return Effect.gen(function* () {
       yield* ensurePrivateStateDirectory(paths);
-      const identity = yield* existingSupervisor(paths, false, acquireLock);
-      if (identity === undefined) return { sessions: [], reviews: [] };
+      const observation = yield* observeSupervisorOr(
+        paths,
+        false,
+        acquireLock,
+        loadAnnotationState(paths),
+      );
+      if (observation.kind === "absent") {
+        if (
+          observation.value.reviews.length === 0 &&
+          observation.value.tombstones.length === 0
+        )
+          return { sessions: [], reviews: [] };
+        yield* ensureSupervisor(paths, startProcess, acquireLock);
+      }
       const query =
         fields.length === 0
           ? ""
@@ -989,6 +1035,62 @@ export class SupervisorClient {
         },
         encodeCreateReviewRequest({ session }),
         reviewRequestTimeoutMilliseconds,
+      );
+    });
+  }
+
+  feedback(
+    review: string,
+    options: { readonly after?: number; readonly wait?: boolean } = {},
+  ): Effect.Effect<FeedbackControlResult, OperationalError> {
+    const paths = this.#paths;
+    const startProcess = this.#startProcess;
+    const acquireLock = this.#acquireLock;
+    return Effect.gen(function* () {
+      yield* ensureSupervisor(paths, startProcess, acquireLock);
+      return yield* requiredRequest(
+        paths,
+        "POST",
+        "/feedback",
+        (value) => {
+          const decoded = decodeFeedbackControlResult(value);
+          if (Result.isFailure(decoded)) return decoded;
+          return decoded.success.review.id === review &&
+            decoded.success.count === decoded.success.feedback.length
+            ? decoded
+            : Result.fail("Feedback result did not match the request");
+        },
+        encodeFeedbackRequest({
+          review,
+          wait: options.wait === true,
+          ...(options.after === undefined ? {} : { after: options.after }),
+        }),
+        options.wait === true ? 0 : controlRequestTimeoutMilliseconds,
+      );
+    });
+  }
+
+  deleteReview(
+    review: string,
+    discardFeedback: boolean,
+  ): Effect.Effect<DeleteReviewControlResult, OperationalError> {
+    const paths = this.#paths;
+    const startProcess = this.#startProcess;
+    const acquireLock = this.#acquireLock;
+    return Effect.gen(function* () {
+      yield* ensureSupervisor(paths, startProcess, acquireLock);
+      return yield* requiredRequest(
+        paths,
+        "POST",
+        "/reviews/delete",
+        (value) => {
+          const decoded = decodeDeleteReviewControlResult(value);
+          if (Result.isFailure(decoded)) return decoded;
+          return decoded.success.delete.review === review
+            ? decoded
+            : Result.fail("Deleted review did not match the request");
+        },
+        encodeDeleteReviewRequest({ review, discardFeedback }),
       );
     });
   }

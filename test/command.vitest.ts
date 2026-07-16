@@ -7,8 +7,11 @@ import { CommandService } from "../src/service.js";
 import { htmlviewVersion } from "../src/version.js";
 
 const service = Layer.succeed(CommandService, {
-  listSessions: () => Effect.succeed([]),
+  listState: () => Effect.succeed({ sessions: [], reviews: [] }),
   serve: () => Effect.die(new Error("serve handler should not run")),
+  review: () => Effect.die(new Error("review handler should not run")),
+  feedback: () => Effect.die(new Error("feedback handler should not run")),
+  deleteReview: () => Effect.die(new Error("delete handler should not run")),
   stopSession: () => Effect.die(new Error("stop handler should not run")),
   stopAll: () => Effect.die(new Error("stop handler should not run")),
 });
@@ -38,6 +41,8 @@ describe("native Effect CLI contract", () => {
       assert.equal(result.stderr, "");
       assert.match(result.stdout, /USAGE/);
       assert.match(result.stdout, /\n {2}serve\s+/);
+      assert.match(result.stdout, /\n {2}review\s+/);
+      assert.match(result.stdout, /\n {2}feedback\s+/);
       assert.match(result.stdout, /\n {2}stop\s+/);
       assert.equal(result.stdout.startsWith("{"), false);
     }
@@ -70,6 +75,9 @@ describe("native Effect CLI contract", () => {
       ["serve", "report.html", "--fields", "entry"],
       ["stop"],
       ["stop", "abc", "--all"],
+      ["feedback", "review", "--after", "-1"],
+      ["feedback", "review", "--wait", "--wait"],
+      ["review", "delete"],
     ]) {
       const result = await invoke(args);
       assert.equal(result.exitCode, 1, args.join(" "));

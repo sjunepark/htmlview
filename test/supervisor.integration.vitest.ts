@@ -23,7 +23,11 @@ import {
 import { homedir, tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, it } from "vitest";
-import { Effect, Exit, Scope } from "effect";
+import { Effect, Exit, Fiber, Scope } from "effect";
+import {
+  loadAnnotationState,
+  saveAnnotationState,
+} from "../src/annotation/store.js";
 import { logDiagnostic } from "../src/diagnostics.js";
 import { ContentListenerError } from "../src/errors.js";
 import { resolveServingGrant } from "../src/serving/grant.js";
@@ -191,6 +195,40 @@ function controlRequest(
     operation.once("error", reject);
     if (payload !== undefined) operation.write(payload);
     operation.end();
+  });
+}
+
+function abandonControlResponse(
+  paths: StatePaths,
+  route: string,
+  body: unknown,
+): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const payload = Buffer.from(JSON.stringify(body));
+    const operation = request(
+      {
+        socketPath: paths.controlSocket,
+        method: "POST",
+        path: route,
+        headers: {
+          host: controlHost,
+          "content-type": "application/json",
+          "content-length": String(payload.length),
+        },
+      },
+      (response) => {
+        response.once("data", () => {
+          response.destroy();
+          operation.destroy();
+          resolve();
+        });
+        response.once("error", () => undefined);
+      },
+    );
+    operation.once("error", (error) => {
+      if (!operation.destroyed) reject(error);
+    });
+    operation.end(payload);
   });
 }
 
@@ -396,6 +434,185 @@ describe("supervisor lifecycle", () => {
     assert.notEqual(resumedAfterRestart.review.url, resumed.review.url);
     assert.equal(resumedAfterRestart.review.reused, true);
     assert.equal(reviewStarts, 6);
+  });
+
+  it("serves cancellable feedback waits and idempotent review deletion", async () => {
+    const { client, root, entry, paths } = await setup();
+    const served = await runEffect(client.serve(entry, root));
+    const review = await runEffect(client.review(served.session.id));
+    assert.deepEqual(await runEffect(client.feedback(review.review.id)), {
+      review: { id: review.review.id, status: "ready" },
+      cursor: 0,
+      count: 0,
+      feedback: [],
+    });
+
+    const beforeCancellation = await runEffect(loadAnnotationState(paths));
+    const cancelled = Effect.runFork(
+      client.feedback(review.review.id, { wait: true }),
+    );
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    await runEffect(Fiber.interrupt(cancelled));
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    const afterCancellation = await runEffect(loadAnnotationState(paths));
+    assert.deepEqual(
+      afterCancellation.reviews.map((record) => ({
+        acknowledgedCursor: record.acknowledgedCursor,
+        highestDeliveredCursor: record.highestDeliveredCursor,
+        nextCursor: record.nextCursor,
+        events: record.events,
+      })),
+      beforeCancellation.reviews.map((record) => ({
+        acknowledgedCursor: record.acknowledgedCursor,
+        highestDeliveredCursor: record.highestDeliveredCursor,
+        nextCursor: record.nextCursor,
+        events: record.events,
+      })),
+    );
+
+    const waiting = runEffect(
+      client.feedback(review.review.id, { wait: true }),
+    );
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    await assert.rejects(
+      runEffect(client.feedback(review.review.id, { wait: true })),
+      { code: "feedback.consumer_busy" },
+    );
+    await runEffect(client.stopSession(served.session.id));
+    assert.deepEqual(await waiting, {
+      review: { id: review.review.id, status: "stopped" },
+      cursor: 0,
+      count: 0,
+      feedback: [],
+    });
+
+    const deleted = await runEffect(
+      client.deleteReview(review.review.id, false),
+    );
+    assert.deepEqual(deleted, {
+      delete: {
+        review: review.review.id,
+        deleted: 1,
+        status: "deleted",
+        discarded: { drafts: 0, feedback: 0 },
+      },
+    });
+    assert.deepEqual(
+      await runEffect(client.deleteReview(review.review.id, false)),
+      deleted,
+    );
+    assert.deepEqual((await runEffect(client.listState())).reviews, []);
+  });
+
+  it("retries unacknowledged feedback after a transport response is lost", async () => {
+    const parent = await temporaryDirectory("htmlview-feedback-loss-");
+    const paths = statePaths({
+      HTMLVIEW_STATE_DIR: path.join(parent, "state"),
+    });
+    await runEffect(ensurePrivateStateDirectory(paths));
+    const reviewId = `rv_${"a".repeat(22)}`;
+    const eventId = `fb_${"b".repeat(22)}`;
+    await runEffect(
+      saveAnnotationState(paths, {
+        version: 1,
+        reviews: [
+          {
+            id: reviewId,
+            identity: { root: "/workspace", entry: "/report.html" },
+            status: "stopped",
+            session: "session1",
+            drafts: [],
+            events: [
+              {
+                id: eventId,
+                position: 1,
+                kind: "freeform",
+                comment: "durable feedback",
+                entry: "/report.html",
+                revision: `sha256:${"0".repeat(64)}`,
+              },
+            ],
+            nextCursor: 2,
+            acknowledgedCursor: 0,
+            highestDeliveredCursor: 0,
+          },
+        ],
+        tombstones: [],
+      }),
+    );
+    const supervisor = await runEffect(
+      startSupervisor({ paths, idleMilliseconds: 10_000 }),
+    );
+    supervisors.push(supervisor);
+
+    await abandonControlResponse(paths, "/feedback", {
+      review: reviewId,
+      wait: false,
+    });
+
+    const retry = await runEffect(
+      new SupervisorClient(paths).feedback(reviewId),
+    );
+    assert.equal(retry.cursor, 1);
+    assert.equal(retry.feedback[0]?.id, eventId);
+    const persisted = await runEffect(loadAnnotationState(paths));
+    assert.equal(persisted.reviews[0]?.acknowledgedCursor, 0);
+    assert.equal(persisted.reviews[0]?.highestDeliveredCursor, 1);
+    assert.equal(persisted.reviews[0]?.events[0]?.id, eventId);
+  });
+
+  it("maps opaque missing selectors to domain not-found errors", async () => {
+    const { client } = await setup();
+    await assert.rejects(runEffect(client.review("bad")), {
+      code: "review.session_not_found",
+    });
+    await assert.rejects(runEffect(client.feedback("bad")), {
+      code: "review.not_found",
+    });
+    await assert.rejects(runEffect(client.deleteReview("bad", false)), {
+      code: "review.not_found",
+    });
+  });
+
+  it("restarts on demand to make retained review state discoverable", async () => {
+    const { client, root, entry, paths, supervisor } = await setup();
+    const served = await runEffect(client.serve(entry, root));
+    const review = await runEffect(client.review(served.session.id));
+    await runEffect(client.stopAll());
+    await runEffect(supervisor.closed);
+    supervisors.splice(supervisors.indexOf(supervisor), 1);
+
+    const retainedClient = new SupervisorClient(paths, (_, ownershipNonce) =>
+      Effect.tryPromise({
+        try: async () => {
+          supervisors.push(
+            await runEffect(startSupervisor({ paths, ownershipNonce })),
+          );
+        },
+        catch: (cause) => new ProcessStartError({ cause }),
+      }),
+    );
+    assert.deepEqual((await runEffect(retainedClient.listState())).reviews, [
+      {
+        id: review.review.id,
+        status: "stopped",
+        session: served.session.id,
+        drafts: 0,
+        unacknowledged: 0,
+      },
+    ]);
+  });
+
+  it("closes live review origins before deleting while leaving raw serving live", async () => {
+    const { client, root, entry } = await setup();
+    const served = await runEffect(client.serve(entry, root));
+    const review = await runEffect(client.review(served.session.id));
+    await runEffect(client.deleteReview(review.review.id, false));
+    await assert.rejects(fetch(review.review.url));
+    assert.equal(
+      await fetch(served.session.url).then((response) => response.status),
+      200,
+    );
   });
 
   it("rolls back both-origin review acquisition and preserves capacity", async () => {
@@ -798,6 +1015,20 @@ describe("supervisor lifecycle", () => {
       "control.sock",
       "supervisor.lock",
     ]);
+  });
+
+  it("fails empty home discovery closed for a symlinked annotation directory", async () => {
+    const parent = await temporaryDirectory("htmlview-state-link-");
+    const outside = await temporaryDirectory("htmlview-annotation-outside-");
+    const paths = statePaths({
+      HTMLVIEW_STATE_DIR: path.join(parent, "state"),
+    });
+    await runEffect(ensurePrivateStateDirectory(paths));
+    await symlink(outside, paths.annotationDirectory, "dir");
+
+    await assert.rejects(runEffect(new SupervisorClient(paths).listState()), {
+      code: "state.unavailable",
+    });
   });
 
   it("rejects a serving root that contains configured runtime state", async () => {
@@ -1276,7 +1507,7 @@ describe("supervisor lifecycle", () => {
           session: "short",
         })
       ).status,
-      400,
+      404,
     );
     assert.equal(
       (

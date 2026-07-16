@@ -1,6 +1,6 @@
 # Annotation MVP plan
 
-- Status: Phase 1 complete; Phase 2 next
+- Status: Phases 1–2 complete; Phase 3 next
 - Updated: 2026-07-17
 - Parent: [`PLAN.md`](../../PLAN.md)
 - Decision: [ADR 0008](../decisions/0008-separate-raw-serving-from-instrumented-review.md)
@@ -83,7 +83,7 @@ counts discoverable.
 | 0. Contracts and decisions                | Complete | Public specs, ADRs, domain language, doc tests  |
 | Prerequisite: Effect CLI/logging          | Complete | One final command model and diagnostic boundary |
 | 1. Authorized reads and review lifecycle  | Complete | Review identity, origins, scopes, protocol      |
-| 2. Durable feedback and agent delivery    | Pending  | Store, transitions, CLI/control operations      |
+| 2. Durable feedback and agent delivery    | Complete | Store, transitions, CLI/control operations      |
 | 3. Instrumented content and trusted shell | Pending  | Entry probe, shell UI, browser boundaries       |
 | 4. Security, fidelity, release hardening  | Pending  | Adversarial evidence and complete release gate  |
 
@@ -122,15 +122,15 @@ seven Playwright checks, documentation/build validation, and package lifecycle.
 
 ## Phase 2: durable feedback and agent delivery
 
-- Add a versioned, bounded, schema-validated annotation store with `0700`/`0600`
+- **Complete:** add a versioned, bounded, schema-validated annotation store with `0700`/`0600`
   permissions and durable atomic replacement. Fail closed on unsupported or
   corrupt state; add no migration layer until a second schema exists.
-- Implement serialized draft, send, end, read, acknowledge, wait,
+- **Complete:** implement serialized draft, send, end, read, acknowledge, wait,
   delete/discard, recovery, resume, and tombstone transitions with typed errors.
-- Add `review`, `feedback`, retained-review home summaries, and deletion to the
+- **Complete:** add `review`, `feedback`, retained-review home summaries, and deletion to the
   Effect CLI tree and private protocol. Keep domain results TOON/JSON and native
   syntax/meta output text.
-- Prove wait cancellation changes no persisted cursor/event state and a lost
+- **Complete:** prove wait cancellation changes no persisted cursor/event state and a lost
   response can be retried.
 
 Persistence precedes browser UI so Phase 3 cannot create an ephemeral side
@@ -178,10 +178,9 @@ channel that later needs replacing.
 
 ## Next action
 
-The versioned private annotation store, bounds, relational validation, atomic
-replacement, orphan recovery, and durable review lifecycle are implemented.
-Continue Phase 2 with serialized draft/event/cursor, wait, and
-delete/tombstone transitions, then expose the public commands.
+Phases 1–2 are complete. Begin Phase 3 with the HTML entry transform and
+immutable shell/probe assets, then connect the trusted shell to the shared
+durable draft/send/end transitions.
 
 ## Completion gate
 

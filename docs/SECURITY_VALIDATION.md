@@ -4,9 +4,9 @@ This matrix maps the required checks in [THREAT_MODEL.md](THREAT_MODEL.md) to
 repeatable evidence. `pnpm run check` runs the automated macOS/current-platform
 set; Linux package installation is the separate
 `pnpm run validate:package:linux` release check. The first table is the
-implemented raw-serving and native CLI baseline. The second table is required
-before `0.1.0`; its remaining rows are not evidence until private logging and
-annotation land.
+implemented raw-serving, native CLI, persistence, and feedback baseline. The
+second table is the remaining release-hardening evidence required before
+`0.1.0`.
 
 | Control or adversarial case                                             | Evidence                                                                                                                    |
 | ----------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------- |
@@ -68,9 +68,10 @@ accepted residual risk. This file records evidence and pending gates only.
   limited to 8 MiB, each review to 768 KiB, and each review to 32 queued drafts
   and 32 unacknowledged events. Comments are limited to 4 KiB of UTF-8;
   selectors to 2 KiB, DOM paths to 4 KiB, normalized text to 512 bytes, and
-  stored entry/root paths to 8 KiB. Each review-origin start/readiness sequence
-  is bounded at 2 seconds, and the private two-origin client operation is
-  bounded at 6 seconds.
+  stored entry/root paths to 8 KiB. Content mutations reserve capacity beneath
+  the hard byte ceilings for mandatory cursor, status, and lifecycle commits.
+  Each review-origin start/readiness sequence is bounded at 2 seconds, and the
+  private two-origin client operation is bounded at 6 seconds.
 - Control shutdown gives admitted sockets 2 seconds before forcing them closed;
   the session-registry shutdown fence rejects any delayed serve mutation that
   resumes after cleanup begins.

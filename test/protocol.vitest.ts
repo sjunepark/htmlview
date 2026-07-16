@@ -6,6 +6,10 @@ import {
   decodeControlError,
   decodeCreateReviewRequest,
   decodeCreateSessionRequest,
+  decodeDeleteReviewControlResult,
+  decodeDeleteReviewRequest,
+  decodeFeedbackControlResult,
+  decodeFeedbackRequest,
   decodeCurrentSupervisorIdentity,
   decodeServeControlResult,
   decodeReviewControlResult,
@@ -20,6 +24,10 @@ import {
   encodeControlError,
   encodeCreateReviewRequest,
   encodeCreateSessionRequest,
+  encodeDeleteReviewControlResult,
+  encodeDeleteReviewRequest,
+  encodeFeedbackControlResult,
+  encodeFeedbackRequest,
   encodeServeControlResult,
   encodeReviewControlResult,
   encodeSessionListResult,
@@ -108,14 +116,37 @@ describe("control protocol schemas", () => {
     assert.deepEqual(
       accepted(
         decodeCreateReviewRequest(
-          encodeCreateReviewRequest({ session: session.id }),
+          encodeCreateReviewRequest({ session: "arbitrary-missing-selector" }),
         ),
       ),
-      { session: session.id },
+      { session: "arbitrary-missing-selector" },
     );
     assert.deepEqual(
       accepted(decodeShutdownRequest(encodeShutdownRequest({}))),
       {},
+    );
+    assert.deepEqual(
+      accepted(
+        decodeFeedbackRequest(
+          encodeFeedbackRequest({
+            review: "arbitrary-missing-selector",
+            wait: true,
+            after: 2,
+          }),
+        ),
+      ),
+      { review: "arbitrary-missing-selector", wait: true, after: 2 },
+    );
+    assert.deepEqual(
+      accepted(
+        decodeDeleteReviewRequest(
+          encodeDeleteReviewRequest({
+            review: "arbitrary-missing-selector",
+            discardFeedback: true,
+          }),
+        ),
+      ),
+      { review: "arbitrary-missing-selector", discardFeedback: true },
     );
 
     const listed = accepted(
@@ -152,6 +183,42 @@ describe("control protocol schemas", () => {
       ),
       { stopped: 1 },
     );
+    const feedback = {
+      review: { id: review.id, status: "ready" as const },
+      cursor: 1,
+      count: 1,
+      feedback: [
+        {
+          id: "fb_0123456789abcdefABCDEF",
+          kind: "freeform" as const,
+          comment: "Move the action",
+          entry: "/report.html",
+          revision: `sha256:${"0".repeat(64)}`,
+        },
+      ],
+    };
+    assert.deepEqual(
+      accepted(
+        decodeFeedbackControlResult(encodeFeedbackControlResult(feedback)),
+      ),
+      feedback,
+    );
+    const deleted = {
+      delete: {
+        review: review.id,
+        deleted: 1 as const,
+        status: "deleted" as const,
+        discarded: { drafts: 1, feedback: 2 },
+      },
+    };
+    assert.deepEqual(
+      accepted(
+        decodeDeleteReviewControlResult(
+          encodeDeleteReviewControlResult(deleted),
+        ),
+      ),
+      deleted,
+    );
 
     const error = {
       error: {
@@ -162,6 +229,17 @@ describe("control protocol schemas", () => {
     assert.deepEqual(
       accepted(decodeControlError(encodeControlError(error))),
       error,
+    );
+    const pending = {
+      error: {
+        code: "review.pending_feedback" as const,
+        message: "Pending feedback remains",
+        details: { drafts: 1, unacknowledged: 2 },
+      },
+    };
+    assert.deepEqual(
+      accepted(decodeControlError(encodeControlError(pending))),
+      pending,
     );
   });
 
@@ -312,7 +390,23 @@ describe("control protocol schemas", () => {
     rejected(decodeShutdownRequest({ extra: true }));
     rejected(decodeSessionFieldSelection(["entry", "entry"]));
     rejected(decodeSessionFieldSelection(["unknown"]));
-    rejected(decodeCreateReviewRequest({ session: "short" }));
+    assert.deepEqual(
+      accepted(decodeCreateReviewRequest({ session: "short" })),
+      { session: "short" },
+    );
     rejected(decodeCreateReviewRequest({ session: session.id, extra: true }));
+    rejected(
+      decodeFeedbackRequest({ review: review.id, wait: false, after: -1 }),
+    );
+    rejected(
+      decodeFeedbackRequest({ review: review.id, wait: false, extra: true }),
+    );
+    rejected(
+      decodeDeleteReviewRequest({
+        review: review.id,
+        discardFeedback: false,
+        extra: true,
+      }),
+    );
   });
 });

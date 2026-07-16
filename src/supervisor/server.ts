@@ -29,6 +29,7 @@ import { logDiagnostic } from "../diagnostics.js";
 import {
   ContentListenerError,
   ControlError,
+  FeedbackError,
   PathError,
   ReviewError,
   RuntimeStateError,
@@ -59,10 +60,14 @@ import {
   controlHost,
   decodeCreateReviewRequest,
   decodeCreateSessionRequest,
+  decodeDeleteReviewRequest,
+  decodeFeedbackRequest,
   decodeSessionFieldSelection,
   decodeShutdownRequest,
   decodeStopSessionRequest,
   encodeControlError,
+  encodeDeleteReviewControlResult,
+  encodeFeedbackControlResult,
   encodeReviewControlResult,
   encodeServeControlResult,
   encodeSessionListResult,
@@ -77,6 +82,8 @@ import {
   maximumRetainedReviews,
   supervisorProtocol,
   type CurrentSupervisorIdentity,
+  type DeleteReviewControlResult,
+  type FeedbackControlResult,
   type OptionalSessionField,
   type ReviewControlResult,
   type ReviewSummary,
@@ -204,6 +211,7 @@ type ServerControlError =
   | ControlError
   | ContentListenerError
   | ReviewError
+  | FeedbackError
   | RuntimeStateError;
 
 function invalidControlRequest(): ControlError {
@@ -221,8 +229,13 @@ function controlStatus(error: ServerControlError): number {
       return 500;
     case "RuntimeStateError":
       return 500;
+    case "FeedbackError":
+      return 409;
     case "ReviewError":
-      return error.code === "review.session_not_found" ? 404 : 409;
+      return error.code === "review.session_not_found" ||
+        error.code === "review.not_found"
+        ? 404
+        : 409;
     case "ControlError":
       switch (error.code) {
         case "control.unauthorized":
@@ -247,7 +260,13 @@ function controlStatus(error: ServerControlError): number {
 
 function encodedControlError(error: ServerControlError): unknown {
   return encodeControlError({
-    error: { code: error.code, message: error.message },
+    error: {
+      code: error.code,
+      message: error.message,
+      ...(error instanceof ReviewError && error.details !== undefined
+        ? { details: error.details }
+        : {}),
+    },
   });
 }
 
@@ -318,6 +337,23 @@ function readJsonBody(
       request.destroy();
     });
   });
+}
+
+function disconnectSignal(
+  request: IncomingMessage,
+  response: ServerResponse,
+): Effect.Effect<never> {
+  return Effect.callback<void>((resume) => {
+    const disconnected = (): void => {
+      if (!response.writableEnded) resume(Effect.void);
+    };
+    request.once("aborted", disconnected);
+    response.once("close", disconnected);
+    return Effect.sync(() => {
+      request.off("aborted", disconnected);
+      response.off("close", disconnected);
+    });
+  }).pipe(Effect.andThen(Effect.interrupt));
 }
 
 function closeServer(
@@ -712,6 +748,51 @@ class SessionRegistry {
       : { id: record.id, scope: live.scope };
   }
 
+  feedback(
+    reviewId: string,
+    options: { readonly after?: number; readonly wait: boolean },
+  ): Effect.Effect<
+    FeedbackControlResult,
+    ReviewError | FeedbackError | RuntimeStateError
+  > {
+    return this.annotations.feedback(reviewId, options);
+  }
+
+  deleteReview(
+    reviewId: string,
+    discardFeedback: boolean,
+  ): Effect.Effect<DeleteReviewControlResult, ReviewError | RuntimeStateError> {
+    return this.#mutations.withPermit(
+      Effect.gen({ self: this }, function* () {
+        const live = this.#liveReviews.get(reviewId);
+        const closeLive =
+          live === undefined
+            ? Effect.void
+            : Effect.gen({ self: this }, function* () {
+                const failures = yield* closeScopeFailures([live.scope]);
+                yield* failCleanup(failures);
+                this.#liveReviews.delete(reviewId);
+              });
+        const result = yield* this.annotations.deleteReview(
+          reviewId,
+          discardFeedback,
+          closeLive,
+        );
+        return {
+          delete: {
+            review: result.review,
+            deleted: result.deleted,
+            status: "deleted",
+            discarded: {
+              drafts: result.discardedDrafts,
+              feedback: result.discardedFeedback,
+            },
+          },
+        };
+      }),
+    );
+  }
+
   stop(
     sessionId: string,
   ): Effect.Effect<TargetedStopControlResult, RuntimeStateError> {
@@ -969,6 +1050,45 @@ async function startSupervisorPromise(
         const result = yield* sessions.review(body.success.session);
         return yield* Effect.sync(() =>
           json(response, 200, encodeReviewControlResult(result)),
+        );
+      }
+      if (
+        request.method === "POST" &&
+        requestUrl.pathname === "/feedback" &&
+        requestUrl.search === ""
+      ) {
+        const body = decodeFeedbackRequest(yield* readJsonBody(request));
+        if (Result.isFailure(body)) return yield* invalidControlRequest();
+        const operation = sessions.feedback(body.success.review, {
+          wait: body.success.wait,
+          ...(body.success.after === undefined
+            ? {}
+            : { after: body.success.after }),
+        });
+        if (body.success.wait) {
+          request.socket.setTimeout(0);
+          response.once("finish", () => request.socket.setTimeout(10_000));
+        }
+        const result = yield* body.success.wait
+          ? Effect.raceFirst(operation, disconnectSignal(request, response))
+          : operation;
+        return yield* Effect.sync(() =>
+          json(response, 200, encodeFeedbackControlResult(result)),
+        );
+      }
+      if (
+        request.method === "POST" &&
+        requestUrl.pathname === "/reviews/delete" &&
+        requestUrl.search === ""
+      ) {
+        const body = decodeDeleteReviewRequest(yield* readJsonBody(request));
+        if (Result.isFailure(body)) return yield* invalidControlRequest();
+        const result = yield* sessions.deleteReview(
+          body.success.review,
+          body.success.discardFeedback,
+        );
+        return yield* Effect.sync(() =>
+          json(response, 200, encodeDeleteReviewControlResult(result)),
         );
       }
       if (

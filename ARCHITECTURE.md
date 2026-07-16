@@ -4,8 +4,8 @@
 
 The raw-serving core, per-user supervisor, Effect execution model, Effect CLI,
 foreground/private diagnostic sinks, review lifecycle, and release packaging
-are implemented. The accepted `0.1.0` target still needs review surfaces and
-durable feedback transitions. The repository
+are implemented. The accepted `0.1.0` target still needs the trusted review
+surface that produces durable drafts. The repository
 [implementation plan](https://github.com/sjunepark/htmlview/blob/main/PLAN.md)
 owns their sequencing.
 
@@ -38,13 +38,13 @@ short-lived agent CLI
         |
         +-- raw-session registry --> raw listener --> raw browser origin
         |
-        +-- [target] review lifecycle
-                +-- trusted shell origin
-                +-- instrumented-content origin --> granted files
+        +-- review lifecycle
+                +-- [target] trusted shell origin
+                +-- [target] instrumented-content origin --> granted files
                 +-- durable feedback queue --> foreground agent wait
 ```
 
-Square-bracketed components are accepted targets, not current runtime behavior.
+Square-bracketed components are accepted targets, not current browser behavior.
 The annotation snapshot is the durable authority for review lifecycle records;
 the supervisor retains only live scopes in memory. Browser tools consume
 returned URLs and never become runtime dependencies.
@@ -192,7 +192,7 @@ encoding, policy, framing, or markup produces an explicit review limitation;
 the raw URL remains usable. Instrumentation covers the selected entry and its
 live SPA DOM, not later HTML-document navigation.
 
-### Annotation store (lifecycle durability implemented; feedback target)
+### Annotation store and feedback delivery (implemented)
 
 `src/annotation/model.ts` owns the strict versioned shape and whole-state
 relationships. `src/annotation/store.ts` owns bounded no-follow reads, private
@@ -230,13 +230,13 @@ ended reviews do not resume.
 5. For each browser request, validate authority and method, authorize the opened
    target against the grant, and stream its original bytes.
 
-### Review lifecycle (Phase 1 implemented; browser and feedback target)
+### Review lifecycle (Phases 1–2 implemented; browser surface target)
 
 1. The private v4 protocol snapshots an existing raw identity and lazily
    acquires or resumes its review listeners; it never accepts a root or entry.
    Both isolated origins pass readiness before an in-memory record commits.
    Live reuse retains origins; stopped resume retains the review ID and receives
-   fresh origins. Public CLI exposure waits for Phase 2 feedback operations.
+   fresh origins. The public `review` command returns only after both are ready.
 2. The shell displays instrumented review content. Element selection reports
    bounded untrusted context; the shell owns the editor and durable draft call.
 3. Send commits ordered feedback events. Send & End also closes the review
