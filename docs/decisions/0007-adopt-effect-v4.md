@@ -1,8 +1,12 @@
 # ADR 0007: Adopt Effect v4 as the execution model
 
-- Status: Accepted and implemented
+- Status: Superseded in part by ADR 0009
 - Date: 2026-07-15
 - Supersedes: ADR 0005's TypeScript test runner and emitted-package details
+
+ADR 0009 replaces this decision's custom-parser and no-Effect-CLI choices and
+adds Effect logging. Its execution model, native security-sensitive leaves,
+exact pins, packaging policy, and test-runtime decisions remain active.
 
 ## Context
 
@@ -36,11 +40,16 @@ service exactly as well. Do not allow an Effect package range to advance this
 toolchain silently.
 
 Retain the custom command parser and TOON/JSON renderer because their ordering,
-help, error, and output contracts are already public. Retain native Node HTTP,
+help, error, and output contracts were already accepted for that migration.
+Retain native Node HTTP,
 filesystem, socket, stream, and process adapters at narrow leaves because the
 raw byte-serving and confinement behavior is security-sensitive. Use only
 `@effect/platform-node/NodeRuntime` from the Node platform package; do not adopt
 Effect CLI or an Effect HTTP data plane in this migration.
+
+The parser and Effect CLI clauses above record the Phase 0–9 migration scope
+and are superseded by ADR 0009. The native HTTP/data-plane choice remains
+active.
 
 Publish two minified, tree-shaken ESM bundles plus linked external source maps
 without embedded source content. Store each complete artifact set beneath
@@ -97,7 +106,7 @@ installation.
   validation must exercise source-level seams or the built CLI rather than
   importing undocumented files from `dist`.
 
-## Rejected alternatives
+## Rejected alternatives at the time
 
 - **Delay Effect until after publication.** This would publish the Promise
   lifecycle as the first supported architecture and make the later migration a

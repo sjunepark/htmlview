@@ -1,7 +1,12 @@
 # ADR 0003: Adopt an AXI output contract
 
-- Status: Accepted
+- Status: Superseded in part by ADR 0009
 - Date: 2026-07-15
+
+ADR 0009 replaces this decision's structured help and usage-error output,
+three-way exit-code distinction, and custom-parser implications with native
+Effect CLI behavior. The TOON/JSON domain-result model, minimal schemas,
+definitive state, idempotent no-ops, and content-first home view remain active.
 
 ## Context
 
@@ -24,13 +29,15 @@ The detailed contract lives in [`docs/CLI.md`](../CLI.md). In particular:
 
 - default schemas remain minimal and collection results include definitive
   counts;
-- stdout contains structured data, errors, help, and next commands while
-  stderr contains progress and diagnostics;
-- exit codes distinguish success, runtime failure, and usage failure;
+- domain stdout contains structured data, operational errors, and next commands
+  while foreground diagnostics use stderr; native Effect CLI meta/usage output
+  follows ADR 0009;
+- exit codes distinguish success from failure; native syntax and operational
+  failures both use `1` under ADR 0009;
 - empty results and idempotent no-ops are explicit successes;
 - no arguments produce a compact home view with executable identity, active
   sessions, and relevant next commands; and
-- unknown input is rejected with a self-correcting structured error.
+- unknown input is rejected by Effect CLI's generated text help and diagnostic.
 
 The initial TOON encoder targets specification v3.3 and is validated with
 conformance fixtures. Both encodings have logical-equivalence contract tests.
@@ -41,8 +48,8 @@ conformance fixtures. Both encodings have logical-equivalence contract tests.
 - JSON consumers do not need a TOON parser or an output-scraping adapter.
 - Adding a field or error code requires updating one logical schema and both
   serialization snapshots.
-- Help and errors remain machine-readable rather than becoming an unrelated
-  human-only channel.
+- Domain errors remain machine-readable; native help and syntax output are a
+  deliberate generated text channel owned by Effect CLI.
 - TOON specification changes are isolated at the encoding boundary.
 
 ## Rejected alternatives

@@ -154,6 +154,7 @@ try {
     assert.equal(paths.has(required), true, `package is missing ${required}`);
   const exactFiles = new Set([
     "ARCHITECTURE.md",
+    "CONTEXT.md",
     "LICENSE",
     "README.md",
     "THIRD_PARTY_NOTICES.md",
@@ -167,6 +168,8 @@ try {
     "docs/decisions/0005-use-node-typescript-pnpm-and-the-npm-registry.md",
     "docs/decisions/0006-use-a-private-control-socket.md",
     "docs/decisions/0007-adopt-effect-v4.md",
+    "docs/decisions/0008-separate-raw-serving-from-instrumented-review.md",
+    "docs/decisions/0009-adopt-effect-cli-and-logging.md",
     "docs/INSTALL.md",
     "docs/INTEROPERABILITY.md",
     "docs/PRODUCT.md",

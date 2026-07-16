@@ -3,7 +3,10 @@
 This matrix maps the required checks in [THREAT_MODEL.md](THREAT_MODEL.md) to
 repeatable evidence. `pnpm run check` runs the automated macOS/current-platform
 set; Linux package installation is the separate
-`pnpm run validate:package:linux` release check.
+`pnpm run validate:package:linux` release check. The first table is the
+implemented raw-serving baseline. The second table is required before
+`0.1.0`; it is not evidence until the Effect CLI/logging and annotation slices
+land.
 
 | Control or adversarial case                                             | Evidence                                                                                                                        |
 | ----------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------- |
@@ -12,7 +15,7 @@ set; Linux package installation is the separate
 | Fresh, high-entropy session names                                       | `generateSessionHostname()` uses 128 random bits; lifecycle and browser-origin tests require distinct observed hostnames        |
 | No permissive CORS; foreign page cannot read content                    | response-header integration test and Playwright cross-origin fetch test                                                         |
 | Raw browser responses require cache revalidation                        | `Cache-Control: no-cache` assertions in HTTP integration and Playwright raw-handler checks                                      |
-| Entry/root disclosure, broad-root rejection, and in-root hidden files   | `test/grant.vitest.ts`, supervisor state-overlap test, raw HTTP tests, and complete browser fixture                             |
+| Entry/root disclosure, broad-root and state-beneath-root rejection      | `test/grant.vitest.ts`, current supervisor overlap test, raw HTTP tests, and complete browser fixture                           |
 | Plain/encoded traversal, malformed UTF-8, controls, separators, Unicode | generated single-decode and Unicode filename cases in `test/http.integration.vitest.ts`                                         |
 | Root containment and entry escape                                       | 500 generated containment shapes plus default/explicit grant tests                                                              |
 | Symlink escape and replacement during concurrent requests               | fixed escape and 80 concurrent swap/request cases in `test/http.integration.vitest.ts`                                          |
@@ -29,6 +32,23 @@ set; Linux package installation is the separate
 | Reproducible package version and lifecycle                              | clean-prefix pack/install/serve/reinstall/uninstall checks on the current platform and Node 22 Debian                           |
 | Bundle dependency, license, and map policy                              | exact Effect pins, build-time import/license-set checks, third-party notices, linked maps without embedded source content       |
 | Distribution size and process cost                                      | Phase 9 installed-artifact comparison records packed/install size, file counts, cold commands, readiness, and empty-daemon RSS  |
+
+## Required `0.1.0` evidence (pending)
+
+| Control or adversarial case                              | Required evidence                                                                                                                                                                             |
+| -------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Effect CLI is the only grammar and dispatcher            | Native-process tests for help/version/completions/log-level, hostile syntax, missing inputs, exit `1`, and no compatibility path                                                              |
+| Domain and native-output boundaries remain distinct      | TOON/JSON logical equivalence for domain results; text meta/usage fixtures; `--json` cannot rewrite native failures                                                                           |
+| State and serving grants are canonically disjoint        | Equality, inverse nesting, both symlink directions, state descendants selected as roots, and ordinary disjoint roots                                                                          |
+| Foreground logging cannot corrupt stdout                 | Captured-channel tests at every log level, including `none`, domain failures, defects, interruption, and hostile input                                                                        |
+| Detached logs stay private and bounded                   | Restart/rotation tests for exact size/file-count constants, `0700` directories, `0600` files, cleanup, and state-root exclusion                                                               |
+| Logs exclude sensitive and attacker-controlled content   | Generated canary tests covering comments, prompts, anchors, selectors, DOM/HTML, forms, headers, cookies, paths, files, protocol payloads, dependency errors, newlines, and terminal controls |
+| Review origins cannot reach raw or supervisor authority  | Exact Host/Origin/fetch-metadata, CORS, cross-origin iframe, postMessage source/schema, and capability-separation tests                                                                       |
+| Review creation preserves raw fidelity                   | Before/after byte, header, path, Host, cache, method, confinement, URL, and lifecycle comparisons                                                                                             |
+| Annotation state is private, bounded, and crash-safe     | Permission, schema/version, atomic-recovery, corruption, restart-adoption, global/per-review bounds, and no served-root writes                                                                |
+| Feedback delivery is non-destructive and never log-based | Draft durability, atomic send, cursor retry/duplicates, wait cancellation, one-consumer conflict, explicit discard, and tombstone expiry                                                      |
+| Hostile authored content cannot read typed comments      | Real-browser attempts to reach shell DOM/state/mutation routes plus stored-XSS and forged-target cases                                                                                        |
+| Instrumentation failure remains explicit                 | Authored CSP, encoding, malformed markup, framing, navigation, native-control, and Explore/Annotate browser cases                                                                             |
 
 ## Explicit residual risks
 
@@ -47,8 +67,8 @@ set; Linux package installation is the separate
   as described in `docs/INSTALL.md`.
 - Ephemeral-port exhaustion and operating-system-wide file-descriptor
   exhaustion cannot be made deterministic in the ordinary test suite. Spawn,
-  state, HTTP-start, and readiness failures cross stable structured error
-  boundaries, while raw dependency errors stay off stdout.
+  state, HTTP-start, and readiness failures cross stable structured domain
+  error boundaries, while raw dependency errors stay off stdout.
 - Some non-browser Linux resolvers do not implement special-use
   `*.localhost` lookup. Browsers are covered directly. Plain HTTP clients can
   connect to `127.0.0.1` while sending the returned URL's exact Host authority,
@@ -60,6 +80,9 @@ set; Linux package installation is the separate
   memory compared with the Promise baseline. Release measurements quantify
   that cost; the package remains two self-contained executables with only TOON
   and MIME lookup installed as runtime dependencies.
+- The accepted supervisor logger retains bounded operation, timing, opaque-ID,
+  and error-code metadata until rotation. Another process running as the same
+  user can read it; the log is not audit-grade, complete, or a feedback source.
 - Faithfully rendered HTML can read all files in its granted root, contact the
   network, and access capabilities of its browser profile. Isolated roots and
   disposable browser profiles remain operational requirements for untrusted
