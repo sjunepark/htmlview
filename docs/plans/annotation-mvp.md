@@ -1,7 +1,7 @@
 # Annotation MVP plan
 
-- Status: Phase 0 complete; Phase 1 awaits the final Browser Use prerequisite
-- Updated: 2026-07-16
+- Status: Phase 1 in progress
+- Updated: 2026-07-17
 - Parent: [`PLAN.md`](../../PLAN.md)
 - Decision: [ADR 0008](../decisions/0008-separate-raw-serving-from-instrumented-review.md)
 - CLI boundary: [ADR 0009](../decisions/0009-adopt-effect-cli-and-logging.md)
@@ -78,14 +78,14 @@ counts discoverable.
 
 ## Phase status
 
-| Phase                                     | Status   | Outcome                                         |
-| ----------------------------------------- | -------- | ----------------------------------------------- |
-| 0. Contracts and decisions                | Complete | Public specs, ADRs, domain language, doc tests  |
-| Prerequisite: Effect CLI/logging          | Complete | One final command model and diagnostic boundary |
-| 1. Authorized reads and review lifecycle  | Pending  | Review identity, origins, scopes, protocol      |
-| 2. Durable feedback and agent delivery    | Pending  | Store, transitions, CLI/control operations      |
-| 3. Instrumented content and trusted shell | Pending  | Entry probe, shell UI, browser boundaries       |
-| 4. Security, fidelity, release hardening  | Pending  | Adversarial evidence and complete release gate  |
+| Phase                                     | Status      | Outcome                                         |
+| ----------------------------------------- | ----------- | ----------------------------------------------- |
+| 0. Contracts and decisions                | Complete    | Public specs, ADRs, domain language, doc tests  |
+| Prerequisite: Effect CLI/logging          | Complete    | One final command model and diagnostic boundary |
+| 1. Authorized reads and review lifecycle  | In progress | Review identity, origins, scopes, protocol      |
+| 2. Durable feedback and agent delivery    | Pending     | Store, transitions, CLI/control operations      |
+| 3. Instrumented content and trusted shell | Pending     | Entry probe, shell UI, browser boundaries       |
+| 4. Security, fidelity, release hardening  | Pending     | Adversarial evidence and complete release gate  |
 
 ## Prerequisite: Effect CLI and logging
 
@@ -96,15 +96,29 @@ whose redaction tests must cover later annotation values.
 
 ## Phase 1: authorized reads and review lifecycle
 
-- Characterize the current raw file-open/response boundary before refactoring.
-- Extract one deep authorized-file service from `src/serving/http.ts`; retain
-  raw response assembly and prove unchanged bytes, headers, methods, Host,
-  paths, cache behavior, and confinement.
+- **Complete:** characterize the raw file-open/response boundary and extract one
+  deep authorized-file service. The shared seam owns canonical authorization,
+  descriptor fencing, cleanup, and single-use bounded stream creation; raw HTTP
+  retains validation order, MIME selection, headers, caching, and response
+  piping.
 - Add review/document identity, stable records, two fresh exact authorities,
   child scopes, ready-before-output, reuse/resume, stop, and bounded home
   summaries to the supervisor protocol and registry.
 - Keep review creation lazy so raw-only sessions acquire no review listener or
   browser surface.
+
+Phase 1 implements the lifecycle behind strict private protocol operations and
+in-memory bounded summaries. Phase 2 adds durable recovery and only then exposes
+the public `review` command, avoiding a public lifecycle that cannot yet meet
+the restart contract. Review records live outside the raw-session map, use the
+canonical-root/public-entry identity, and share one mutation boundary with raw
+session create/stop. A ready review owns separate shell and content child scopes;
+both origins must pass readiness before the record becomes ready.
+
+The characterization additions pass against the pre-extraction implementation
+(19 integration tests) and the extracted boundary (23 focused tests). The full
+current-platform `pnpm run check` gate passes 134 Vitest tests, black-box E2E,
+seven Playwright checks, documentation/build validation, and package lifecycle.
 
 ## Phase 2: durable feedback and agent delivery
 
@@ -164,9 +178,9 @@ channel that later needs replacing.
 
 ## Next action
 
-Complete the user-approved Browser Use validation for Phase 10, then begin with
-raw-boundary characterization tests before extracting authorized reads or
-adding review protocol types.
+Add strict review protocol types and the in-memory lifecycle registry, then
+prove lazy two-origin creation, readiness rollback, reuse, resume, and ordered
+stop behavior.
 
 ## Completion gate
 

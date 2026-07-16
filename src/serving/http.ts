@@ -1,6 +1,4 @@
 import { randomBytes } from "node:crypto";
-import { constants as fsConstants, type BigIntStats } from "node:fs";
-import { open, realpath, stat } from "node:fs/promises";
 import {
   createServer,
   type IncomingMessage,
@@ -8,11 +6,13 @@ import {
   type ServerResponse,
 } from "node:http";
 import path from "node:path";
-import { Data, Effect, FiberSet, type Scope } from "effect";
+import type { Readable } from "node:stream";
+import { Effect, FiberSet, type Scope } from "effect";
 import { contentType } from "mime-types";
 import { logDiagnostic } from "../diagnostics.js";
 import { ContentListenerError } from "../errors.js";
-import { isWithinRoot, type ServingGrant } from "./grant.js";
+import { openAuthorizedFile } from "./authorized-file.js";
+import type { ServingGrant } from "./grant.js";
 
 const loopbackAddress = "127.0.0.1";
 const defaultResponseDeadlineMilliseconds = 5 * 60_000;
@@ -119,27 +119,6 @@ function isNotModified(
   );
 }
 
-type FileHandle = Awaited<ReturnType<typeof open>>;
-
-interface OwnedFileHandle {
-  readonly handle: FileHandle;
-  transferredToStream: boolean;
-}
-
-class FileAccessError extends Data.TaggedError("FileAccessError")<{
-  readonly cause: unknown;
-}> {}
-
-type AuthorizedFile =
-  | { readonly outcome: "missing" }
-  | { readonly outcome: "forbidden" }
-  | { readonly outcome: "changed" }
-  | {
-      readonly outcome: "file";
-      readonly owned: OwnedFileHandle;
-      readonly metadata: BigIntStats;
-    };
-
 function reportCleanupFailure(): Effect.Effect<void> {
   return logDiagnostic("Error", {
     operation: "http.cleanup",
@@ -148,95 +127,20 @@ function reportCleanupFailure(): Effect.Effect<void> {
   });
 }
 
-function closeOwnedFile(owned: OwnedFileHandle): Effect.Effect<void> {
-  if (owned.transferredToStream) return Effect.void;
-  return Effect.tryPromise({
-    try: () => owned.handle.close(),
-    catch: (cause) => new FileAccessError({ cause }),
-  }).pipe(
-    Effect.catch(() => reportCleanupFailure()),
-    Effect.asVoid,
-  );
-}
-
-function optionalFilePromise<A>(
-  operation: () => Promise<A>,
-): Effect.Effect<A | undefined> {
-  return Effect.tryPromise({
-    try: operation,
-    catch: (cause) => new FileAccessError({ cause }),
-  }).pipe(Effect.catch(() => Effect.sync((): undefined => undefined)));
-}
-
-function openAuthorizedFile(
-  root: string,
-  target: string,
-): Effect.Effect<AuthorizedFile, never, Scope.Scope> {
-  return Effect.gen(function* () {
-    const resolved = yield* optionalFilePromise(() => realpath(target));
-    if (resolved === undefined || resolved === root)
-      return { outcome: "missing" };
-    if (!isWithinRoot(root, resolved)) return { outcome: "forbidden" };
-
-    const owned = yield* Effect.acquireRelease(
-      optionalFilePromise(() =>
-        open(resolved, fsConstants.O_RDONLY | fsConstants.O_NONBLOCK),
-      ).pipe(
-        Effect.flatMap((handle) =>
-          handle === undefined
-            ? Effect.fail(undefined)
-            : Effect.succeed({ handle, transferredToStream: false }),
-        ),
-      ),
-      closeOwnedFile,
-    ).pipe(Effect.catch(() => Effect.void));
-    if (owned === undefined) return { outcome: "missing" };
-
-    const openedMetadata = yield* optionalFilePromise(() =>
-      owned.handle.stat({ bigint: true }),
-    );
-    if (openedMetadata === undefined || !openedMetadata.isFile())
-      return { outcome: "missing" };
-
-    const resolvedAfterOpen = yield* optionalFilePromise(() =>
-      realpath(resolved),
-    );
-    if (resolvedAfterOpen === undefined) return { outcome: "missing" };
-    if (!isWithinRoot(root, resolvedAfterOpen)) return { outcome: "forbidden" };
-
-    const currentMetadata = yield* optionalFilePromise(() =>
-      stat(resolvedAfterOpen, { bigint: true }),
-    );
-    if (currentMetadata === undefined) return { outcome: "missing" };
-    if (
-      currentMetadata.dev !== openedMetadata.dev ||
-      currentMetadata.ino !== openedMetadata.ino
-    )
-      return { outcome: "changed" };
-    return { outcome: "file", owned, metadata: openedMetadata };
-  });
-}
-
 function streamAuthorizedFile(
-  opened: Extract<AuthorizedFile, { readonly outcome: "file" }>,
+  stream: Readable,
   response: ServerResponse,
 ): Effect.Effect<void> {
   return Effect.callback<void>((resume, signal) => {
-    let stream: ReturnType<FileHandle["createReadStream"]> | undefined;
     const destroy = (): void => {
-      if (stream !== undefined && !stream.destroyed) stream.destroy();
+      if (!stream.destroyed) stream.destroy();
       if (!response.destroyed) response.destroy();
     };
     try {
-      stream = opened.owned.handle.createReadStream({
-        autoClose: true,
-        end: Number(opened.metadata.size - 1n),
-      });
-      opened.owned.transferredToStream = true;
       stream.once("error", () => response.destroy());
       stream.once("close", () => resume(Effect.void));
       response.once("close", () => {
-        if (stream !== undefined && !stream.destroyed) stream.destroy();
+        if (!stream.destroyed) stream.destroy();
       });
       if (signal.aborted) destroy();
       else stream.pipe(response);
@@ -301,11 +205,13 @@ export function createStaticHandler(
             send(response, 413, "File exceeds the supported size"),
           );
 
-        const modified = new Date(Number(opened.metadata.mtimeNs / 1_000_000n));
+        const modified = new Date(
+          Number(opened.metadata.modifiedNanoseconds / 1_000_000n),
+        );
         const tag = etag(
           opened.metadata.size,
-          opened.metadata.mtimeNs,
-          opened.metadata.ino,
+          opened.metadata.modifiedNanoseconds,
+          opened.metadata.inode,
         );
         const headers = {
           "content-type":
@@ -332,7 +238,8 @@ export function createStaticHandler(
         yield* Effect.sync(() => response.writeHead(200, headers));
         if (request.method === "HEAD" || opened.metadata.size === 0n)
           return yield* Effect.sync(() => response.end());
-        return yield* streamAuthorizedFile(opened, response);
+        const stream = yield* opened.openReadStream;
+        return yield* streamAuthorizedFile(stream, response);
       }),
     );
 }

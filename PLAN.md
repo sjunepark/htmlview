@@ -1,6 +1,6 @@
 # Implementation plan
 
-- Updated: 2026-07-16
+- Updated: 2026-07-17
 - Release target: `0.1.0`
 - Publication status: unpublished
 
@@ -24,15 +24,15 @@ Documentation now has explicit ownership and current-versus-target status; see
 The organized surface, contract tests, link/fragment checks, and packaged-link
 closure pass the complete current-platform `pnpm run check` gate.
 
-| Slice                             | Status       | Detail                                                                      |
-| --------------------------------- | ------------ | --------------------------------------------------------------------------- |
-| Raw serving and supervisor        | Complete     | Fidelity, confinement, private control, lifecycle, packaging                |
-| Effect execution model            | Complete     | Typed failures, schemas, cancellation, scopes, release measurements         |
-| Annotation and CLI contracts      | Complete     | Product, CLI, architecture, threat model, ADRs 0008–0009                    |
-| Documentation organization        | Complete     | Canonical map, ADR index, contract cleanup, validation hardening            |
-| Effect CLI and diagnostic logging | Gate pending | Implementation complete; Browser Use consent is the remaining release check |
-| Annotation runtime                | Pending      | [Annotation plan](docs/plans/annotation-mvp.md) Phases 1–4                  |
-| Publication                       | Pending      | Complete release matrix and explicit publish action                         |
+| Slice                             | Status      | Detail                                                                |
+| --------------------------------- | ----------- | --------------------------------------------------------------------- |
+| Raw serving and supervisor        | Complete    | Fidelity, confinement, private control, lifecycle, packaging          |
+| Effect execution model            | Complete    | Typed failures, schemas, cancellation, scopes, release measurements   |
+| Annotation and CLI contracts      | Complete    | Product, CLI, architecture, threat model, ADRs 0008–0009              |
+| Documentation organization        | Complete    | Canonical map, ADR index, contract cleanup, validation hardening      |
+| Effect CLI and diagnostic logging | Complete    | Native CLI, private logs, measurements, and complete release evidence |
+| Annotation runtime                | In progress | [Annotation plan](docs/plans/annotation-mvp.md) Phase 1               |
+| Publication                       | Pending     | Complete release matrix and explicit publish action                   |
 
 ## Release invariants
 
@@ -94,6 +94,6 @@ and a size comparison justifies changing it.
 
 ## Next action
 
-Complete the user-approved Browser Use check, then begin annotation Phase 1
-with raw-boundary characterization before extracting the authorized-read seam.
-Do not publish automatically.
+Add strict review protocol types and the in-memory lifecycle registry, then
+prove lazy two-origin creation, readiness rollback, reuse, resume, and ordered
+stop behavior. Do not publish automatically.

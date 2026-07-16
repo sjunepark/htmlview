@@ -9,6 +9,7 @@ import {
   resolveServingGrant,
   type ServingGrant,
 } from "../src/serving/grant.js";
+import { openAuthorizedFile } from "../src/serving/authorized-file.js";
 import { startStaticServer } from "../src/serving/http.js";
 
 function withTemporaryGrant<A, E>(
@@ -76,6 +77,56 @@ it.effect("repeated listener scopes leave no reachable server", () =>
           ),
         ).toBeUndefined();
       }
+    }),
+  ),
+);
+
+it.effect("authorized empty files expose one bounded stream", () =>
+  withTemporaryGrant((grant) =>
+    Effect.gen(function* () {
+      const empty = path.join(grant.root, "assets", "empty.txt");
+      yield* Effect.promise(() => writeFile(empty, ""));
+      const opened = yield* openAuthorizedFile(grant.root, empty);
+      expect(opened.outcome).toBe("file");
+      if (opened.outcome !== "file") return;
+
+      const stream = yield* opened.openReadStream;
+      const chunks = yield* Effect.promise(async () => {
+        const collected: Buffer[] = [];
+        for await (const chunk of stream) collected.push(Buffer.from(chunk));
+        return collected;
+      });
+      expect(Buffer.concat(chunks).length).toBe(0);
+      expect(Exit.isFailure(yield* Effect.exit(opened.openReadStream))).toBe(
+        true,
+      );
+    }),
+  ),
+);
+
+it.effect("closing the file scope destroys an abandoned stream", () =>
+  withTemporaryGrant((grant) =>
+    Effect.gen(function* () {
+      const file = path.join(grant.root, "assets", "abandoned.bin");
+      yield* Effect.promise(() => writeFile(file, ""));
+      yield* Effect.promise(() => truncate(file, 64 * 1024 * 1024));
+      const scope = yield* Scope.make();
+      const opened = yield* Scope.provide(scope)(
+        openAuthorizedFile(grant.root, file),
+      );
+      expect(opened.outcome).toBe("file");
+      if (opened.outcome !== "file") {
+        yield* Scope.close(scope, Exit.void);
+        return;
+      }
+
+      const stream = yield* Scope.provide(scope)(opened.openReadStream);
+      const closed = new Promise<void>((resolve) =>
+        stream.once("close", resolve),
+      );
+      yield* Scope.close(scope, Exit.void);
+      yield* Effect.promise(() => closed);
+      expect(stream.destroyed).toBe(true);
     }),
   ),
 );

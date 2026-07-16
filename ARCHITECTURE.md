@@ -76,9 +76,8 @@ protocol validates requests and responses before domain code consumes them.
 `src/serving/grant.ts` canonicalizes the requested entry and root. Without
 `--root`, it derives the grant from the supplied entry path's parent before
 resolving the entry, so a symlink cannot silently broaden authority. The grant
-must contain the resolved entry and be narrower than the user home. The current
-runtime also rejects private state beneath a grant; Phase 10 completes the
-accepted symmetric check by rejecting a grant beneath private state.
+must contain the resolved entry and be narrower than the user home. The runtime
+rejects canonical trees that overlap private state in either direction.
 
 Each raw session owns one listener bound to `127.0.0.1` and a fresh random
 `h-<random>.localhost` authority. The entry URL retains its encoded path relative
@@ -86,10 +85,12 @@ to the root, preserving document-relative and root-relative resolution without a
 session path prefix.
 
 `src/serving/http.ts` validates the exact Host and method, decodes the URL path
-once, resolves and authorizes the final target, rejects directories, and fences
-the opened descriptor against path replacement with device/inode checks. It
-streams the file with normal HTTP metadata and no body transformation. Query
-strings do not select files; URL fragments never reach the server.
+once, and owns raw HTTP status, metadata, cache, MIME, and stream piping.
+`src/serving/authorized-file.ts` canonicalizes and authorizes the final target,
+rejects directories, fences the opened descriptor against path replacement
+with device/inode checks, and exposes one scope-bound, size-limited stream. The
+raw handler sends that stream without body transformation. Query strings do not
+select files; URL fragments never reach the server.
 
 The raw service has no filename or dotfile denylist and never opens a served
 file for writing. Later file changes appear on reload without creating a new
@@ -288,8 +289,9 @@ flags.
 - `src/service.ts`: command intent to grant/supervisor operations.
 - `src/contracts.ts`, `src/errors.ts`, `src/output.ts`: domain values, tagged
   public failures, and the serialization boundary.
-- `src/serving/grant.ts`, `src/serving/http.ts`: disclosure authorization and
-  byte-faithful raw HTTP.
+- `src/serving/grant.ts`, `src/serving/authorized-file.ts`: disclosure grant and
+  scope-bound authorized reads.
+- `src/serving/http.ts`: byte-faithful raw HTTP policy and response assembly.
 - `src/supervisor/protocol.ts`: validated private wire contract.
 - `src/supervisor/client.ts`, `src/supervisor/server.ts`: supervisor discovery,
   ownership, control, session registry, and cleanup.

@@ -115,6 +115,23 @@ function rawRequest(
   });
 }
 
+function assertTextResponse(
+  response: ResponseResult,
+  status: number,
+  message: string,
+): void {
+  assert.equal(response.status, status);
+  assert.equal(response.body.toString(), message);
+  assert.equal(response.headers["content-type"], "text/plain; charset=utf-8");
+  assert.equal(
+    response.headers["content-length"],
+    String(Buffer.byteLength(message)),
+  );
+  assert.equal(response.headers["cache-control"], "no-cache");
+  assert.equal(response.headers["x-content-type-options"], "nosniff");
+  assert.equal(response.headers["access-control-allow-origin"], undefined);
+}
+
 beforeEach(async () => {
   root = await mkdtemp(path.join(tmpdir(), "htmlview-http-"));
   await mkdir(path.join(root, "pages"));
@@ -212,10 +229,47 @@ describe("faithful static HTTP", () => {
       headers: { "if-none-match": `W/${String(first.headers.etag)}` },
     });
     assert.equal(byWeakTag.status, 304);
+    const byTagList = await rawRequest(grant.entryUrlPath, {
+      headers: {
+        "if-none-match": `"not-current", W/${String(first.headers.etag)}`,
+      },
+    });
+    assert.equal(byTagList.status, 304);
+    assert.equal(
+      (
+        await rawRequest(grant.entryUrlPath, {
+          headers: { "if-none-match": "*" },
+        })
+      ).status,
+      304,
+    );
     const byDate = await rawRequest(grant.entryUrlPath, {
       headers: { "if-modified-since": String(first.headers["last-modified"]) },
     });
     assert.equal(byDate.status, 304);
+    const tagPrecedence = await rawRequest(grant.entryUrlPath, {
+      headers: {
+        "if-none-match": '"not-current"',
+        "if-modified-since": String(first.headers["last-modified"]),
+      },
+    });
+    assert.equal(tagPrecedence.status, 200);
+    assert.deepEqual(tagPrecedence.body, first.body);
+  });
+
+  it("serves empty files with complete raw headers", async () => {
+    await writeFile(path.join(root, "assets", "empty.txt"), "");
+    const response = await rawRequest("/assets/empty.txt");
+    assert.equal(response.status, 200);
+    assert.equal(response.body.length, 0);
+    assert.equal(response.headers["content-type"], "text/plain; charset=utf-8");
+    assert.equal(response.headers["content-length"], "0");
+    assert.equal(response.headers["cache-control"], "no-cache");
+    assert.equal(response.headers["x-content-type-options"], "nosniff");
+    assert.equal(
+      response.headers["cross-origin-resource-policy"],
+      "same-origin",
+    );
   });
 
   it("serves root-relative, hidden, unreferenced, and in-root symlinked files", async () => {
@@ -334,9 +388,9 @@ describe("faithful static HTTP", () => {
     await writeFile(outside, "outside-secret");
     await symlink(outside, path.join(root, "escape.txt"));
     try {
-      assert.equal((await rawRequest("/escape.txt")).status, 403);
-      assert.equal((await rawRequest("/assets")).status, 404);
-      assert.equal((await rawRequest("/")).status, 404);
+      assertTextResponse(await rawRequest("/escape.txt"), 403, "Forbidden");
+      assertTextResponse(await rawRequest("/assets"), 404, "Not Found");
+      assertTextResponse(await rawRequest("/"), 404, "Not Found");
     } finally {
       await unlink(outside);
     }
@@ -363,16 +417,39 @@ describe("faithful static HTTP", () => {
   });
 
   it("rejects forged hosts and unsupported methods", async () => {
-    assert.equal(
-      (
-        await rawRequest(grant.entryUrlPath, {
-          host: `evil.localhost:${server.port}`,
-        })
-      ).status,
-      421,
-    );
+    for (const host of [
+      `evil.localhost:${server.port}`,
+      `${server.hostname}:${server.port + 1}`,
+      `${server.hostname.toUpperCase()}:${server.port}`,
+      `${server.hostname}.:${server.port}`,
+      "",
+    ])
+      assertTextResponse(
+        await rawRequest(grant.entryUrlPath, { host }),
+        421,
+        "Misdirected Request",
+      );
+
+    const hostBeforeMethod = await rawRequest("/../outside.txt", {
+      method: "POST",
+      host: `evil.localhost:${server.port}`,
+    });
+    assertTextResponse(hostBeforeMethod, 421, "Misdirected Request");
+
+    const methodBeforePath = await rawRequest("/../outside.txt", {
+      method: "POST",
+    });
+    assertTextResponse(methodBeforePath, 405, "Method Not Allowed");
+    assert.equal(methodBeforePath.headers.allow, "GET, HEAD");
+
+    const malformed = await rawRequest("/../outside.txt");
+    assertTextResponse(malformed, 400, "Malformed request path");
+
+    const missing = await rawRequest("/not-present.txt");
+    assertTextResponse(missing, 404, "Not Found");
+
     const post = await rawRequest(grant.entryUrlPath, { method: "POST" });
-    assert.equal(post.status, 405);
+    assertTextResponse(post, 405, "Method Not Allowed");
     assert.equal(post.headers.allow, "GET, HEAD");
   });
 

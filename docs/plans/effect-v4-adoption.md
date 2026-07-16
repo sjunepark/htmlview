@@ -1,8 +1,7 @@
 # Effect v4 Adoption Plan
 
-- Status: Phase 10 implementation complete; Browser Use consent remains for
-  the final interoperability check
-- Updated: 2026-07-16
+- Status: Complete
+- Updated: 2026-07-17
 - Parent plan: [`PLAN.md`](../../PLAN.md)
 - Decisions: [ADR 0007](../decisions/0007-adopt-effect-v4.md),
   [ADR 0009](../decisions/0009-adopt-effect-cli-and-logging.md)
@@ -54,19 +53,19 @@ annotation runtime work.
 
 ## Phase status
 
-| Phase                                 | Status       | Result/target                                             |
-| ------------------------------------- | ------------ | --------------------------------------------------------- |
-| 0. Baseline and API verification      | Complete     | Green baseline, beta.98 source inspection, package choice |
-| 1. Decision records and toolchain     | Complete     | Exact pins, diagnostics, bundle and test foundation       |
-| 2. Errors and protocol schemas        | Complete     | Tagged failures and one validated wire contract           |
-| 3. Runtime-state and lock lifecycle   | Complete     | Typed, interruption-safe private state ownership          |
-| 4. Grant and raw-server resources     | Complete     | Scoped files/listeners with byte fidelity intact          |
-| 5. Supervisor registry and server     | Complete     | Scoped sessions, control work, idle shutdown              |
-| 6. Supervisor client                  | Complete     | Cancellable transport, schedules, launch handoff          |
-| 7. App services and entry points      | Complete     | One Effect runtime path per executable                    |
-| 8. Test-suite migration               | Complete     | One Effect-aware TypeScript runner                        |
-| 9. Packaging, docs, and release gate  | Complete     | Execution-model release gate and artifact audit passed    |
-| 10. Effect CLI and diagnostic logging | Gate pending | Implementation complete; Browser Use check remains        |
+| Phase                                 | Status   | Result/target                                             |
+| ------------------------------------- | -------- | --------------------------------------------------------- |
+| 0. Baseline and API verification      | Complete | Green baseline, beta.98 source inspection, package choice |
+| 1. Decision records and toolchain     | Complete | Exact pins, diagnostics, bundle and test foundation       |
+| 2. Errors and protocol schemas        | Complete | Tagged failures and one validated wire contract           |
+| 3. Runtime-state and lock lifecycle   | Complete | Typed, interruption-safe private state ownership          |
+| 4. Grant and raw-server resources     | Complete | Scoped files/listeners with byte fidelity intact          |
+| 5. Supervisor registry and server     | Complete | Scoped sessions, control work, idle shutdown              |
+| 6. Supervisor client                  | Complete | Cancellable transport, schedules, launch handoff          |
+| 7. App services and entry points      | Complete | One Effect runtime path per executable                    |
+| 8. Test-suite migration               | Complete | One Effect-aware TypeScript runner                        |
+| 9. Packaging, docs, and release gate  | Complete | Execution-model release gate and artifact audit passed    |
+| 10. Effect CLI and diagnostic logging | Complete | Native CLI, private diagnostics, and release evidence     |
 
 ## Version and package decisions
 
@@ -216,14 +215,13 @@ The Phase 10 current-platform repository gate passes 131 Vitest tests,
 black-box E2E, seven Playwright checks, strict Effect diagnostics,
 documentation/build validation, and clean package lifecycle. The Node 22 Linux
 lifecycle check passes with complete PID/socket/lock cleanup, and `pnpm audit`
-reports no known vulnerabilities. The external Browser Use check reached
-Chrome's required remote-debugging consent and remains the only uncompleted
-Phase 10 validation row.
+reports no known vulnerabilities. Browser Use 0.1.5 consumes the installed CLI
+URL through the user-approved Chrome DevTools endpoint and loads styles,
+modules, fetches, and an unreferenced in-grant asset.
 
 ## Next action
 
-Complete the user-approved Browser Use check. Then begin Phase 1 of the
-[annotation MVP](annotation-mvp.md) with raw-boundary characterization while
-preserving the completed execution model, native CLI, diagnostic sinks, raw
-serving, private control, and filesystem-security baseline. Do not publish
-automatically.
+Begin Phase 1 of the [annotation MVP](annotation-mvp.md) with raw-boundary
+characterization while preserving the completed execution model, native CLI,
+diagnostic sinks, raw serving, private control, and filesystem-security
+baseline. Do not publish automatically.
