@@ -23,8 +23,8 @@ diagnostic sinks, durable annotation delivery, and the trusted browser review
 surface are implemented. Automatic selected-entry refresh and the source-checkout
 `example:review` workflow, installed-package review guidance, and the macOS and
 Node 22 Linux installed review/observer lifecycle checks are now implemented.
-Resource measurements and the final release-command matrix remain, so `0.1.0`
-is not ready to publish. The annotation authorization,
+The final release-command matrix remains, so `0.1.0` is not ready to publish.
+The annotation authorization,
 hostile-content, authenticated probe-readiness, and explicit
 instrumentation-limitation matrices pass and must remain intact through the
 refresh work. Review navigation now requires a shell-minted one-use capability,
@@ -51,7 +51,7 @@ closure pass the complete current-platform `pnpm run check` gate.
 | Documentation organization        | Complete    | Canonical map, ADR index, contract cleanup, validation hardening      |
 | Effect CLI and diagnostic logging | Complete    | Native CLI, private logs, measurements, and complete release evidence |
 | Annotation runtime                | Complete    | Durable feedback, trusted review UI, and automatic entry refresh      |
-| Packaging and release hardening   | In progress | Installed review checks complete; measurements and matrix remain      |
+| Packaging and release hardening   | In progress | Installed checks and measurements complete; release matrix remains    |
 | Publication                       | Pending     | Complete release matrix and explicit publish action                   |
 
 ## Release invariants
@@ -120,8 +120,7 @@ and a size comparison justifies changing it.
 ## Next action
 
 Finish Phase 6 in [`docs/plans/annotation-mvp.md`](docs/plans/annotation-mvp.md):
-rerun the recorded resource measurements with the bounded entry observer,
-complete the remaining release-command matrix, and resolve any release-only
+complete the remaining release-command matrix and resolve any release-only
 gaps. Do not publish automatically.
 
 ## Progress log
@@ -149,4 +148,8 @@ gaps. Do not publish automatically.
   complete supervisor cleanup through the installed executable.
 - Added installed review guidance and validated the reproducible
   install/review/observer/reinstall/uninstall lifecycle on macOS and Node 22
-  Bookworm. Resource measurements and the remaining release commands are next.
+  Bookworm.
+- Recorded the clean installed artifact and process measurements against the
+  Phase 10 baseline. One ready review and its bounded observer add a median
+  1,248 KiB over the current empty supervisor; the remaining release commands
+  are next.

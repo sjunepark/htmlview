@@ -32,7 +32,7 @@ still must pass before `0.1.0`.
 | Browser-controller separation                                           | real CLI URL checks under `validation/interoperability/`; package contents reject `validation/` files                                              |
 | Reproducible package version and lifecycle                              | clean-prefix pack/install/serve/reinstall/uninstall checks on the current platform and Node 22 Debian                                              |
 | Bundle dependency, license, and map policy                              | exact Effect pins, build-time import/license-set checks, third-party notices, linked maps without embedded source content                          |
-| Distribution size and process cost                                      | Clean-package measurements recorded in the repository Effect plan cover size, file count, cold commands, readiness, and RSS                        |
+| Distribution size and process cost                                      | Effect and annotation plan measurements cover size, files, cold commands, readiness, and empty/observer RSS                                        |
 | State and serving grants are canonically disjoint                       | Equality, inverse nesting, symlink directions, descendant-root, and ordinary disjoint cases at service and supervisor seams                        |
 | Foreground and detached diagnostics stay separate, private, and bounded | All-level channel tests, closed-event canaries, exact rotation limits, private modes, restart, cleanup, and overlap checks                         |
 | Selected-entry instrumentation remains isolated and byte preserving     | Token-aware transform corpus, raw before/after integration comparison, and Playwright raw-byte comparison                                          |
@@ -50,9 +50,10 @@ still must pass before `0.1.0`.
 
 ## Remaining `0.1.0` release evidence
 
-The complete macOS/current-platform, external browser-use, Node 22 Linux,
-package, audit, documentation, and resource-measurement matrix recorded in the
-repository implementation plan remains required before publication.
+The remaining macOS/current-platform, external browser-use, audit, and
+documentation release commands recorded in the repository implementation plan
+must pass before publication. Node 22 Linux, installed review/observer
+lifecycle, and resource-measurement evidence are complete.
 
 ## Residual risks
 
