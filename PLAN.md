@@ -1,6 +1,6 @@
 # Implementation plan
 
-- Updated: 2026-07-17
+- Updated: 2026-07-18
 - Release target: `0.1.0`
 - Publication status: unpublished
 
@@ -24,10 +24,10 @@ diagnostic sinks, durable annotation delivery, and the trusted browser review
 surface are implemented. Bounded entry and served-resource refresh and the
 source-checkout `example:review` workflow, installed-package review guidance,
 and the macOS and Node 22 Linux installed review/observer lifecycle checks are
-now implemented. The complete current-platform `pnpm run check` gate passes.
-The external browser-use check, Linux package check, audit, and resource
-measurements still need to be rerun against this observer revision before
-`0.1.0` is called release-ready again. The candidate remains unpublished. The annotation authorization,
+now implemented. The complete release-command matrix, refreshed resource
+measurements, and final implementation/diet review pass against the current
+bounded served-resource observer. The `0.1.0` candidate is release-ready and
+remains unpublished. The annotation authorization,
 hostile-content, authenticated probe-readiness, and explicit
 instrumentation-limitation matrices pass and must remain intact through the
 refresh work. Review navigation now requires a shell-minted one-use capability,
@@ -46,16 +46,16 @@ Documentation now has explicit ownership and current-versus-target status; see
 The organized surface, contract tests, link/fragment checks, and packaged-link
 closure pass the complete current-platform `pnpm run check` gate.
 
-| Slice                             | Status     | Detail                                                                |
-| --------------------------------- | ---------- | --------------------------------------------------------------------- |
-| Raw serving and supervisor        | Complete   | Fidelity, confinement, private control, lifecycle, packaging          |
-| Effect execution model            | Complete   | Typed failures, schemas, cancellation, scopes, release measurements   |
-| Annotation and CLI contracts      | Complete   | Product, CLI, architecture, threat model, ADRs 0008–0009              |
-| Documentation organization        | Complete   | Canonical map, ADR index, contract cleanup, validation hardening      |
-| Effect CLI and diagnostic logging | Complete   | Native CLI, private logs, measurements, and complete release evidence |
-| Annotation runtime                | Complete   | Durable feedback, trusted review UI, and bounded automatic refresh    |
-| Packaging and release hardening   | Revalidate | Installed checks exist; rerun release-only checks and measurements    |
-| Publication                       | Pending    | Requires a later explicit production-promotion action                 |
+| Slice                             | Status   | Detail                                                                |
+| --------------------------------- | -------- | --------------------------------------------------------------------- |
+| Raw serving and supervisor        | Complete | Fidelity, confinement, private control, lifecycle, packaging          |
+| Effect execution model            | Complete | Typed failures, schemas, cancellation, scopes, release measurements   |
+| Annotation and CLI contracts      | Complete | Product, CLI, architecture, threat model, ADRs 0008–0009              |
+| Documentation organization        | Complete | Canonical map, ADR index, contract cleanup, validation hardening      |
+| Effect CLI and diagnostic logging | Complete | Native CLI, private logs, measurements, and complete release evidence |
+| Annotation runtime                | Complete | Durable feedback, trusted review UI, and bounded automatic refresh    |
+| Packaging and release hardening   | Complete | Installed checks, measurements, release matrix, and review pass       |
+| Publication                       | Pending  | Requires a later explicit production-promotion action                 |
 
 ## Release invariants
 
@@ -122,11 +122,28 @@ and a size comparison justifies changing it.
 
 ## Next action
 
-Rerun the external browser-use check, Linux package check, audit, and resource
-measurements against the bounded served-resource observer. Keep `0.1.0`
-unpublished; production promotion requires a later explicit action.
+Keep the release-ready `0.1.0` candidate unpublished. Production promotion is
+outside this plan and requires a later explicit action; never publish
+automatically.
 
 ## Progress log
+
+### 2026-07-18
+
+- Revalidated commit `292e727c1428e4361605d2276c4cd732b5e2cab4` on macOS
+  26.5.1 arm64 with Node 24.15.0 and pnpm 11.13.0. The ready-review RSS sample
+  registered one linked stylesheet and confirmed an observed byte change before
+  sampling the bounded served-resource observer.
+- Refreshed package, cold-command, readiness, and RSS measurements against the
+  Phase 10 baseline. One ready review with an active linked-resource observer
+  adds a median 1,392 KiB over the current empty supervisor.
+- Final implementation and diet review found no material defect, validation
+  gap, or unearned abstraction. The completed-body observation handshake,
+  separate bounded entry/asset state, opaque aggregate revision, navigation
+  epoch, and watcher-plus-polling fallback remain justified.
+- Final release matrix: `pnpm run check`, `pnpm run validate:browser-use`,
+  `pnpm run validate:package:linux`, `pnpm audit`, `pnpm run validate:docs`, and
+  `git diff --check` pass. A registry read confirms `0.1.0` remains unpublished.
 
 ### 2026-07-17
 
@@ -147,8 +164,6 @@ unpublished; production promotion requires a later explicit action.
 - Kept the authenticated rendered iframe visible across failed refresh races,
   restored same-revision retry/limitation state, and paused polling for ordinary
   hidden documents as well as page-history transitions.
-- Before the served-resource observer change, `pnpm run check` passed 198
-  Vitest tests and 19 browser-origin tests.
 - Added one package-excluded installed-artifact workflow shared by the
   current-platform and Node 22 Linux checks. It proves raw fidelity, review
   shell startup, feedback-state reads, observer-detected entry revisions, and
@@ -156,13 +171,7 @@ unpublished; production promotion requires a later explicit action.
 - Added installed review guidance and validated the reproducible
   install/review/observer/reinstall/uninstall lifecycle on macOS and Node 22
   Bookworm.
-- Recorded the clean installed artifact and process measurements against the
-  Phase 10 baseline. One ready review and its bounded observer add a median
-  704 KiB over the current empty supervisor.
 - Resolved a release-only flaky shutdown test by pausing its sparse client
   before flowing, resuming only after scope closure, and requiring an incomplete
   destroyed response. The focused contract passes 100 macOS runs and 50 clean
   Node 22 Bookworm runs.
-- The prior observer revision passed the full release matrix. That evidence is
-  historical and must not be attributed to the current observer until the
-  release-only checks above are rerun.

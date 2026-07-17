@@ -86,10 +86,7 @@ test("public docs make automatic refresh review-owned and leave raw passive", as
     interoperability,
     /external browser\/controller must reload any already-open raw page/,
   );
-  assert.match(
-    plan,
-    /Phases 0–5 complete; Phase 6 revalidation pending; unpublished/,
-  );
+  assert.match(plan, /Phases 0–6 complete; release-ready and unpublished/);
   assert.match(plan, /Browser evidence covers\s+edit-only refresh/i);
   assert.match(plan, /linked-resource refresh, unrelated-file exclusion/);
   assert.match(security, /third makes the shell terminal and read-only/);
