@@ -29,6 +29,10 @@ test("public docs make annotation a required 0.1.0 feature", async () => {
     /Annotation commands and the review runtime are.*implemented/s,
   );
   assert.match(install, /including automatic selected-entry refresh/);
+  assert.match(install, /^## Review an installed page$/m);
+  assert.match(install, /htmlview review "\$session" --json/);
+  assert.match(install, /htmlview feedback --wait --json "\$review_id"/);
+  assert.match(install, /external browser/);
 });
 
 test("source-checkout review examples keep private state behind wrappers", async () => {

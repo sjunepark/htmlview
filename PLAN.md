@@ -21,8 +21,10 @@ first-release feature. Its public contracts are accepted. The Effect CLI,
 native output boundary, symmetric state/grant exclusion, foreground/private
 diagnostic sinks, durable annotation delivery, and the trusted browser review
 surface are implemented. Automatic selected-entry refresh and the source-checkout
-`example:review` workflow are now implemented. Packaging and final release
-hardening remain, so `0.1.0` is not ready to publish. The annotation authorization,
+`example:review` workflow, installed-package review guidance, and the macOS and
+Node 22 Linux installed review/observer lifecycle checks are now implemented.
+Resource measurements and the final release-command matrix remain, so `0.1.0`
+is not ready to publish. The annotation authorization,
 hostile-content, authenticated probe-readiness, and explicit
 instrumentation-limitation matrices pass and must remain intact through the
 refresh work. Review navigation now requires a shell-minted one-use capability,
@@ -49,7 +51,7 @@ closure pass the complete current-platform `pnpm run check` gate.
 | Documentation organization        | Complete    | Canonical map, ADR index, contract cleanup, validation hardening      |
 | Effect CLI and diagnostic logging | Complete    | Native CLI, private logs, measurements, and complete release evidence |
 | Annotation runtime                | Complete    | Durable feedback, trusted review UI, and automatic entry refresh      |
-| Packaging and release hardening   | In progress | Review example complete; full release-command matrix remains          |
+| Packaging and release hardening   | In progress | Installed review checks complete; measurements and matrix remain      |
 | Publication                       | Pending     | Complete release matrix and explicit publish action                   |
 
 ## Release invariants
@@ -118,9 +120,9 @@ and a size comparison justifies changing it.
 ## Next action
 
 Finish Phase 6 in [`docs/plans/annotation-mvp.md`](docs/plans/annotation-mvp.md):
-complete installed-package guidance and the release-command matrix, rerun the
-recorded resource measurements with the bounded entry observer, and resolve any
-release-only gaps. Do not publish automatically.
+rerun the recorded resource measurements with the bounded entry observer,
+complete the remaining release-command matrix, and resolve any release-only
+gaps. Do not publish automatically.
 
 ## Progress log
 
@@ -139,5 +141,12 @@ release-only gaps. Do not publish automatically.
   hidden documents as well as page-history transitions.
 - Validation: `pnpm run check` passes 198 Vitest tests, black-box CLI/example
   workflows, 19 browser-origin tests, interoperability, build validation, and
-  package install/reinstall/uninstall smoke. The external browser-use, Linux,
-  audit, and final resource-measurement release checks remain.
+  package install/reinstall/uninstall smoke. The external browser-use, audit,
+  and final resource-measurement release checks remain.
+- Added one package-excluded installed-artifact workflow shared by the
+  current-platform and Node 22 Linux checks. It proves raw fidelity, review
+  shell startup, feedback-state reads, observer-detected entry revisions, and
+  complete supervisor cleanup through the installed executable.
+- Added installed review guidance and validated the reproducible
+  install/review/observer/reinstall/uninstall lifecycle on macOS and Node 22
+  Bookworm. Resource measurements and the remaining release commands are next.

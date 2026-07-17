@@ -101,7 +101,7 @@ counts discoverable.
 | 3. Instrumented content and trusted shell | Complete    | Entry probe, shell UI, browser boundaries         |
 | 4. Security and fidelity hardening        | Complete    | Adversarial matrix and authenticated readiness    |
 | 5. Automatic selected-entry refresh       | Complete    | Observe, notify, reload, preserve review state    |
-| 6. Packaging and release matrix           | In progress | Review example complete; release evidence remains |
+| 6. Packaging and release matrix           | In progress | Installed checks complete; measurements remain    |
 
 ## Prerequisite: Effect CLI and logging
 
@@ -205,10 +205,12 @@ raw fidelity.
 
 ## Phase 6: packaging and release matrix
 
-- **In progress:** the `example:review` workflow and source-checkout guidance
-  are implemented and tested. Finish installed-package guidance, build/package
-  checks, and macOS/Node 22 Linux lifecycle evidence; keep browser controllers
-  external.
+- **Complete:** the `example:review` workflow, source-checkout and
+  installed-package guidance, build/package checks, and macOS/Node 22 Linux
+  installed review/observer lifecycle evidence are implemented and tested;
+  browser controllers remain external.
+- **In progress:** rerun the automatic-refresh resource and performance
+  measurements, then complete the remaining release-command matrix.
 - Run the complete release gate and final implementation/diet review after the
   automatic-refresh resource and performance bounds are recorded.
 
@@ -226,9 +228,9 @@ raw fidelity.
 
 ## Next action
 
-Finish Phase 6: validate the installed review workflow on macOS and Node 22
-Linux, rerun package and resource measurements with the bounded observer, and
-complete the release-command matrix without publishing automatically.
+Finish Phase 6: rerun package and resource measurements with the bounded
+observer, then complete the remaining release-command matrix without publishing
+automatically.
 
 ## Completion gate
 

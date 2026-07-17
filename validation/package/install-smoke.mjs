@@ -122,7 +122,6 @@ await writeFile(
   "<!doctype html><p>installed package</p>",
 );
 
-let supervisorPid;
 try {
   const packed = await packageManager(
     ["pack", "--json", "--pack-destination", artifacts],
@@ -276,26 +275,27 @@ try {
   const empty = JSON.parse((await installed(["--json"])).stdout);
   assert.equal(empty.count, 0);
 
-  const served = JSON.parse(
-    (await installed(["serve", "report.html", "--json"])).stdout,
+  const installedWorkflow = JSON.parse(
+    (
+      await execute(
+        process.execPath,
+        [
+          path.join(repository, "validation/package/installed-workflow.mjs"),
+          binary,
+          fixture,
+        ],
+        { env: environment, maxBuffer: 1024 * 1024 },
+      )
+    ).stdout,
   );
-  supervisorPid = JSON.parse(
-    await readFile(path.join(supervisorLock, "owner.json"), "utf8"),
-  ).pid;
-  assert.equal(
-    new URL(served.session.url).hostname.endsWith(".localhost"),
-    true,
-  );
-  assert.equal(
-    served.grant.root,
-    await import("node:fs/promises").then(({ realpath }) => realpath(fixture)),
-  );
-  assert.equal(
-    await fetch(served.session.url).then((response) => response.text()),
-    "<!doctype html><p>installed package</p>",
-  );
-  await installed(["stop", "--all", "--json"]);
-  await waitForSupervisorExit(supervisorPid);
+  assert.deepEqual(installedWorkflow, {
+    raw: "passed",
+    review: "passed",
+    observer: "passed",
+    feedback_read: "passed",
+    cleanup: "passed",
+  });
+  await waitForSupervisorExit();
 
   await consumerNpm(["install", "--global", tarball, "--prefix", prefix]);
   assert.equal(
@@ -313,10 +313,10 @@ try {
   await assert.rejects(access(binary));
   await assert.rejects(access(installedPackage));
   process.stdout.write(
-    `${JSON.stringify({ platform: process.platform, version: packageMetadata.version, reproducible: "passed", install: "passed", reinstall: "passed", uninstall: "passed" })}\n`,
+    `${JSON.stringify({ platform: process.platform, version: packageMetadata.version, reproducible: "passed", install: "passed", review: "passed", observer: "passed", feedback_read: "passed", reinstall: "passed", uninstall: "passed" })}\n`,
   );
 } finally {
   await installed(["stop", "--all", "--json"]).catch(() => undefined);
-  await waitForSupervisorExit(supervisorPid).catch(() => undefined);
+  await waitForSupervisorExit().catch(() => undefined);
   await rm(temporary, { recursive: true, force: true });
 }
