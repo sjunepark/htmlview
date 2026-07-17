@@ -139,7 +139,7 @@ it.effect("closing the listener scope ends an active stream", () =>
         Effect.gen(function* () {
           const large = path.join(grant.root, "assets", "large.bin");
           yield* Effect.promise(() => writeFile(large, ""));
-          yield* Effect.promise(() => truncate(large, 64 * 1024 * 1024));
+          yield* Effect.promise(() => truncate(large, 1024 * 1024 * 1024));
           const server = yield* Scope.provide(scope)(startStaticServer(grant));
 
           let operation: ClientRequest | undefined;
@@ -156,10 +156,8 @@ it.effect("closing the listener scope ends an active stream", () =>
                   },
                   (incoming) => {
                     response = incoming;
-                    incoming.once("data", () => {
-                      incoming.pause();
-                      resolve();
-                    });
+                    incoming.pause();
+                    resolve();
                   },
                 );
                 operation.once("error", reject);
@@ -171,6 +169,7 @@ it.effect("closing the listener scope ends an active stream", () =>
             response?.once("close", resolve),
           );
           yield* Scope.close(scope, Exit.void);
+          response?.resume();
           yield* Effect.promise(
             () =>
               new Promise<void>((resolve, reject) => {
@@ -185,6 +184,7 @@ it.effect("closing the listener scope ends an active stream", () =>
               }),
           );
           expect(response?.destroyed).toBe(true);
+          expect(response?.complete).toBe(false);
           operation?.destroy();
         }),
       (scope) => Scope.close(scope, Exit.void),
