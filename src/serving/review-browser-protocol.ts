@@ -12,10 +12,9 @@ import {
 
 const strict = { onExcessProperty: "error" } as const;
 
-export const IssueNavigationRequestSchema = Schema.Record(
-  Schema.String,
-  Schema.Never,
-);
+export const IssueNavigationRequestSchema = Schema.Struct({
+  expected_revision: Schema.optionalKey(AnnotationRevisionSchema),
+});
 export type IssueNavigationRequest = typeof IssueNavigationRequestSchema.Type;
 
 export const ActivateProbeRequestSchema = Schema.Struct({

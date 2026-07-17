@@ -28,6 +28,7 @@ import {
   reviewProbeAsset,
   type ReviewAsset,
 } from "./review-assets.js";
+import type { ReviewEntryObservation } from "./review-entry-observer.js";
 import {
   decodeActivateProbeRequest,
   decodeEndReviewRequest,
@@ -80,10 +81,15 @@ export class ReviewSurfaceState {
   readonly #issuedProbeLeases = new Map<string, string>();
   readonly #navigationCapabilities = new Map<
     string,
-    { readonly entry: string; readonly expiresAt: number }
+    {
+      readonly entry: string;
+      readonly expectedRevision?: string;
+      readonly expiresAt: number;
+    }
   >();
   readonly #entryTransforms = Semaphore.makeUnsafe(1);
   #limitation: ReviewEntryLimitation | undefined;
+  #entryObservation: ReviewEntryObservation | undefined;
 
   configure(configuration: ReviewSurfaceConfiguration): void {
     if (this.#configuration !== undefined)
@@ -152,11 +158,25 @@ export class ReviewSurfaceState {
     return this.#limitation;
   }
 
+  publishEntryObservation(observation: ReviewEntryObservation): void {
+    this.#entryObservation = observation;
+  }
+
+  entryObservation(): ReviewEntryObservation | undefined {
+    return this.#entryObservation;
+  }
+
   issueNavigation(
     entry: string,
-    now = Date.now(),
-    random: (size: number) => Buffer = randomBytes,
+    options: {
+      readonly expectedRevision?: string;
+      readonly now?: number;
+      readonly random?: (size: number) => Buffer;
+    } = {},
   ): string {
+    const now = options.now ?? Date.now();
+    const random = options.random ?? randomBytes;
+    if (options.expectedRevision !== undefined) this.#limitation = undefined;
     for (const [token, capability] of this.#navigationCapabilities)
       if (capability.expiresAt <= now)
         this.#navigationCapabilities.delete(token);
@@ -171,6 +191,9 @@ export class ReviewSurfaceState {
     while (this.#navigationCapabilities.has(token));
     this.#navigationCapabilities.set(token, {
       entry,
+      ...(options.expectedRevision === undefined
+        ? {}
+        : { expectedRevision: options.expectedRevision }),
       expiresAt: now + navigationCapabilityLifetimeMilliseconds,
     });
     return token;
@@ -180,12 +203,12 @@ export class ReviewSurfaceState {
     target: string,
     entry: string,
     now = Date.now(),
-  ): boolean {
+  ): { readonly expectedRevision?: string } | undefined {
     let url: URL;
     try {
       url = new URL(target, "http://htmlview-content");
     } catch {
-      return false;
+      return undefined;
     }
     const tokens = url.searchParams.getAll(navigationCapabilityParameter);
     if (
@@ -194,12 +217,16 @@ export class ReviewSurfaceState {
       tokens.length !== 1 ||
       !/^[0-9a-f]{32}$/.test(tokens[0] ?? "")
     )
-      return false;
+      return undefined;
     const token = tokens[0] as string;
     const capability = this.#navigationCapabilities.get(token);
-    if (capability === undefined) return false;
+    if (capability === undefined) return undefined;
     this.#navigationCapabilities.delete(token);
-    return capability.entry === entry && capability.expiresAt > now;
+    if (capability.entry !== entry || capability.expiresAt <= now)
+      return undefined;
+    return capability.expectedRevision === undefined
+      ? {}
+      : { expectedRevision: capability.expectedRevision };
   }
 
   withEntryTransform<A, E, R>(
@@ -559,6 +586,20 @@ function shellHandler(
       );
     }
 
+    if (request.method === "GET" && request.url === "/.htmlview/api/entry") {
+      if (!browserFetchIsSameOrigin(request))
+        return yield* Effect.sync(() =>
+          sendJson(request, response, 403, {
+            error: { code: "review.unauthorized", message: "Forbidden" },
+          }),
+        );
+      return yield* Effect.sync(() =>
+        sendJson(request, response, 200, {
+          entry: state.entryObservation() ?? { availability: "checking" },
+        }),
+      );
+    }
+
     if (
       request.method === "POST" &&
       [
@@ -604,6 +645,9 @@ function shellHandler(
               if (decoded === undefined) return Effect.void;
               const token = state.issueNavigation(
                 configuration.grant.entryUrlPath,
+                decoded.expected_revision === undefined
+                  ? {}
+                  : { expectedRevision: decoded.expected_revision },
               );
               return Effect.succeed({
                 navigation_url: `${configuration.contentOrigin}${configuration.grant.entryUrlPath}?${navigationCapabilityParameter}=${token}`,
@@ -814,12 +858,13 @@ function contentHandler(
       const authorizedNavigation =
         request.method === "GET" &&
         browserDocumentNavigation(request) &&
-        requestPath === configuration.grant.entryUrlPath &&
-        state.authorizeNavigation(
-          request.url ?? "",
-          configuration.grant.entryUrlPath,
-        );
-      if (reservedNavigation && !authorizedNavigation)
+        requestPath === configuration.grant.entryUrlPath
+          ? state.authorizeNavigation(
+              request.url ?? "",
+              configuration.grant.entryUrlPath,
+            )
+          : undefined;
+      if (reservedNavigation && authorizedNavigation === undefined)
         return yield* Effect.sync(() =>
           sendText(request, response, 404, "Not Found"),
         );
@@ -848,6 +893,15 @@ function contentHandler(
                 sendText(request, response, 404, "Not Found"),
               );
             if (opened.metadata.size > BigInt(maximumInstrumentedEntryBytes)) {
+              if (authorizedNavigation.expectedRevision !== undefined)
+                return yield* Effect.sync(() =>
+                  sendText(
+                    request,
+                    response,
+                    409,
+                    "Review entry changed before navigation",
+                  ),
+                );
               state.limit("entry_too_large");
               return yield* Effect.sync(() =>
                 sendText(
@@ -875,6 +929,18 @@ function contentHandler(
               configuration.contentOrigin,
               probePath,
             );
+            if (
+              authorizedNavigation.expectedRevision !== undefined &&
+              transformed.revision !== authorizedNavigation.expectedRevision
+            )
+              return yield* Effect.sync(() =>
+                sendText(
+                  request,
+                  response,
+                  409,
+                  "Review entry changed before navigation",
+                ),
+              );
             if (transformed.outcome === "unsupported") {
               state.limit(transformed.reason);
               return yield* Effect.sync(() =>

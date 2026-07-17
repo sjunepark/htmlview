@@ -3,7 +3,7 @@
 > **Status:** Raw-serving controls, Effect CLI grammar, diagnostic filtering and
 > persistence, durable annotations, and existing review controls are
 > implemented. Automatic selected-entry refresh and its adversarial evidence
-> are the next slice; final release evidence remains in
+> are also implemented; final release evidence remains in
 > [Security validation](SECURITY_VALIDATION.md).
 
 ## Scope
@@ -160,10 +160,13 @@ reported by authored code is authentic.
   from content change. Missing, forbidden, or unreadable may produce a bounded
   unavailable notification without a revision; iframe reload requires a
   confirmed byte revision different from the last rendered bytes. Coalesce
-  bursts and atomic replacement, bound retries and notification delivery, and
-  close every observer and notification resource with its review scope. Never
-  send canonical paths, source bytes, comments, or anchors in a notification,
-  and expose no equivalent raw-origin route.
+  bursts and atomic replacement, bind observer-driven navigation capabilities
+  to that expected revision, and reject different transform bytes before probe
+  creation or recording a limitation derived from those mismatched bytes. Bound
+  requests, retries, page-lifecycle pause/resume, and terminal closure; close
+  every observer and notification resource with its review scope. Never send
+  canonical paths, source bytes, comments, or anchors in a notification, and
+  expose no equivalent raw-origin route.
 - **Feedback loss or implicit deletion.** Persist queue success before the
   browser reports it, convert drafts to sent events atomically, read events
   non-destructively, and advance acknowledgement only through an explicit

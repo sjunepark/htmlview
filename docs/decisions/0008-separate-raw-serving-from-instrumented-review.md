@@ -4,7 +4,7 @@
 - Date: 2026-07-16
 - Amended: 2026-07-17 to authenticate document navigation/readiness and target
   messages, harden lifecycle persistence, and make selected-entry refresh
-  review-owned and automatic
+  review-owned, revision-bound, automatic, and terminally bounded
 - Extends: [ADR 0001](0001-separate-serving-from-browser-control.md)
 - Related: [ADR 0009](0009-adopt-effect-cli-and-logging.md) defines the CLI and
   diagnostic boundary
@@ -89,6 +89,18 @@ explicit review attached to a live raw session:
   require the new document to complete authenticated probe readiness. The raw
   listener receives no notification route or injected reload client, so
   already-loaded raw consumers remain responsible for refetching.
+- Observer-driven navigation binds the confirmed expected revision into the
+  shell-minted one-use capability. The content handler recomputes the bytes'
+  revision before creating a probe or recording an instrumentation limitation;
+  a mismatch is rejected and retried rather than admitted as the active review.
+  Initial and explicit manual navigation omit the expectation so Explore
+  behavior remains independent of entry observation.
+- Each shell keeps at most one two-second entry-state request active. It pauses
+  and aborts that request while the document is hidden in page history, resumes
+  on return, and becomes permanently read-only after successful local End or
+  three consecutive request/response failures. Peer End, stop, deletion, and
+  listener shutdown therefore converge on a bounded closed state instead of an
+  unbounded reconnect loop.
 - If the fixed entry pathname is temporarily missing, forbidden, or unreadable,
   keep the last successfully rendered iframe visible but disable annotation and
   show a shell-owned unavailable status. Do not navigate the iframe to an error

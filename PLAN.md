@@ -20,15 +20,19 @@ the existing release gate are implemented. Human annotation is a core
 first-release feature. Its public contracts are accepted. The Effect CLI,
 native output boundary, symmetric state/grant exclusion, foreground/private
 diagnostic sinks, durable annotation delivery, and the trusted browser review
-surface are implemented. Automatic selected-entry refresh is now the next
-annotation slice; packaging and final release hardening follow it, so `0.1.0`
-is not ready to publish. The existing annotation authorization,
+surface are implemented. Automatic selected-entry refresh and the source-checkout
+`example:review` workflow are now implemented. Packaging and final release
+hardening remain, so `0.1.0` is not ready to publish. The annotation authorization,
 hostile-content, authenticated probe-readiness, and explicit
 instrumentation-limitation matrices pass and must remain intact through the
 refresh work. Review navigation now requires a shell-minted one-use capability,
 target messages are bound to the active probe lease/revision, and stop/delete
 persistence barriers prevent ready-but-closed review records. Supervisor
 protocol mismatches are rejected explicitly without compatibility fallbacks.
+Observer-driven iframe navigation is bound to its confirmed expected revision,
+and shell polling now has explicit active, paused, and terminal phases rather
+than an unbounded reconnect path. Source-checkout feedback stays behind the
+example wrapper without exposing the private state-directory override.
 
 Documentation now has explicit ownership and current-versus-target status; see
 [`docs/README.md`](docs/README.md). There is no external blocker.
@@ -42,7 +46,8 @@ closure pass the complete current-platform `pnpm run check` gate.
 | Annotation and CLI contracts      | Complete    | Product, CLI, architecture, threat model, ADRs 0008–0009              |
 | Documentation organization        | Complete    | Canonical map, ADR index, contract cleanup, validation hardening      |
 | Effect CLI and diagnostic logging | Complete    | Native CLI, private logs, measurements, and complete release evidence |
-| Annotation runtime                | In progress | Automatic selected-entry refresh is next; packaging follows           |
+| Annotation runtime                | Complete    | Durable feedback, trusted review UI, and automatic entry refresh      |
+| Packaging and release hardening   | In progress | Review example complete; full release-command matrix remains          |
 | Publication                       | Pending     | Complete release matrix and explicit publish action                   |
 
 ## Release invariants
@@ -110,12 +115,24 @@ and a size comparison justifies changing it.
 
 ## Next action
 
-Implement Phase 5, automatic selected-entry refresh, in
-[`docs/plans/annotation-mvp.md`](docs/plans/annotation-mvp.md). A ready review
-must observe confirmed byte changes to its original entry, coalesce writes,
-notify its trusted shell, and reload only the instrumented iframe while leaving
-the raw route and already-loaded raw consumers untouched. Preserve drafts with
-their capture revisions; keep the last rendered review non-annotatable while
-the fixed entry pathname is unavailable. Close every observer/notification
-resource on stop, End, deletion, or failed acquisition. Then finish packaging
-and the release-command matrix. Do not publish automatically.
+Finish Phase 6 in [`docs/plans/annotation-mvp.md`](docs/plans/annotation-mvp.md):
+complete installed-package guidance and the release-command matrix, rerun the
+recorded resource measurements with the bounded entry observer, and resolve any
+release-only gaps. Do not publish automatically.
+
+## Progress log
+
+### 2026-07-17
+
+- Completed automatic selected-entry refresh with scoped authorization,
+  coalescing, temporary-unavailability handling, authenticated iframe reload,
+  and bounded shell polling.
+- Added and documented `pnpm example:review`; its result includes the review
+  URL/ID and associated raw-session URL/ID.
+- Bound automatic navigation to the observer-confirmed revision, added bounded
+  polling termination across local/peer closure, and added the state-isolated
+  `example:feedback` pass-through.
+- Validation: `pnpm run check` passes 198 Vitest tests, black-box CLI/example
+  workflows, 18 browser-origin tests, interoperability, build validation, and
+  package install/reinstall/uninstall smoke. The external browser-use, Linux,
+  audit, and final resource-measurement release checks remain.

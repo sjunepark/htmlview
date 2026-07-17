@@ -1,6 +1,6 @@
 # Annotation MVP plan
 
-- Status: Phases 0–4 complete; Phase 5 automatic refresh next
+- Status: Phases 0–5 complete; Phase 6 release hardening in progress
 - Updated: 2026-07-17
 - Parent: [`PLAN.md`](../../PLAN.md)
 - Decision: [ADR 0008](../decisions/0008-separate-raw-serving-from-instrumented-review.md)
@@ -92,16 +92,16 @@ counts discoverable.
 
 ## Phase status
 
-| Phase                                     | Status   | Outcome                                          |
-| ----------------------------------------- | -------- | ------------------------------------------------ |
-| 0. Contracts and decisions                | Complete | Public specs, ADRs, domain language, doc tests   |
-| Prerequisite: Effect CLI/logging          | Complete | One final command model and diagnostic boundary  |
-| 1. Authorized reads and review lifecycle  | Complete | Review identity, origins, scopes, protocol       |
-| 2. Durable feedback and agent delivery    | Complete | Store, transitions, CLI/control operations       |
-| 3. Instrumented content and trusted shell | Complete | Entry probe, shell UI, browser boundaries        |
-| 4. Security and fidelity hardening        | Complete | Adversarial matrix and authenticated readiness   |
-| 5. Automatic selected-entry refresh       | Next     | Observe, notify, reload, preserve review state   |
-| 6. Packaging and release matrix           | Pending  | Installed workflow and complete release evidence |
+| Phase                                     | Status      | Outcome                                           |
+| ----------------------------------------- | ----------- | ------------------------------------------------- |
+| 0. Contracts and decisions                | Complete    | Public specs, ADRs, domain language, doc tests    |
+| Prerequisite: Effect CLI/logging          | Complete    | One final command model and diagnostic boundary   |
+| 1. Authorized reads and review lifecycle  | Complete    | Review identity, origins, scopes, protocol        |
+| 2. Durable feedback and agent delivery    | Complete    | Store, transitions, CLI/control operations        |
+| 3. Instrumented content and trusted shell | Complete    | Entry probe, shell UI, browser boundaries         |
+| 4. Security and fidelity hardening        | Complete    | Adversarial matrix and authenticated readiness    |
+| 5. Automatic selected-entry refresh       | Complete    | Observe, notify, reload, preserve review state    |
+| 6. Packaging and release matrix           | In progress | Review example complete; release evidence remains |
 
 ## Prerequisite: Effect CLI and logging
 
@@ -191,6 +191,16 @@ channel that later needs replacing.
 
 ## Phase 5: automatic selected-entry refresh
 
+**Complete.** One scoped observer per ready review combines fixed-path
+filesystem hints with bounded metadata fallback checks, reauthorizes through
+the shared file boundary, confirms byte revisions, and coalesces transitions.
+The shell polls a same-origin bounded entry-state endpoint and reloads only its
+instrumented iframe through a one-use expected-revision capability. Browser
+evidence covers edit-only refresh, transform-time B→C→B races, rapid and
+unchanged writes, atomic replacement, temporary unavailability, transient poll
+failure, page pause/resume, terminal peer End, multiple shell clients, stale
+editor clearing, draft revision continuity, and raw fidelity.
+
 - Characterize the existing manual-reload path first. Replace its browser test
   trigger with an edit-only expectation while retaining explicit reload tests
   for navigation, authenticated probe readiness, and recovery behavior.
@@ -234,8 +244,10 @@ channel that later needs replacing.
 
 ## Phase 6: packaging and release matrix
 
-- Update build/package checks, examples, install guidance, and macOS/Node 22
-  Linux lifecycle evidence; keep browser controllers external.
+- **In progress:** the `example:review` workflow and source-checkout guidance
+  are implemented and tested. Finish installed-package guidance, build/package
+  checks, and macOS/Node 22 Linux lifecycle evidence; keep browser controllers
+  external.
 - Run the complete release gate and final implementation/diet review after the
   automatic-refresh resource and performance bounds are recorded.
 
@@ -253,11 +265,9 @@ channel that later needs replacing.
 
 ## Next action
 
-Implement Phase 5 before packaging. Start with a failing real-browser workflow
-that edits the original entry without calling `location.reload()`, then add the
-review-owned observer and trusted-shell notification path while proving the raw
-contract is unchanged. Phase 6 follows only after the automatic-refresh
-lifecycle, security, and resource matrix passes.
+Finish Phase 6: validate the installed review workflow on macOS and Node 22
+Linux, rerun package and resource measurements with the bounded observer, and
+complete the release-command matrix without publishing automatically.
 
 ## Completion gate
 

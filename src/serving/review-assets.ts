@@ -148,6 +148,9 @@ const shellJs = embeddedJavaScript(String.raw`(() => {
   "use strict";
   const channel = "htmlview.review";
   const version = 2;
+  const maximumEntryNavigationAttempts = 3;
+  const maximumEntryPollFailures = 3;
+  const entryPollRequestTimeoutMilliseconds = 2000;
   const byId = (id) => document.getElementById(id);
   const iframe = byId("content");
   const status = byId("review-status");
@@ -178,6 +181,19 @@ const shellJs = embeddedJavaScript(String.raw`(() => {
   let readyInterval;
   let readyIntervalTimer;
   let navigationPending = false;
+  let navigationInFlight = false;
+  let pendingNavigationLoad;
+  let entryPollTimer;
+  let entryPollController;
+  let entryPollEpoch = 0;
+  let entryPollFailures = 0;
+  let entryPollPhase = "active";
+  let reviewConnectionClosed = false;
+  let entryAvailable = true;
+  let entryLimitation;
+  let observedEntryRevision;
+  let entryNavigationRevision;
+  let entryNavigationAttempts = 0;
   let localLimitation;
   let loadGeneration = 0;
   let pendingTargetMessage;
@@ -187,7 +203,9 @@ const shellJs = embeddedJavaScript(String.raw`(() => {
   const activatingProbeLeases = new Set();
   const usedProbeLeases = new Set();
 
-  const announce = (message) => { live.textContent = message; };
+  const announce = (message) => {
+    if (!reviewConnectionClosed) live.textContent = message;
+  };
   const exactKeys = (value, keys) => {
     if (!value || typeof value !== "object" || Array.isArray(value)) return false;
     let count = 0;
@@ -224,6 +242,7 @@ const shellJs = embeddedJavaScript(String.raw`(() => {
     const checkbox = document.createElement("input");
     checkbox.type = "checkbox";
     checkbox.checked = selected ?? true;
+    checkbox.disabled = reviewConnectionClosed;
     checkbox.dataset.id = draft.id;
     const body = document.createElement("span");
     const text = document.createElement("p");
@@ -236,7 +255,7 @@ const shellJs = embeddedJavaScript(String.raw`(() => {
   }
 
   function limitationReason() {
-    return localLimitation || state?.limitation;
+    return entryLimitation || localLimitation || state?.limitation;
   }
 
   function clearPendingTargetMessages() {
@@ -262,11 +281,49 @@ const shellJs = embeddedJavaScript(String.raw`(() => {
     resetEditor();
   }
 
+  function entryRevisionPending() {
+    return (
+      entryNavigationAttempts > 0 &&
+      entryNavigationRevision !== undefined &&
+      entryNavigationRevision !== revision
+    );
+  }
+
+  function suspendEntryPolling(phase) {
+    if (entryPollPhase === "terminal") return;
+    entryPollPhase = phase;
+    entryPollEpoch += 1;
+    clearTimeout(entryPollTimer);
+    entryPollTimer = undefined;
+    entryPollController?.abort();
+    entryPollController = undefined;
+  }
+
+  function terminateReviewConnection(statusMessage, announcement) {
+    if (entryPollPhase === "terminal") return;
+    suspendEntryPolling("terminal");
+    entryPollPhase = "terminal";
+    reviewConnectionClosed = true;
+    clearTimeout(readyTimer);
+    stopModeRetry();
+    clearPendingTargetMessages();
+    resetEditor();
+    byId("end-confirm").hidden = true;
+    byId("send").disabled = true;
+    byId("end").disabled = true;
+    byId("queue-comment").disabled = true;
+    for (const input of draftList.querySelectorAll('input[type="checkbox"]'))
+      input.disabled = true;
+    status.textContent = statusMessage;
+    renderLimitation();
+    live.textContent = announcement;
+  }
+
   function renderAnnotationAvailability() {
-    const unavailable = !revision || Boolean(limitationReason());
+    const unavailable = reviewConnectionClosed || !revision || !entryAvailable || navigationInFlight || entryRevisionPending() || Boolean(limitationReason());
     annotateButton.disabled = unavailable;
     freeformButton.disabled = unavailable || draftSaveInFlight;
-    byId("mode-explore").disabled = draftSaveInFlight;
+    byId("mode-explore").disabled = reviewConnectionClosed || draftSaveInFlight;
     if (unavailable) {
       clearPendingTargetMessages();
       resetEditor();
@@ -275,8 +332,13 @@ const shellJs = embeddedJavaScript(String.raw`(() => {
 
   function renderLimitation() {
     const reason = limitationReason();
-    limitation.hidden = !reason;
-    if (reason) limitation.textContent = \`This page cannot be annotated: \${reason.replaceAll("_", " ")}. The raw page remains available.\`;
+    limitation.hidden = !reviewConnectionClosed && entryAvailable && !reason;
+    if (reviewConnectionClosed)
+      limitation.textContent = "Review connection closed. Ask for a new review link to continue. The last rendered version remains visible.";
+    else if (!entryAvailable && !entryLimitation)
+      limitation.textContent = "The review entry is temporarily unavailable. The last rendered version remains visible.";
+    else if (reason)
+      limitation.textContent = \`This page cannot be annotated: \${reason.replaceAll("_", " ")}. The raw page remains available.\`;
     renderAnnotationAvailability();
   }
 
@@ -291,38 +353,205 @@ const shellJs = embeddedJavaScript(String.raw`(() => {
     const selectedDrafts = new Map(
       [...draftList.querySelectorAll('input[type="checkbox"]')].map((input) => [input.dataset.id, input.checked]),
     );
-    status.textContent = state.review.status === "ready" ? "Annotation review" : \`Review \${state.review.status}\`;
+    if (!reviewConnectionClosed)
+      status.textContent = state.review.status === "ready" ? "Annotation review" : \`Review \${state.review.status}\`;
     draftCount.textContent = String(state.drafts.length);
     draftList.replaceChildren(...state.drafts.map((draft) => publicDraft(draft, selectedDrafts.get(draft.id))));
     emptyDrafts.hidden = state.drafts.length !== 0;
-    byId("send").disabled = state.drafts.length === 0;
+    byId("send").disabled = reviewConnectionClosed || state.drafts.length === 0;
     byId("end").disabled =
-      state.review.status !== "ready" || draftSaveInFlight;
+      reviewConnectionClosed || state.review.status !== "ready" || draftSaveInFlight;
+    byId("queue-comment").disabled =
+      reviewConnectionClosed || draftSaveInFlight;
     renderLimitation();
   }
 
   async function refresh(expectedLoadGeneration) {
     const nextState = await api("/.htmlview/api/state");
-    if (expectedLoadGeneration !== undefined && expectedLoadGeneration !== loadGeneration) return;
+    if (reviewConnectionClosed || (expectedLoadGeneration !== undefined && expectedLoadGeneration !== loadGeneration)) return;
     state = nextState;
     contentOrigin = new URL(state.content_url).origin;
     render();
     if (!iframe.hasAttribute("src")) await navigate();
   }
 
-  async function navigate() {
-    const navigation = await api("/.htmlview/api/navigation", {
-      method: "POST",
-      body: "{}",
-    });
-    iframe.src = navigation.navigation_url;
+  async function navigate(expectedRevision) {
+    if (reviewConnectionClosed) return;
+    navigationInFlight = true;
+    if (expectedRevision !== undefined) {
+      if (entryNavigationRevision !== expectedRevision)
+        entryNavigationAttempts = 0;
+      entryNavigationRevision = expectedRevision;
+      entryNavigationAttempts += 1;
+    }
+    clearPendingTargetMessages();
+    resetEditor();
+    renderAnnotationAvailability();
+    try {
+      const navigation = await api("/.htmlview/api/navigation", {
+        method: "POST",
+        body: JSON.stringify(
+          expectedRevision === undefined
+            ? {}
+            : { expected_revision: expectedRevision },
+        ),
+      });
+      if (reviewConnectionClosed) return;
+      clearTimeout(readyTimer);
+      stopModeRetry();
+      pendingNavigationLoad =
+        expectedRevision === undefined
+          ? undefined
+          : {
+              revision: expectedRevision,
+              attempt: entryNavigationAttempts,
+            };
+      iframe.src = navigation.navigation_url;
+    } catch (error) {
+      navigationInFlight = false;
+      if (
+        expectedRevision !== undefined &&
+        entryNavigationAttempts >= maximumEntryNavigationAttempts
+      ) {
+        localLimitation = "instrumentation_unavailable";
+        renderLimitation();
+        announce("Updated review could not be loaded");
+      } else renderAnnotationAvailability();
+      throw error;
+    }
+  }
+
+  async function pollEntry() {
+    if (entryPollPhase !== "active" || entryPollController !== undefined) return;
+    const epoch = entryPollEpoch;
+    const controller = new AbortController();
+    entryPollController = controller;
+    const requestTimeout = setTimeout(
+      () => controller.abort(),
+      entryPollRequestTimeoutMilliseconds,
+    );
+    let validResponse = false;
+    try {
+      const result = await api("/.htmlview/api/entry", {
+        signal: controller.signal,
+      });
+      if (epoch !== entryPollEpoch || entryPollPhase !== "active") return;
+      const entry = result.entry;
+      const checking =
+        exactKeys(entry, ["availability"]) &&
+        entry.availability === "checking";
+      const unavailable =
+        exactKeys(entry, ["availability"]) &&
+        entry.availability === "unavailable";
+      const unsupported =
+        exactKeys(entry, ["availability", "limitation"]) &&
+        entry.availability === "unsupported" &&
+        entry.limitation === "entry_too_large";
+      const available =
+        exactKeys(entry, ["availability", "revision"]) &&
+        entry.availability === "available" &&
+        /^sha256:[0-9a-f]{64}$/.test(entry.revision || "");
+      if (!checking && !unavailable && !unsupported && !available)
+        throw new TypeError("Invalid review entry observation");
+      validResponse = true;
+      entryPollFailures = 0;
+      if (checking) return;
+      if (unavailable) {
+        entryAvailable = false;
+        entryLimitation = undefined;
+        entryNavigationRevision = undefined;
+        entryNavigationAttempts = 0;
+        clearPendingTargetMessages();
+        resetEditor();
+        renderLimitation();
+        announce("Review entry unavailable · showing last rendered version");
+        return;
+      }
+      if (unsupported) {
+        entryAvailable = false;
+        entryLimitation = entry.limitation;
+        entryNavigationRevision = undefined;
+        entryNavigationAttempts = 0;
+        clearPendingTargetMessages();
+        resetEditor();
+        renderLimitation();
+        announce("Review entry cannot currently be instrumented");
+        return;
+      }
+      const wasAvailable = entryAvailable;
+      const observedRevisionChanged =
+        observedEntryRevision === undefined
+          ? !wasAvailable ||
+            Boolean(state?.limitation) ||
+            (revision !== undefined && revision !== entry.revision)
+          : observedEntryRevision !== entry.revision;
+      const canSupersedeLimitedNavigation =
+        observedRevisionChanged &&
+        (!wasAvailable || Boolean(state?.limitation));
+      entryAvailable = true;
+      entryLimitation = undefined;
+      if (revision === entry.revision) {
+        observedEntryRevision = entry.revision;
+        entryNavigationRevision = entry.revision;
+        entryNavigationAttempts = 0;
+        renderLimitation();
+        if (!wasAvailable) {
+          announce("Annotation tools ready");
+          sendMode();
+        }
+        return;
+      }
+      if (entryNavigationRevision !== entry.revision) {
+        entryNavigationRevision = entry.revision;
+        entryNavigationAttempts = 0;
+      }
+      if (!observedRevisionChanged && entryNavigationAttempts === 0) {
+        observedEntryRevision = entry.revision;
+        renderLimitation();
+        return;
+      }
+      if (
+        !iframe.hasAttribute("src") ||
+        (navigationInFlight && !canSupersedeLimitedNavigation) ||
+        entryNavigationAttempts >= maximumEntryNavigationAttempts
+      ) {
+        if (!observedRevisionChanged) observedEntryRevision = entry.revision;
+        renderLimitation();
+        return;
+      }
+      observedEntryRevision = entry.revision;
+      localLimitation = undefined;
+      renderLimitation();
+      announce("Loading updated review");
+      await navigate(entry.revision);
+    } catch {
+      if (
+        !validResponse &&
+        epoch === entryPollEpoch &&
+        entryPollPhase === "active"
+      ) {
+        entryPollFailures += 1;
+        if (entryPollFailures >= maximumEntryPollFailures)
+          terminateReviewConnection(
+            "Review unavailable",
+            "Review connection closed. Ask for a new review link to continue.",
+          );
+      }
+    } finally {
+      clearTimeout(requestTimeout);
+      if (entryPollController === controller) entryPollController = undefined;
+      if (epoch === entryPollEpoch && entryPollPhase === "active")
+        entryPollTimer = setTimeout(pollEntry, 500);
+    }
   }
 
   function sendMode() {
+    if (reviewConnectionClosed) return;
     iframe.contentWindow?.postMessage({ channel, version, type: "set_mode", mode }, contentOrigin);
   }
 
   function setMode(next) {
+    if (reviewConnectionClosed) return;
     if (next === "explore" && (draftSaveInFlight || (!editor.hidden && (editorDirty || editorSaving)))) {
       announce("Save or cancel the current comment before exploring");
       return;
@@ -345,7 +574,7 @@ const shellJs = embeddedJavaScript(String.raw`(() => {
   }
 
   function openEditor(target) {
-    if (draftSaveInFlight) return false;
+    if (reviewConnectionClosed || draftSaveInFlight) return false;
     if (!editor.hidden) {
       if (editorDirty || editorSaving) return false;
       selectedTarget = target;
@@ -364,17 +593,20 @@ const shellJs = embeddedJavaScript(String.raw`(() => {
   }
 
   async function activateProbe(data) {
-    if (revision !== undefined || activatingProbeLeases.has(data.lease) || usedProbeLeases.has(data.lease) || activatingProbeLeases.size >= 8) return;
+    if (reviewConnectionClosed || revision !== undefined || activatingProbeLeases.has(data.lease) || usedProbeLeases.has(data.lease) || activatingProbeLeases.size >= 8) return;
     const generation = loadGeneration;
     activatingProbeLeases.add(data.lease);
     try {
       const result = await api("/.htmlview/api/probe", { method: "POST", body: JSON.stringify({ lease: data.lease }) });
       usedProbeLeases.add(data.lease);
       if (usedProbeLeases.size > 8) usedProbeLeases.delete(usedProbeLeases.values().next().value);
-      if (generation !== loadGeneration || result.revision !== data.revision || !/^sha256:[0-9a-f]{64}$/.test(result.revision || "")) return;
+      if (reviewConnectionClosed || generation !== loadGeneration || result.revision !== data.revision || !/^sha256:[0-9a-f]{64}$/.test(result.revision || "")) return;
       revision = result.revision;
       activeProbeLease = data.lease;
       navigationPending = false;
+      navigationInFlight = false;
+      entryNavigationRevision = result.revision;
+      entryNavigationAttempts = 0;
       localLimitation = undefined;
       if (state) delete state.limitation;
       clearTimeout(readyTimer);
@@ -390,7 +622,7 @@ const shellJs = embeddedJavaScript(String.raw`(() => {
   }
 
   function annotationActive() {
-    return mode === "annotate" && revision !== undefined && activeProbeLease !== undefined && !limitationReason();
+    return !reviewConnectionClosed && mode === "annotate" && entryAvailable && !navigationInFlight && !entryRevisionPending() && revision !== undefined && activeProbeLease !== undefined && !limitationReason();
   }
 
   function takeSelectionToken() {
@@ -450,7 +682,10 @@ const shellJs = embeddedJavaScript(String.raw`(() => {
   });
 
   iframe.addEventListener("load", () => {
+    if (reviewConnectionClosed) return;
     const generation = ++loadGeneration;
+    const navigationLoad = pendingNavigationLoad;
+    pendingNavigationLoad = undefined;
     navigationPending = navigationPending || revision !== undefined;
     revision = undefined;
     activeProbeLease = undefined;
@@ -466,6 +701,14 @@ const shellJs = embeddedJavaScript(String.raw`(() => {
       if (generation !== loadGeneration) return;
       refresh(generation).catch(() => undefined).finally(() => {
         if (generation !== loadGeneration || revision) return;
+        navigationInFlight = false;
+        if (
+          state?.limitation &&
+          navigationLoad !== undefined &&
+          entryNavigationRevision === navigationLoad.revision &&
+          entryNavigationAttempts === navigationLoad.attempt
+        )
+          entryNavigationAttempts = maximumEntryNavigationAttempts;
         if (!state?.limitation) localLimitation = navigationPending ? "unsupported_navigation" : "instrumentation_unavailable";
         renderLimitation();
       });
@@ -474,6 +717,7 @@ const shellJs = embeddedJavaScript(String.raw`(() => {
   });
 
   async function queueDraft() {
+    if (reviewConnectionClosed) return;
     if (draftSaveInFlight) {
       announce("Draft save already in progress");
       return;
@@ -509,13 +753,13 @@ const shellJs = embeddedJavaScript(String.raw`(() => {
     }
     finally {
       draftSaveInFlight = false;
-      byId("queue-comment").disabled = false;
       render();
     }
   }
 
   const selectedIds = () => [...draftList.querySelectorAll('input[type="checkbox"]:checked')].map((input) => input.dataset.id);
   async function publish(end, discardRemaining = false) {
+    if (reviewConnectionClosed) return;
     if (end && (draftSaveInFlight || (!editor.hidden && (editorDirty || editorSaving)))) {
       announce("Save or cancel the current comment before ending the review");
       return;
@@ -528,10 +772,13 @@ const shellJs = embeddedJavaScript(String.raw`(() => {
     const route = end ? "/.htmlview/api/end" : "/.htmlview/api/send";
     try {
       const result = await api(route, { method: "POST", body: JSON.stringify(end ? { drafts: ids, discard_remaining: discardRemaining } : { drafts: ids }) });
+      if (reviewConnectionClosed) return;
       if (end) {
-        status.textContent = "Feedback sent · review ended";
+        terminateReviewConnection(
+          "Feedback sent · review ended",
+          "Feedback sent and review ended",
+        );
         draftsPanel.replaceChildren();
-        announce("Feedback sent and review ended");
       } else {
         state = { ...state, drafts: state.drafts.filter((draft) => !ids.includes(draft.id)) };
         try {
@@ -570,7 +817,18 @@ const shellJs = embeddedJavaScript(String.raw`(() => {
     editorDirty = comment.value.length > 0;
   });
   window.addEventListener("resize", () => highlight.removeAttribute("data-visible"));
-  refresh().catch((error) => { limitation.hidden = false; limitation.textContent = error.message; });
+  window.addEventListener("pagehide", () => {
+    if (entryPollPhase === "active") suspendEntryPolling("paused");
+  });
+  window.addEventListener("pageshow", () => {
+    if (entryPollPhase !== "paused") return;
+    entryPollPhase = "active";
+    entryPollFailures = 0;
+    pollEntry();
+  });
+  refresh()
+    .then(pollEntry)
+    .catch((error) => { limitation.hidden = false; limitation.textContent = error.message; });
 })();`);
 
 function probeJavaScript(lease: string): string {

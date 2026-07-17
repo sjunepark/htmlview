@@ -20,12 +20,13 @@ function instrumented(source: Buffer | string) {
 }
 
 function unsupported(source: Buffer | string, reason: string): void {
-  const result = transformReviewEntry(
-    typeof source === "string" ? Buffer.from(source) : source,
-    contentOrigin,
-    probePath,
-  );
-  assert.deepEqual(result, { outcome: "unsupported", reason });
+  const bytes = typeof source === "string" ? Buffer.from(source) : source;
+  const result = transformReviewEntry(bytes, contentOrigin, probePath);
+  assert.deepEqual(result, {
+    outcome: "unsupported",
+    reason,
+    revision: `sha256:${createHash("sha256").update(bytes).digest("hex")}`,
+  });
 }
 
 describe("instrumented review entry transform", () => {

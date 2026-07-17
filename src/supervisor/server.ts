@@ -49,6 +49,7 @@ import {
   type ReviewOriginRole,
   type ReviewOriginServer,
 } from "../serving/review.js";
+import { startReviewEntryObserver } from "../serving/review-entry-observer.js";
 import {
   acquireSupervisorLock,
   ensurePrivateStateDirectory,
@@ -700,6 +701,11 @@ class SessionRegistry {
             }),
           },
         });
+        yield* Scope.provide(scope)(
+          startReviewEntryObserver(session.grant, (observation) =>
+            surface.publishEntryObservation(observation),
+          ),
+        );
         const verify = (server: ReviewOriginServer) =>
           verifyListenerReady(server, server.readinessPath, 204).pipe(
             Effect.timeoutOrElse({
