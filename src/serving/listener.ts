@@ -10,10 +10,6 @@ import { ContentListenerError } from "../errors.js";
 
 const loopbackAddress = "127.0.0.1";
 const defaultResponseDeadlineMilliseconds = 5 * 60_000;
-const responseDeadlines = new WeakMap<
-  IncomingMessage["socket"],
-  NodeJS.Timeout
->();
 
 export interface LoopbackHttpListener {
   readonly bindAddress: "127.0.0.1";
@@ -95,20 +91,22 @@ function listen(server: Server): Effect.Effect<void, ContentListenerError> {
 
 function enforceResponseDeadline(
   request: IncomingMessage,
+  response: ServerResponse,
   responseDeadlineMilliseconds: number,
 ): Effect.Effect<void> {
   return Effect.sync(() => {
-    if (responseDeadlines.has(request.socket)) return;
     const responseDeadline = setTimeout(
       () => request.socket.destroy(),
       responseDeadlineMilliseconds,
     );
     responseDeadline.unref();
-    responseDeadlines.set(request.socket, responseDeadline);
-    request.socket.once("close", () => {
+    const clearResponseDeadline = (): void => {
       clearTimeout(responseDeadline);
-      responseDeadlines.delete(request.socket);
-    });
+      response.off("finish", clearResponseDeadline);
+      response.off("close", clearResponseDeadline);
+    };
+    response.once("finish", clearResponseDeadline);
+    response.once("close", clearResponseDeadline);
   });
 }
 
@@ -132,6 +130,7 @@ export function startLoopbackHttpListener(
             runRequest(
               enforceResponseDeadline(
                 request,
+                response,
                 responseDeadlineMilliseconds,
               ).pipe(
                 Effect.andThen(handler(request, response)),
