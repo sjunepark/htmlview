@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { request } from "node:http";
 import { tmpdir } from "node:os";
@@ -264,14 +265,21 @@ function jsonBody(response: ResponseResult): Record<string, unknown> {
   return JSON.parse(response.body.toString("utf8")) as Record<string, unknown>;
 }
 
-async function issueNavigation(shell: ReviewOriginServer): Promise<string> {
+async function issueNavigation(
+  shell: ReviewOriginServer,
+  expectedRevision?: `sha256:${string}`,
+): Promise<string> {
   const response = await send(shell, "POST", "/.htmlview/api/navigation", {
     headers: {
       ...browserHeaders,
       origin: shell.origin,
       "content-type": "application/json",
     },
-    body: "{}",
+    body: JSON.stringify(
+      expectedRevision === undefined
+        ? {}
+        : { expected_revision: expectedRevision },
+    ),
   });
   assert.equal(response.status, 200);
   const navigation = jsonBody(response).navigation_url;
@@ -371,16 +379,19 @@ describe("review origins", () => {
 
   it("binds one-use navigation capabilities to one entry and lifetime", () => {
     const state = new ReviewSurfaceState();
-    const token = state.issueNavigation("/report.html", 1_000, () =>
-      Buffer.alloc(16, 0x11),
-    );
+    const expectedRevision = `sha256:${"a".repeat(64)}`;
+    const token = state.issueNavigation("/report.html", {
+      expectedRevision,
+      now: 1_000,
+      random: () => Buffer.alloc(16, 0x11),
+    });
     assert.equal(
       state.authorizeNavigation(
         `/report.html?__htmlview_navigation=${token}&__htmlview_navigation=${token}`,
         "/report.html",
         1_001,
       ),
-      false,
+      undefined,
     );
     assert.equal(
       state.authorizeNavigation(
@@ -388,7 +399,15 @@ describe("review origins", () => {
         "/report.html",
         1_001,
       ),
-      false,
+      undefined,
+    );
+    assert.deepEqual(
+      state.authorizeNavigation(
+        `/report.html?__htmlview_navigation=${token}`,
+        "/report.html",
+        1_001,
+      ),
+      { expectedRevision },
     );
     assert.equal(
       state.authorizeNavigation(
@@ -396,27 +415,76 @@ describe("review origins", () => {
         "/report.html",
         1_001,
       ),
-      true,
-    );
-    assert.equal(
-      state.authorizeNavigation(
-        `/report.html?__htmlview_navigation=${token}`,
-        "/report.html",
-        1_001,
-      ),
-      false,
+      undefined,
     );
 
-    const expired = state.issueNavigation("/report.html", 2_000, () =>
-      Buffer.alloc(16, 0x22),
-    );
+    const expired = state.issueNavigation("/report.html", {
+      now: 2_000,
+      random: () => Buffer.alloc(16, 0x22),
+    });
     assert.equal(
       state.authorizeNavigation(
         `/report.html?__htmlview_navigation=${expired}`,
         "/report.html",
         12_001,
       ),
-      false,
+      undefined,
+    );
+
+    const unbound = state.issueNavigation("/report.html", {
+      now: 3_000,
+      random: () => Buffer.alloc(16, 0x33),
+    });
+    assert.deepEqual(
+      state.authorizeNavigation(
+        `/report.html?__htmlview_navigation=${unbound}`,
+        "/report.html",
+        3_001,
+      ),
+      {},
+    );
+  });
+
+  it("rejects entry bytes that drift from an expected navigation revision", async () => {
+    const expected = "<!doctype html><p>expected</p>";
+    const transient = "<!doctype html><p>transient</p>";
+    const expectedRevision =
+      `sha256:${createHash("sha256").update(expected).digest("hex")}` as const;
+    await withSurface(
+      expected,
+      async ({ shell, content, configuration, state }) => {
+        state.limit("csp_blocked");
+        const racedNavigation = await issueNavigation(shell, expectedRevision);
+        assert.equal(state.limitation(), undefined);
+        await writeFile(configuration.grant.routeEntry, transient);
+        const conflict = await send(content, "GET", racedNavigation, {
+          headers: documentNavigationHeaders,
+        });
+        assert.equal(conflict.status, 409);
+        assert.equal(
+          conflict.body.toString("utf8"),
+          "Review entry changed before navigation",
+        );
+        assert.equal(state.limitation(), undefined);
+        assert.equal(
+          (
+            await send(content, "GET", racedNavigation, {
+              headers: documentNavigationHeaders,
+            })
+          ).status,
+          404,
+        );
+
+        await writeFile(configuration.grant.routeEntry, expected);
+        const recovered = await send(
+          content,
+          "GET",
+          await issueNavigation(shell, expectedRevision),
+          { headers: documentNavigationHeaders },
+        );
+        assert.equal(recovered.status, 200);
+        assert.match(recovered.body.toString("utf8"), /<p>expected<\/p>/);
+      },
     );
   });
 
@@ -456,49 +524,75 @@ describe("review origins", () => {
     }
   });
 
-  it("serves an isolated immutable shell and a private state API", async () =>
-    withSurface("<!doctype html><h1>Hello</h1>", async ({ shell, content }) => {
-      const ready = await send(shell, "HEAD", shell.readinessPath);
-      assert.equal(ready.status, 204);
-      assert.equal(ready.body.length, 0);
-      assert.equal(ready.headers["access-control-allow-origin"], undefined);
+  it("serves an isolated immutable shell and private bounded state APIs", async () =>
+    withSurface(
+      "<!doctype html><h1>Hello</h1>",
+      async ({ shell, content, state: surface }) => {
+        const ready = await send(shell, "HEAD", shell.readinessPath);
+        assert.equal(ready.status, 204);
+        assert.equal(ready.body.length, 0);
+        assert.equal(ready.headers["access-control-allow-origin"], undefined);
 
-      const page = await send(shell, "GET", "/");
-      assert.equal(page.status, 200);
-      assert.match(
-        String(page.headers["content-security-policy"]),
-        new RegExp(`frame-src ${content.origin.replaceAll(".", "\\.")}`),
-      );
-      assert.equal(page.headers["x-frame-options"], "DENY");
-      assert.equal(page.headers["referrer-policy"], "no-referrer");
-      assert.equal(page.headers["access-control-allow-origin"], undefined);
+        const page = await send(shell, "GET", "/");
+        assert.equal(page.status, 200);
+        assert.match(
+          String(page.headers["content-security-policy"]),
+          new RegExp(`frame-src ${content.origin.replaceAll(".", "\\.")}`),
+        );
+        assert.equal(page.headers["x-frame-options"], "DENY");
+        assert.equal(page.headers["referrer-policy"], "no-referrer");
+        assert.equal(page.headers["access-control-allow-origin"], undefined);
 
-      const script = await send(shell, "HEAD", "/.htmlview/shell.js");
-      assert.equal(script.status, 200);
-      assert.equal(script.body.length, 0);
-      assert.equal(
-        script.headers["cache-control"],
-        "public, max-age=31536000, immutable",
-      );
-      const shellJavaScript = await send(shell, "GET", "/.htmlview/shell.js");
-      assert.doesNotThrow(
-        () => new Script(shellJavaScript.body.toString("utf8")),
-      );
+        const script = await send(shell, "HEAD", "/.htmlview/shell.js");
+        assert.equal(script.status, 200);
+        assert.equal(script.body.length, 0);
+        assert.equal(
+          script.headers["cache-control"],
+          "public, max-age=31536000, immutable",
+        );
+        const shellJavaScript = await send(shell, "GET", "/.htmlview/shell.js");
+        assert.doesNotThrow(
+          () => new Script(shellJavaScript.body.toString("utf8")),
+        );
 
-      assert.equal(
-        (await send(shell, "GET", "/.htmlview/api/state")).status,
-        403,
-      );
-      const state = await send(shell, "GET", "/.htmlview/api/state", {
-        headers: browserHeaders,
-      });
-      assert.equal(state.status, 200);
-      assert.equal(
-        jsonBody(state).content_url,
-        `${content.origin}/report.html`,
-      );
-      assert.equal(state.body.includes(Buffer.from("htmlview-review-")), false);
-    }));
+        assert.equal(
+          (await send(shell, "GET", "/.htmlview/api/state")).status,
+          403,
+        );
+        const state = await send(shell, "GET", "/.htmlview/api/state", {
+          headers: browserHeaders,
+        });
+        assert.equal(state.status, 200);
+        assert.equal(
+          jsonBody(state).content_url,
+          `${content.origin}/report.html`,
+        );
+        assert.equal(
+          state.body.includes(Buffer.from("htmlview-review-")),
+          false,
+        );
+
+        assert.equal(
+          (await send(shell, "GET", "/.htmlview/api/entry")).status,
+          403,
+        );
+        surface.publishEntryObservation({
+          availability: "available",
+          revision: `sha256:${"a".repeat(64)}`,
+        });
+        const entry = await send(shell, "GET", "/.htmlview/api/entry", {
+          headers: browserHeaders,
+        });
+        assert.equal(entry.status, 200);
+        assert.deepEqual(jsonBody(entry), {
+          entry: {
+            availability: "available",
+            revision: `sha256:${"a".repeat(64)}`,
+          },
+        });
+        assert.equal(entry.body.includes(Buffer.from("report.html")), false);
+      },
+    ));
 
   it("rejects missing, wrong, and ambiguous browser mutation authority", async () =>
     withSurface("<!doctype html><h1>Hello</h1>", async ({ shell, content }) => {
@@ -673,6 +767,7 @@ describe("review origins", () => {
 
       for (const [route, body] of [
         ["/.htmlview/api/navigation", { extra: true }],
+        ["/.htmlview/api/navigation", { expected_revision: "sha256:bad" }],
         ["/.htmlview/api/probe", { lease: "0".repeat(32), extra: true }],
         [
           "/.htmlview/api/drafts",

@@ -14,15 +14,15 @@ install, launch, or automate a browser.
 
 Raw serving, the Effect CLI grammar, native output boundary, and foreground
 and private diagnostic seams, durable feedback, and the trusted review surface
-are implemented. Automatic refresh of a ready review after its selected entry
-HTML changes is the next `0.1.0` implementation slice; packaging and the final
-release matrix follow it. The package has not been published.
+are implemented. Ready reviews now refresh automatically after confirmed entry
+HTML changes. Packaging and the final release matrix remain, and the package
+has not been published.
 
 The public docs describe the accepted `0.1.0` target. See the repository
 [`PLAN.md`](https://github.com/sjunepark/htmlview/blob/main/PLAN.md) for
 implementation truth.
 
-## Try the implemented raw path
+## Try the implemented workflows
 
 From a source checkout:
 
@@ -31,9 +31,12 @@ pnpm install --frozen-lockfile
 pnpm example:standalone
 pnpm example:relative
 pnpm example:root
+pnpm example:review
 ```
 
 Each command returns after the detached supervisor confirms its URL is ready.
+`example:review` prints the separate instrumented review URL plus its review and
+raw-session IDs; the other commands print byte-faithful raw URLs.
 Use `pnpm example:list` and `pnpm example:stop` to inspect or stop this
 checkout's example sessions. The committed
 [examples](https://github.com/sjunepark/htmlview/tree/main/examples) are also

@@ -13,9 +13,9 @@ const requestTimeoutMilliseconds = 10_000;
 let temporary;
 let environment;
 
-function example(command) {
+function example(command, ...args) {
   return new Promise((resolve, reject) => {
-    const child = spawn("pnpm", [`example:${command}`], {
+    const child = spawn("pnpm", [`example:${command}`, ...args], {
       cwd: repository,
       env: {
         ...process.env,
@@ -134,6 +134,74 @@ test("committed examples exercise standalone, relative, and explicit-root servin
     ),
   ]);
 
+  const review = await serve("review");
+  assert.equal(review.review.status, "ready");
+  assert.match(review.review.id, /^rv_[A-Za-z0-9_-]{22}$/);
+  assert.equal(review.session.id, relative.session.id);
+  assert.equal(review.session.url, relative.session.url);
+  assert.equal(review.fidelity, "instrumented_review");
+  const reviewController = new AbortController();
+  const reviewTimeout = setTimeout(
+    () =>
+      reviewController.abort(
+        new Error(
+          `HTTP request ${review.review.url} timed out after ${requestTimeoutMilliseconds}ms`,
+        ),
+      ),
+    requestTimeoutMilliseconds,
+  );
+  try {
+    const reviewResponse = await fetch(review.review.url, {
+      signal: reviewController.signal,
+    });
+    assert.equal(reviewResponse.status, 200);
+    assert.match(
+      reviewResponse.headers.get("content-type"),
+      /^text\/html; charset=utf-8$/,
+    );
+    assert.match(await reviewResponse.text(), /htmlview review/);
+  } finally {
+    clearTimeout(reviewTimeout);
+  }
+
+  const emptyFeedback = await example("feedback", "--json", review.review.id);
+  assert.equal(
+    emptyFeedback.code,
+    0,
+    emptyFeedback.stdout || emptyFeedback.stderr,
+  );
+  assert.deepEqual(JSON.parse(emptyFeedback.stdout), {
+    review: { id: review.review.id, status: "ready" },
+    feedback: [],
+    cursor: 0,
+    count: 0,
+    help: ["Run `htmlview feedback --after <cursor> --wait <review> --json`"],
+  });
+  const acknowledgedEmpty = await example(
+    "feedback",
+    "--after",
+    "0",
+    "--json",
+    review.review.id,
+  );
+  assert.equal(
+    acknowledgedEmpty.code,
+    0,
+    acknowledgedEmpty.stdout || acknowledgedEmpty.stderr,
+  );
+  assert.deepEqual(
+    JSON.parse(acknowledgedEmpty.stdout),
+    JSON.parse(emptyFeedback.stdout),
+  );
+  const feedbackHelp = await example("feedback", "--help");
+  assert.equal(
+    feedbackHelp.code,
+    0,
+    feedbackHelp.stdout || feedbackHelp.stderr,
+  );
+  assert.match(feedbackHelp.stdout, /htmlview feedback/);
+  assert.match(feedbackHelp.stdout, /--after/);
+
   const projectRoot = path.join(examples, "project-root");
   const rooted = await serve("root");
   assert.equal(rooted.grant.root, await realpath(projectRoot));
@@ -168,6 +236,16 @@ test("committed examples exercise standalone, relative, and explicit-root servin
   assert.equal(listed.code, 0, listed.stdout || listed.stderr);
   const listing = JSON.parse(listed.stdout);
   assert.equal(listing.count, 3);
+  assert.equal(listing.review_count, 1);
+  assert.deepEqual(listing.reviews, [
+    {
+      id: review.review.id,
+      status: "ready",
+      session: relative.session.id,
+      drafts: 0,
+      unacknowledged: 0,
+    },
+  ]);
   assert.deepEqual(
     listing.sessions
       .map(({ entry, root }) => ({ entry, root }))

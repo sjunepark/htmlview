@@ -38,6 +38,8 @@
     "example:standalone": "pnpm run build && node scripts/run-example.mjs standalone",
     "example:relative": "pnpm run build && node scripts/run-example.mjs relative",
     "example:root": "pnpm run build && node scripts/run-example.mjs root",
+    "example:review": "pnpm run build && node scripts/run-example.mjs review",
+    "example:feedback": "node scripts/run-example.mjs feedback",
     "example:list": "node scripts/run-example.mjs list",
     "example:stop": "node scripts/run-example.mjs stop",
     "format": "prettier --write .",

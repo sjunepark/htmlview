@@ -18,7 +18,7 @@ const shellHtml = `<!doctype html>
   </header>
   <main>
     <section class="canvas" aria-label="Reviewed page">
-      <iframe id="content" title="Page under review" sandbox="allow-scripts allow-same-origin" referrerpolicy="no-referrer"></iframe>
+      <iframe id="content" class="content-frame" title="Page under review" sandbox="allow-scripts allow-same-origin" referrerpolicy="no-referrer"></iframe>
       <div id="highlight" aria-hidden="true"></div>
       <div id="limitation" class="notice" role="status" hidden></div>
       <section id="editor" class="editor" aria-label="New annotation" hidden>
@@ -97,7 +97,8 @@ button:disabled { cursor: not-allowed; opacity: .48; transform: none; }
 
 main { height: calc(100% - var(--toolbar)); display: grid; grid-template-columns: minmax(0, 1fr) 340px; }
 .canvas { position: relative; min-width: 0; overflow: hidden; background: var(--surface); }
-#content { display: block; width: 100%; height: 100%; border: 0; background: var(--bg); }
+.content-frame { position: absolute; inset: 0; display: block; width: 100%; height: 100%; border: 0; background: var(--bg); }
+.content-frame[data-staging="true"] { visibility: hidden; pointer-events: none; }
 #highlight { position: absolute; pointer-events: none; border: 2px solid var(--primary); background: oklch(0.75 0.08 200 / .16); transition: transform 120ms ease-out, width 120ms ease-out, height 120ms ease-out; }
 #highlight:not([data-visible="true"]) { display: none; }
 .notice { position: absolute; inset: 18px auto auto 50%; translate: -50% 0; max-width: min(560px, calc(100% - 36px)); padding: 12px 14px; border-radius: 10px; color: var(--ink); background: var(--bg); border: 1px solid var(--line); }
@@ -148,8 +149,11 @@ const shellJs = embeddedJavaScript(String.raw`(() => {
   "use strict";
   const channel = "htmlview.review";
   const version = 2;
+  const maximumEntryNavigationAttempts = 3;
+  const maximumEntryPollFailures = 3;
+  const entryPollRequestTimeoutMilliseconds = 2000;
   const byId = (id) => document.getElementById(id);
-  const iframe = byId("content");
+  let iframe = byId("content");
   const status = byId("review-status");
   const limitation = byId("limitation");
   const live = byId("live");
@@ -178,6 +182,19 @@ const shellJs = embeddedJavaScript(String.raw`(() => {
   let readyInterval;
   let readyIntervalTimer;
   let navigationPending = false;
+  let navigationInFlight = false;
+  let stagedNavigation;
+  let entryPollTimer;
+  let entryPollController;
+  let entryPollEpoch = 0;
+  let entryPollFailures = 0;
+  let entryPollPhase = "active";
+  let reviewConnectionClosed = false;
+  let entryAvailable = true;
+  let entryLimitation;
+  let observedEntryRevision;
+  let entryNavigationRevision;
+  let entryNavigationAttempts = 0;
   let localLimitation;
   let loadGeneration = 0;
   let pendingTargetMessage;
@@ -187,7 +204,9 @@ const shellJs = embeddedJavaScript(String.raw`(() => {
   const activatingProbeLeases = new Set();
   const usedProbeLeases = new Set();
 
-  const announce = (message) => { live.textContent = message; };
+  const announce = (message) => {
+    if (!reviewConnectionClosed) live.textContent = message;
+  };
   const exactKeys = (value, keys) => {
     if (!value || typeof value !== "object" || Array.isArray(value)) return false;
     let count = 0;
@@ -224,6 +243,7 @@ const shellJs = embeddedJavaScript(String.raw`(() => {
     const checkbox = document.createElement("input");
     checkbox.type = "checkbox";
     checkbox.checked = selected ?? true;
+    checkbox.disabled = reviewConnectionClosed;
     checkbox.dataset.id = draft.id;
     const body = document.createElement("span");
     const text = document.createElement("p");
@@ -236,7 +256,7 @@ const shellJs = embeddedJavaScript(String.raw`(() => {
   }
 
   function limitationReason() {
-    return localLimitation || state?.limitation;
+    return entryLimitation || localLimitation || state?.limitation;
   }
 
   function clearPendingTargetMessages() {
@@ -262,11 +282,64 @@ const shellJs = embeddedJavaScript(String.raw`(() => {
     resetEditor();
   }
 
+  function entryRevisionPending() {
+    return (
+      entryNavigationAttempts > 0 &&
+      entryNavigationRevision !== undefined &&
+      entryNavigationRevision !== revision
+    );
+  }
+
+  function suspendEntryPolling(phase) {
+    if (entryPollPhase === "terminal") return;
+    entryPollPhase = phase;
+    entryPollEpoch += 1;
+    clearTimeout(entryPollTimer);
+    entryPollTimer = undefined;
+    entryPollController?.abort();
+    entryPollController = undefined;
+  }
+
+  function resumeEntryPolling() {
+    if (entryPollPhase !== "paused" || document.hidden) return;
+    entryPollPhase = "active";
+    entryPollFailures = 0;
+    pollEntry();
+  }
+
+  function discardStagedNavigation() {
+    const pending = stagedNavigation;
+    stagedNavigation = undefined;
+    if (pending) pending.frame.remove();
+    clearTimeout(readyTimer);
+    stopModeRetry();
+    navigationInFlight = false;
+  }
+
+  function terminateReviewConnection(statusMessage, announcement) {
+    if (entryPollPhase === "terminal") return;
+    suspendEntryPolling("terminal");
+    entryPollPhase = "terminal";
+    reviewConnectionClosed = true;
+    discardStagedNavigation();
+    clearPendingTargetMessages();
+    resetEditor();
+    byId("end-confirm").hidden = true;
+    byId("send").disabled = true;
+    byId("end").disabled = true;
+    byId("queue-comment").disabled = true;
+    for (const input of draftList.querySelectorAll('input[type="checkbox"]'))
+      input.disabled = true;
+    status.textContent = statusMessage;
+    renderLimitation();
+    live.textContent = announcement;
+  }
+
   function renderAnnotationAvailability() {
-    const unavailable = !revision || Boolean(limitationReason());
+    const unavailable = reviewConnectionClosed || !revision || !entryAvailable || navigationInFlight || entryRevisionPending() || Boolean(limitationReason());
     annotateButton.disabled = unavailable;
     freeformButton.disabled = unavailable || draftSaveInFlight;
-    byId("mode-explore").disabled = draftSaveInFlight;
+    byId("mode-explore").disabled = reviewConnectionClosed || draftSaveInFlight;
     if (unavailable) {
       clearPendingTargetMessages();
       resetEditor();
@@ -275,8 +348,13 @@ const shellJs = embeddedJavaScript(String.raw`(() => {
 
   function renderLimitation() {
     const reason = limitationReason();
-    limitation.hidden = !reason;
-    if (reason) limitation.textContent = \`This page cannot be annotated: \${reason.replaceAll("_", " ")}. The raw page remains available.\`;
+    limitation.hidden = !reviewConnectionClosed && entryAvailable && !reason;
+    if (reviewConnectionClosed)
+      limitation.textContent = "Review connection closed. Ask for a new review link to continue. The last rendered version remains visible.";
+    else if (!entryAvailable && !entryLimitation)
+      limitation.textContent = "The review entry is temporarily unavailable. The last rendered version remains visible.";
+    else if (reason)
+      limitation.textContent = \`This page cannot be annotated: \${reason.replaceAll("_", " ")}. The raw page remains available.\`;
     renderAnnotationAvailability();
   }
 
@@ -291,38 +369,335 @@ const shellJs = embeddedJavaScript(String.raw`(() => {
     const selectedDrafts = new Map(
       [...draftList.querySelectorAll('input[type="checkbox"]')].map((input) => [input.dataset.id, input.checked]),
     );
-    status.textContent = state.review.status === "ready" ? "Annotation review" : \`Review \${state.review.status}\`;
+    if (!reviewConnectionClosed)
+      status.textContent = state.review.status === "ready" ? "Annotation review" : \`Review \${state.review.status}\`;
     draftCount.textContent = String(state.drafts.length);
     draftList.replaceChildren(...state.drafts.map((draft) => publicDraft(draft, selectedDrafts.get(draft.id))));
     emptyDrafts.hidden = state.drafts.length !== 0;
-    byId("send").disabled = state.drafts.length === 0;
+    byId("send").disabled = reviewConnectionClosed || state.drafts.length === 0;
     byId("end").disabled =
-      state.review.status !== "ready" || draftSaveInFlight;
+      reviewConnectionClosed || state.review.status !== "ready" || draftSaveInFlight;
+    byId("queue-comment").disabled =
+      reviewConnectionClosed || draftSaveInFlight;
     renderLimitation();
   }
 
   async function refresh(expectedLoadGeneration) {
     const nextState = await api("/.htmlview/api/state");
-    if (expectedLoadGeneration !== undefined && expectedLoadGeneration !== loadGeneration) return;
+    if (reviewConnectionClosed || (expectedLoadGeneration !== undefined && expectedLoadGeneration !== loadGeneration)) return;
     state = nextState;
     contentOrigin = new URL(state.content_url).origin;
     render();
     if (!iframe.hasAttribute("src")) await navigate();
   }
 
-  async function navigate() {
-    const navigation = await api("/.htmlview/api/navigation", {
-      method: "POST",
-      body: "{}",
-    });
-    iframe.src = navigation.navigation_url;
+  async function refreshStagedState(pending, generation) {
+    const nextState = await api("/.htmlview/api/state");
+    if (
+      reviewConnectionClosed ||
+      stagedNavigation !== pending ||
+      pending.generation !== generation
+    )
+      return false;
+    state = nextState;
+    contentOrigin = new URL(state.content_url).origin;
+    render();
+    return true;
+  }
+
+  function stageNavigation(navigationUrl, expectedRevision, attempt) {
+    const frame = document.createElement("iframe");
+    frame.className = "content-frame";
+    frame.dataset.staging = "true";
+    frame.title = "Updated page under review";
+    frame.setAttribute("aria-hidden", "true");
+    frame.setAttribute("sandbox", "allow-scripts allow-same-origin");
+    frame.setAttribute("referrerpolicy", "no-referrer");
+    const pending = {
+      frame,
+      revision: expectedRevision,
+      attempt,
+      generation: 0,
+    };
+    pending.onLoad = () => handleStagedFrameLoad(pending);
+    stagedNavigation = pending;
+    frame.addEventListener("load", pending.onLoad);
+    frame.src = navigationUrl;
+    iframe.after(frame);
+  }
+
+  function handleStagedFrameLoad(pending) {
+    if (reviewConnectionClosed || stagedNavigation !== pending) return;
+    const generation = ++pending.generation;
+    clearTimeout(readyTimer);
+    stopModeRetry();
+    announce("Loading annotation tools");
+    const sendStagedMode = () => sendModeTo(pending.frame);
+    sendStagedMode();
+    readyInterval = setInterval(sendStagedMode, 100);
+    readyTimer = setTimeout(
+      () => finishStagedNavigation(pending, generation),
+      1800,
+    );
+    readyIntervalTimer = setTimeout(stopModeRetry, 2000);
+  }
+
+  async function finishStagedNavigation(pending, generation) {
+    try {
+      if (!(await refreshStagedState(pending, generation))) return;
+    } catch {
+      // Polling owns connection failure accounting; the active frame stays put.
+    }
+    if (
+      reviewConnectionClosed ||
+      stagedNavigation !== pending ||
+      pending.generation !== generation
+    )
+      return;
+    stagedNavigation = undefined;
+    pending.frame.remove();
+    navigationInFlight = false;
+    stopModeRetry();
+    if (
+      state?.limitation &&
+      entryNavigationRevision === pending.revision &&
+      entryNavigationAttempts === pending.attempt
+    )
+      entryNavigationAttempts = maximumEntryNavigationAttempts;
+    if (
+      !state?.limitation &&
+      entryNavigationRevision === pending.revision &&
+      entryNavigationAttempts >= maximumEntryNavigationAttempts
+    ) {
+      localLimitation = "instrumentation_unavailable";
+      announce("Updated review could not be loaded");
+    }
+    renderLimitation();
+  }
+
+  function promoteStagedNavigation(pending, nextRevision, lease) {
+    if (stagedNavigation !== pending) return;
+    const previousFrame = iframe;
+    stagedNavigation = undefined;
+    clearTimeout(readyTimer);
+    stopModeRetry();
+    previousFrame.removeAttribute("id");
+    pending.frame.removeEventListener("load", pending.onLoad);
+    pending.frame.id = "content";
+    pending.frame.title = "Page under review";
+    pending.frame.removeAttribute("aria-hidden");
+    delete pending.frame.dataset.staging;
+    iframe = pending.frame;
+    iframe.addEventListener("load", handleCurrentFrameLoad);
+    previousFrame.remove();
+    loadGeneration += 1;
+    revision = nextRevision;
+    activeProbeLease = lease;
+    navigationPending = false;
+    navigationInFlight = false;
+    entryNavigationRevision = nextRevision;
+    entryNavigationAttempts = 0;
+    localLimitation = undefined;
+    if (state) delete state.limitation;
+    clearPendingTargetMessages();
+    resetEditor();
+    announce("Annotation tools ready");
+    sendMode();
+    renderLimitation();
+  }
+
+  async function navigate(expectedRevision) {
+    if (reviewConnectionClosed) return;
+    discardStagedNavigation();
+    navigationInFlight = true;
+    if (expectedRevision !== undefined) {
+      if (entryNavigationRevision !== expectedRevision)
+        entryNavigationAttempts = 0;
+      entryNavigationRevision = expectedRevision;
+      entryNavigationAttempts += 1;
+    }
+    clearPendingTargetMessages();
+    resetEditor();
+    renderAnnotationAvailability();
+    try {
+      const navigation = await api("/.htmlview/api/navigation", {
+        method: "POST",
+        body: JSON.stringify(
+          expectedRevision === undefined
+            ? {}
+            : { expected_revision: expectedRevision },
+        ),
+      });
+      if (reviewConnectionClosed) return;
+      clearTimeout(readyTimer);
+      stopModeRetry();
+      if (expectedRevision === undefined)
+        iframe.src = navigation.navigation_url;
+      else
+        stageNavigation(
+          navigation.navigation_url,
+          expectedRevision,
+          entryNavigationAttempts,
+        );
+    } catch (error) {
+      navigationInFlight = false;
+      if (
+        expectedRevision !== undefined &&
+        entryNavigationAttempts >= maximumEntryNavigationAttempts
+      ) {
+        localLimitation = "instrumentation_unavailable";
+        renderLimitation();
+        announce("Updated review could not be loaded");
+      } else renderAnnotationAvailability();
+      throw error;
+    }
+  }
+
+  async function pollEntry() {
+    if (entryPollPhase !== "active" || entryPollController !== undefined) return;
+    const epoch = entryPollEpoch;
+    const controller = new AbortController();
+    entryPollController = controller;
+    const requestTimeout = setTimeout(
+      () => controller.abort(),
+      entryPollRequestTimeoutMilliseconds,
+    );
+    let validResponse = false;
+    try {
+      const result = await api("/.htmlview/api/entry", {
+        signal: controller.signal,
+      });
+      if (epoch !== entryPollEpoch || entryPollPhase !== "active") return;
+      const entry = result.entry;
+      const checking =
+        exactKeys(entry, ["availability"]) &&
+        entry.availability === "checking";
+      const unavailable =
+        exactKeys(entry, ["availability"]) &&
+        entry.availability === "unavailable";
+      const unsupported =
+        exactKeys(entry, ["availability", "limitation"]) &&
+        entry.availability === "unsupported" &&
+        entry.limitation === "entry_too_large";
+      const available =
+        exactKeys(entry, ["availability", "revision"]) &&
+        entry.availability === "available" &&
+        /^sha256:[0-9a-f]{64}$/.test(entry.revision || "");
+      if (!checking && !unavailable && !unsupported && !available)
+        throw new TypeError("Invalid review entry observation");
+      validResponse = true;
+      entryPollFailures = 0;
+      if (checking) return;
+      if (unavailable) {
+        discardStagedNavigation();
+        entryAvailable = false;
+        entryLimitation = undefined;
+        observedEntryRevision = revision;
+        entryNavigationRevision = undefined;
+        entryNavigationAttempts = 0;
+        clearPendingTargetMessages();
+        resetEditor();
+        renderLimitation();
+        announce("Review entry unavailable · showing last rendered version");
+        return;
+      }
+      if (unsupported) {
+        discardStagedNavigation();
+        entryAvailable = false;
+        entryLimitation = entry.limitation;
+        observedEntryRevision = revision;
+        entryNavigationRevision = undefined;
+        entryNavigationAttempts = 0;
+        clearPendingTargetMessages();
+        resetEditor();
+        renderLimitation();
+        announce("Review entry cannot currently be instrumented");
+        return;
+      }
+      const wasAvailable = entryAvailable;
+      const observedRevisionChanged =
+        observedEntryRevision === undefined
+          ? !wasAvailable ||
+            Boolean(state?.limitation) ||
+            (revision !== undefined && revision !== entry.revision)
+          : observedEntryRevision !== entry.revision;
+      const canSupersedeLimitedNavigation =
+        observedRevisionChanged &&
+        (!wasAvailable || Boolean(state?.limitation));
+      entryAvailable = true;
+      entryLimitation = undefined;
+      if (revision === entry.revision) {
+        observedEntryRevision = entry.revision;
+        entryNavigationRevision = entry.revision;
+        entryNavigationAttempts = 0;
+        localLimitation = undefined;
+        if (state) delete state.limitation;
+        renderLimitation();
+        if (!wasAvailable) {
+          announce("Annotation tools ready");
+          sendMode();
+        }
+        return;
+      }
+      if (entryNavigationRevision !== entry.revision) {
+        entryNavigationRevision = entry.revision;
+        entryNavigationAttempts = 0;
+      }
+      if (!observedRevisionChanged && entryNavigationAttempts === 0) {
+        observedEntryRevision = entry.revision;
+        renderLimitation();
+        return;
+      }
+      if (
+        !iframe.hasAttribute("src") ||
+        (navigationInFlight && !canSupersedeLimitedNavigation) ||
+        entryNavigationAttempts >= maximumEntryNavigationAttempts
+      ) {
+        if (!observedRevisionChanged) observedEntryRevision = entry.revision;
+        renderLimitation();
+        return;
+      }
+      observedEntryRevision = entry.revision;
+      localLimitation = undefined;
+      renderLimitation();
+      announce("Loading updated review");
+      await navigate(entry.revision);
+    } catch {
+      if (
+        !validResponse &&
+        epoch === entryPollEpoch &&
+        entryPollPhase === "active"
+      ) {
+        entryPollFailures += 1;
+        if (entryPollFailures >= maximumEntryPollFailures)
+          terminateReviewConnection(
+            "Review unavailable",
+            "Review connection closed. Ask for a new review link to continue.",
+          );
+      }
+    } finally {
+      clearTimeout(requestTimeout);
+      if (entryPollController === controller) entryPollController = undefined;
+      if (epoch === entryPollEpoch && entryPollPhase === "active")
+        entryPollTimer = setTimeout(pollEntry, 500);
+    }
+  }
+
+  function sendModeTo(frame) {
+    if (reviewConnectionClosed) return;
+    frame.contentWindow?.postMessage(
+      { channel, version, type: "set_mode", mode },
+      contentOrigin,
+    );
   }
 
   function sendMode() {
-    iframe.contentWindow?.postMessage({ channel, version, type: "set_mode", mode }, contentOrigin);
+    sendModeTo(iframe);
+    if (stagedNavigation) sendModeTo(stagedNavigation.frame);
   }
 
   function setMode(next) {
+    if (reviewConnectionClosed) return;
     if (next === "explore" && (draftSaveInFlight || (!editor.hidden && (editorDirty || editorSaving)))) {
       announce("Save or cancel the current comment before exploring");
       return;
@@ -345,7 +720,7 @@ const shellJs = embeddedJavaScript(String.raw`(() => {
   }
 
   function openEditor(target) {
-    if (draftSaveInFlight) return false;
+    if (reviewConnectionClosed || draftSaveInFlight) return false;
     if (!editor.hidden) {
       if (editorDirty || editorSaving) return false;
       selectedTarget = target;
@@ -363,18 +738,56 @@ const shellJs = embeddedJavaScript(String.raw`(() => {
     return true;
   }
 
-  async function activateProbe(data) {
-    if (revision !== undefined || activatingProbeLeases.has(data.lease) || usedProbeLeases.has(data.lease) || activatingProbeLeases.size >= 8) return;
-    const generation = loadGeneration;
+  async function activateProbe(data, sourceWindow) {
+    const pending =
+      stagedNavigation?.frame.contentWindow === sourceWindow
+        ? stagedNavigation
+        : undefined;
+    const activatingCurrent = iframe.contentWindow === sourceWindow;
+    if (
+      reviewConnectionClosed ||
+      (!activatingCurrent && pending === undefined) ||
+      (activatingCurrent && revision !== undefined) ||
+      (pending !== undefined && pending.revision !== data.revision) ||
+      activatingProbeLeases.has(data.lease) ||
+      usedProbeLeases.has(data.lease) ||
+      activatingProbeLeases.size >= 8
+    )
+      return;
+    const generation = activatingCurrent
+      ? loadGeneration
+      : pending.generation;
     activatingProbeLeases.add(data.lease);
     try {
       const result = await api("/.htmlview/api/probe", { method: "POST", body: JSON.stringify({ lease: data.lease }) });
       usedProbeLeases.add(data.lease);
       if (usedProbeLeases.size > 8) usedProbeLeases.delete(usedProbeLeases.values().next().value);
-      if (generation !== loadGeneration || result.revision !== data.revision || !/^sha256:[0-9a-f]{64}$/.test(result.revision || "")) return;
+      if (
+        reviewConnectionClosed ||
+        result.revision !== data.revision ||
+        !/^sha256:[0-9a-f]{64}$/.test(result.revision || "")
+      )
+        return;
+      if (!activatingCurrent) {
+        if (
+          stagedNavigation !== pending ||
+          pending.generation !== generation
+        )
+          return;
+        promoteStagedNavigation(pending, result.revision, data.lease);
+        return;
+      }
+      if (
+        iframe.contentWindow !== sourceWindow ||
+        generation !== loadGeneration
+      )
+        return;
       revision = result.revision;
       activeProbeLease = data.lease;
       navigationPending = false;
+      navigationInFlight = false;
+      entryNavigationRevision = result.revision;
+      entryNavigationAttempts = 0;
       localLimitation = undefined;
       if (state) delete state.limitation;
       clearTimeout(readyTimer);
@@ -390,7 +803,7 @@ const shellJs = embeddedJavaScript(String.raw`(() => {
   }
 
   function annotationActive() {
-    return mode === "annotate" && revision !== undefined && activeProbeLease !== undefined && !limitationReason();
+    return !reviewConnectionClosed && mode === "annotate" && entryAvailable && !navigationInFlight && !entryRevisionPending() && revision !== undefined && activeProbeLease !== undefined && !limitationReason();
   }
 
   function takeSelectionToken() {
@@ -433,14 +846,22 @@ const shellJs = embeddedJavaScript(String.raw`(() => {
   }
 
   window.addEventListener("message", (event) => {
-    if (event.source !== iframe.contentWindow || event.origin !== contentOrigin) return;
+    const fromCurrentFrame = event.source === iframe.contentWindow;
+    const fromStagedFrame =
+      stagedNavigation?.frame.contentWindow === event.source;
+    if (
+      (!fromCurrentFrame && !fromStagedFrame) ||
+      event.origin !== contentOrigin
+    )
+      return;
     const data = event.data;
     if (!data || data.channel !== channel || data.version !== version || typeof data.type !== "string") return;
     if (data.type === "probe_ready" && exactKeys(data, ["channel", "lease", "revision", "type", "version"]) && /^[0-9a-f]{32}$/.test(data.lease) && /^sha256:[0-9a-f]{64}$/.test(data.revision)) {
-      activateProbe(data);
+      activateProbe(data, event.source);
       return;
     }
     if (
+      fromCurrentFrame &&
       (data.type === "target_preview" || data.type === "target_selected" || data.type === "target_cleared") &&
       annotationActive() &&
       data.lease === activeProbeLease &&
@@ -449,7 +870,9 @@ const shellJs = embeddedJavaScript(String.raw`(() => {
       scheduleTargetMessage(data);
   });
 
-  iframe.addEventListener("load", () => {
+  function handleCurrentFrameLoad() {
+    if (reviewConnectionClosed) return;
+    discardStagedNavigation();
     const generation = ++loadGeneration;
     navigationPending = navigationPending || revision !== undefined;
     revision = undefined;
@@ -466,14 +889,18 @@ const shellJs = embeddedJavaScript(String.raw`(() => {
       if (generation !== loadGeneration) return;
       refresh(generation).catch(() => undefined).finally(() => {
         if (generation !== loadGeneration || revision) return;
+        navigationInFlight = false;
         if (!state?.limitation) localLimitation = navigationPending ? "unsupported_navigation" : "instrumentation_unavailable";
         renderLimitation();
       });
     }, 1800);
     readyIntervalTimer = setTimeout(stopModeRetry, 2000);
-  });
+  }
+
+  iframe.addEventListener("load", handleCurrentFrameLoad);
 
   async function queueDraft() {
+    if (reviewConnectionClosed) return;
     if (draftSaveInFlight) {
       announce("Draft save already in progress");
       return;
@@ -509,13 +936,13 @@ const shellJs = embeddedJavaScript(String.raw`(() => {
     }
     finally {
       draftSaveInFlight = false;
-      byId("queue-comment").disabled = false;
       render();
     }
   }
 
   const selectedIds = () => [...draftList.querySelectorAll('input[type="checkbox"]:checked')].map((input) => input.dataset.id);
   async function publish(end, discardRemaining = false) {
+    if (reviewConnectionClosed) return;
     if (end && (draftSaveInFlight || (!editor.hidden && (editorDirty || editorSaving)))) {
       announce("Save or cancel the current comment before ending the review");
       return;
@@ -528,10 +955,13 @@ const shellJs = embeddedJavaScript(String.raw`(() => {
     const route = end ? "/.htmlview/api/end" : "/.htmlview/api/send";
     try {
       const result = await api(route, { method: "POST", body: JSON.stringify(end ? { drafts: ids, discard_remaining: discardRemaining } : { drafts: ids }) });
+      if (reviewConnectionClosed) return;
       if (end) {
-        status.textContent = "Feedback sent · review ended";
+        terminateReviewConnection(
+          "Feedback sent · review ended",
+          "Feedback sent and review ended",
+        );
         draftsPanel.replaceChildren();
-        announce("Feedback sent and review ended");
       } else {
         state = { ...state, drafts: state.drafts.filter((draft) => !ids.includes(draft.id)) };
         try {
@@ -570,7 +1000,21 @@ const shellJs = embeddedJavaScript(String.raw`(() => {
     editorDirty = comment.value.length > 0;
   });
   window.addEventListener("resize", () => highlight.removeAttribute("data-visible"));
-  refresh().catch((error) => { limitation.hidden = false; limitation.textContent = error.message; });
+  document.addEventListener("visibilitychange", () => {
+    if (document.hidden) {
+      if (entryPollPhase === "active") suspendEntryPolling("paused");
+      return;
+    }
+    resumeEntryPolling();
+  });
+  window.addEventListener("pagehide", () => {
+    if (entryPollPhase === "active") suspendEntryPolling("paused");
+  });
+  window.addEventListener("pageshow", resumeEntryPolling);
+  if (document.hidden) suspendEntryPolling("paused");
+  refresh()
+    .then(pollEntry)
+    .catch((error) => { limitation.hidden = false; limitation.textContent = error.message; });
 })();`);
 
 function probeJavaScript(lease: string): string {

@@ -1,8 +1,8 @@
 # Product requirements
 
 > **Status:** This is the accepted `0.1.0` target. Raw serving, Effect CLI,
-> foreground/private diagnostics, and the annotation runtime are implemented;
-> automatic selected-entry refresh and release hardening remain. See
+> foreground/private diagnostics, annotation runtime, and automatic
+> selected-entry refresh are implemented; release hardening remains. See
 > [the repository plan](https://github.com/sjunepark/htmlview/blob/main/PLAN.md)
 > for implementation status.
 

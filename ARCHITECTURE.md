@@ -4,9 +4,8 @@
 
 The raw-serving core, per-user supervisor, Effect execution model, Effect CLI,
 foreground/private diagnostic sinks, review lifecycle, trusted browser review
-surface, and its authenticated probe-readiness boundary are implemented.
-Automatic selected-entry refresh is the next accepted slice; packaging and the
-final release matrix follow it. The repository
+surface, authenticated probe-readiness boundary, and automatic selected-entry
+refresh are implemented. Packaging and the final release matrix remain. The repository
 [implementation plan](https://github.com/sjunepark/htmlview/blob/main/PLAN.md)
 owns their sequencing.
 
@@ -44,7 +43,7 @@ short-lived agent CLI
         +-- review lifecycle
                 +-- trusted shell origin
                 +-- instrumented-content origin --> granted files
-                +-- selected-entry observer (next) --> shell iframe reload
+                +-- selected-entry observer --> shell iframe reload
                 +-- durable feedback queue --> foreground agent wait
 ```
 
@@ -256,9 +255,9 @@ write fails. Forced process shutdown instead closes every listener before
 releasing control and ownership, then reports the persistence failure; startup
 recovery converts any resulting orphaned `ready` record to `stopped`.
 
-### Automatic selected-entry refresh (accepted, pending)
+### Automatic selected-entry refresh (implemented)
 
-A ready review will own one scoped observer for the fixed pathname represented
+A ready review owns one scoped observer for the fixed pathname represented
 by its public entry route, not the complete serving grant or its initial
 canonical target. Filesystem or metadata notifications are hints: the observer
 reauthorizes the path's current regular-file target before publishing browser
@@ -267,11 +266,17 @@ entry exists; a content-change notification requires a confirmed different byte
 revision. Bursts are coalesced so ordinary editor writes and atomic path
 replacement produce one stable transition rather than a reload storm.
 
-The trusted shell receives a bounded same-origin change notification and
-reloads only its instrumented-content iframe. Durable drafts retain their
-capture revisions; transient selection, highlight, and unsaved element context
-from the replaced DOM are cleared. The new document cannot accept annotations
-until it completes the existing one-use probe and lease handshake.
+The trusted shell polls a bounded same-origin entry-state endpoint and
+stages replacement content in a second isolated iframe. Durable drafts retain
+their capture revisions; transient selection, highlight, and unsaved element
+context from the replaced DOM are cleared. The shell promotes the candidate and
+discards the prior frame only after the new document completes the existing
+one-use probe and lease handshake; failed candidates are discarded without
+replacing the rendered document. Every
+observer-driven navigation capability also carries the expected confirmed
+revision. The content handler rejects different bytes before creating a probe
+or recording a limitation derived from those mismatched bytes, and the shell
+retries without confusing manual Explore navigation with automatic refresh.
 
 If the fixed pathname is temporarily missing, forbidden, or unreadable, the
 shell keeps the last successfully rendered iframe visible, shows an unavailable
@@ -280,11 +285,15 @@ authorized return to the same bytes re-enables annotation without reload; a new
 revision reloads normally. Readable but unsupported bytes use the existing
 explicit review-limitation flow.
 
-The observer and notification resources belong to the ready review scope.
-Failed acquisition, stop, End, deletion, shutdown, and interruption close them
-without keeping retained review state or an otherwise empty supervisor alive.
-Raw serving remains passive: its next request reads current bytes, while an
-already-loaded raw page or other consumer refreshes only under its own control.
+The observer and notification resources belong to the ready review scope. A
+shell polls in one of three phases: active, hidden/page-lifecycle paused, or terminal.
+Local End enters terminal immediately; peer End, stop, deletion, and listener
+shutdown enter it after a bounded failure budget. Terminal shells preserve the
+last iframe read-only and never resume polling. Failed acquisition, shutdown,
+and interruption likewise close server-owned resources without keeping
+retained review state or an otherwise empty supervisor alive. Raw serving
+remains passive: its next request reads current bytes, while an already-loaded
+raw page or other consumer refreshes only under its own control.
 
 ## Runtime flows
 
@@ -314,7 +323,7 @@ already-loaded raw page or other consumer refreshes only under its own control.
 5. The CLI emits one bounded result. Cancelling a waiter changes neither cursor
    nor stored event state.
 
-### Edit-review loop (accepted next slice)
+### Edit-review loop (implemented)
 
 1. A ready review observes its original selected entry outside the raw request
    path.
@@ -380,9 +389,8 @@ workers. Raw and review lifecycle mutations share one serialization boundary;
 target review mutations are serialized per review, and at most one foreground
 feedback wait is active for each review. The automatic-refresh slice adds at
 most one selected-entry observer per ready review and bounded shell
-notification work; its exact cadence, coalescing, request/subscription limits,
-and reconnect policy must be recorded with implementation evidence before
-release.
+notification work. Exact cadence, coalescing, request limits, and terminal
+retry policy are recorded in Security Validation.
 
 Exact body, connection, timer, and state limits are implementation constants in
 [Security validation](docs/SECURITY_VALIDATION.md), not user-facing tuning
@@ -402,6 +410,8 @@ flags.
 - `src/serving/http.ts`: byte-faithful raw HTTP policy and response assembly.
 - `src/serving/review.ts`: isolated review-origin routing, browser authorization,
   state projection, and durable mutation bridge.
+- `src/serving/review-entry-observer.ts`: scoped fixed-entry observation,
+  authorization, byte-revision confirmation, coalescing, and availability state.
 - `src/serving/instrumented-entry.ts`: byte-preserving selected-entry probe
   insertion and explicit instrumentation limitations.
 - `src/serving/review-assets.ts`, `src/serving/review-browser-protocol.ts`:

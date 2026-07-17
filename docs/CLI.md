@@ -1,8 +1,8 @@
 # Agent-facing CLI contract
 
-> **Status:** This is the implemented `0.1.0` command interface. The review and
-> durable-feedback runtime is implemented; automatic selected-entry refresh is
-> the next implementation slice. Track that surface in
+> **Status:** This is the implemented `0.1.0` command interface. The review,
+> durable-feedback, and automatic selected-entry refresh runtimes are
+> implemented. Track release hardening in
 > [the repository plan](https://github.com/sjunepark/htmlview/blob/main/PLAN.md).
 
 ## Purpose

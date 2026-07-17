@@ -24,6 +24,7 @@ export type ReviewEntryTransform =
   | {
       readonly outcome: "unsupported";
       readonly reason: ReviewEntryLimitation;
+      readonly revision: `sha256:${string}`;
     };
 
 const utf8Bom = Buffer.from([0xef, 0xbb, 0xbf]);
@@ -270,13 +271,15 @@ export function transformReviewEntry(
   contentOrigin: string,
   probePath: string,
 ): ReviewEntryTransform {
+  const revision =
+    `sha256:${createHash("sha256").update(source).digest("hex")}` as const;
   if (source.length > maximumInstrumentedEntryBytes)
-    return { outcome: "unsupported", reason: "entry_too_large" };
+    return { outcome: "unsupported", reason: "entry_too_large", revision };
   if (
     (source[0] === 0xff && source[1] === 0xfe) ||
     (source[0] === 0xfe && source[1] === 0xff)
   )
-    return { outcome: "unsupported", reason: "unsupported_encoding" };
+    return { outcome: "unsupported", reason: "unsupported_encoding", revision };
 
   const bomBytes = source.subarray(0, 3).equals(utf8Bom) ? 3 : 0;
   const encoded = source.subarray(bomBytes);
@@ -284,10 +287,10 @@ export function transformReviewEntry(
   try {
     decoded = new TextDecoder("utf-8", { fatal: true }).decode(encoded);
   } catch {
-    return { outcome: "unsupported", reason: "unsupported_encoding" };
+    return { outcome: "unsupported", reason: "unsupported_encoding", revision };
   }
   if (decoded.includes("\0"))
-    return { outcome: "unsupported", reason: "unsupported_encoding" };
+    return { outcome: "unsupported", reason: "unsupported_encoding", revision };
 
   const errors: ParserError[] = [];
   const document = parse(decoded, {
@@ -298,16 +301,13 @@ export function transformReviewEntry(
     errors.some((error) => fatalParseErrors.has(error.code)) ||
     hasUnsafeInsertionState(document)
   )
-    return { outcome: "unsupported", reason: "unsupported_markup" };
+    return { outcome: "unsupported", reason: "unsupported_markup", revision };
 
   const head = findElement(document, "head");
   if (head !== undefined && !declaredEncodingIsUtf8(head))
-    return { outcome: "unsupported", reason: "unsupported_encoding" };
+    return { outcome: "unsupported", reason: "unsupported_encoding", revision };
   if (head !== undefined && !cspAllowsProbe(head))
-    return { outcome: "unsupported", reason: "csp_blocked" };
-
-  const revision =
-    `sha256:${createHash("sha256").update(source).digest("hex")}` as const;
+    return { outcome: "unsupported", reason: "csp_blocked", revision };
   if (!/^\/\.htmlview\/probe\/[0-9a-f]{32}\.js$/.test(probePath))
     throw new TypeError("Invalid review probe path");
   const probeUrl = new URL(probePath, exactContentOrigin(contentOrigin));
@@ -316,7 +316,7 @@ export function transformReviewEntry(
   );
   const characterOffset = insertionOffset(document);
   if (hasAuthoredElementBeforeProbe(document, characterOffset))
-    return { outcome: "unsupported", reason: "unsupported_markup" };
+    return { outcome: "unsupported", reason: "unsupported_markup", revision };
   const byteOffset =
     bomBytes + Buffer.byteLength(decoded.slice(0, characterOffset), "utf8");
   return {
