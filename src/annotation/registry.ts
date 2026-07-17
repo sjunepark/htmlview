@@ -78,7 +78,14 @@ type PreparedFeedback =
 
 type PreparedDelete =
   | { readonly kind: "result"; readonly result: DeleteReviewResult }
-  | { readonly kind: "prepared" };
+  | { readonly kind: "prepared"; readonly reservation: DeleteReservation };
+
+interface DeleteReservation {
+  readonly token: symbol;
+  readonly reviewId: string;
+  readonly review: PersistedReview | undefined;
+  readonly tombstone: AnnotationState["tombstones"][number] | undefined;
+}
 
 const tombstoneRetentionMilliseconds = 24 * 60 * 60 * 1000;
 
@@ -106,6 +113,7 @@ function sameIdentity(left: ReviewIdentity, right: ReviewIdentity): boolean {
 export class AnnotationRegistry {
   readonly #mutations = Semaphore.makeUnsafe(1);
   readonly #waiters = new Map<string, ReviewWaiter>();
+  readonly #deleteReservations = new Map<string, DeleteReservation>();
   #state: AnnotationState;
 
   constructor(
@@ -152,16 +160,21 @@ export class AnnotationRegistry {
   }): Effect.Effect<PersistedReview, ReviewError | RuntimeStateError> {
     return this.#mutations.withPermit(
       Effect.gen({ self: this }, function* () {
-        if (this.#state.reviews.length >= this.maximumRetainedReviews)
-          return yield* new ReviewError({
-            code: "review.limit",
-            message: `Retained review limit of ${this.maximumRetainedReviews} reached`,
-          });
         if (this.hasIdentifier(input.id))
           return yield* new ReviewError({
             code: "review.limit",
             message:
               "A generated review identifier collided with retained state",
+          });
+        if (this.openReview(input.identity) !== undefined)
+          return yield* new ReviewError({
+            code: "review.not_ready",
+            message: "An open review already exists for the selected entry",
+          });
+        if (this.#state.reviews.length >= this.maximumRetainedReviews)
+          return yield* new ReviewError({
+            code: "review.limit",
+            message: `Retained review limit of ${this.maximumRetainedReviews} reached`,
           });
         const record: PersistedReview = {
           id: input.id,
@@ -195,6 +208,11 @@ export class AnnotationRegistry {
   ): Effect.Effect<PersistedReview, ReviewError | RuntimeStateError> {
     return this.#mutations.withPermit(
       Effect.gen({ self: this }, function* () {
+        if (this.#deleteReservations.has(id))
+          return yield* new ReviewError({
+            code: "review.not_ready",
+            message: "The review is being deleted",
+          });
         const index = this.#state.reviews.findIndex(
           (review) => review.id === id,
         );
@@ -404,10 +422,12 @@ export class AnnotationRegistry {
           this.#prepareDelete(reviewId, discardFeedback),
         );
         if (prepared.kind === "result") return prepared.result;
-        yield* closeLiveReview;
-        return yield* this.#mutations.withPermit(
-          this.#commitDelete(reviewId, discardFeedback),
-        );
+        return yield* Effect.gen({ self: this }, function* () {
+          yield* closeLiveReview;
+          return yield* this.#mutations.withPermit(
+            this.#commitDelete(prepared.reservation, discardFeedback),
+          );
+        }).pipe(Effect.ensuring(this.#releaseDelete(prepared.reservation)));
       }),
     );
   }
@@ -419,6 +439,11 @@ export class AnnotationRegistry {
     return Effect.gen({ self: this }, function* () {
       const now = yield* Clock.currentTimeMillis;
       yield* this.#expireTombstones(now);
+      if (this.#deleteReservations.has(reviewId))
+        return yield* new ReviewError({
+          code: "review.not_ready",
+          message: "The review is already being deleted",
+        });
       const existingTombstone = this.#state.tombstones.find(
         (tombstone) => tombstone.id === reviewId,
       );
@@ -458,20 +483,44 @@ export class AnnotationRegistry {
         yield* this.#replace({ ...this.#state, reviews });
         this.#wake(reviewId);
       }
-      return { kind: "prepared" as const };
+      const reservation: DeleteReservation = {
+        token: Symbol(reviewId),
+        reviewId,
+        review: this.#state.reviews[this.#reviewIndex(reviewId)],
+        tombstone: this.#state.tombstones.find(
+          (tombstone) => tombstone.id === reviewId,
+        ),
+      };
+      this.#deleteReservations.set(reviewId, reservation);
+      return { kind: "prepared" as const, reservation };
     });
   }
 
   #commitDelete(
-    reviewId: string,
+    reservation: DeleteReservation,
     discardFeedback: boolean,
   ): Effect.Effect<DeleteReviewResult, ReviewError | RuntimeStateError> {
     return Effect.gen({ self: this }, function* () {
+      const reviewId = reservation.reviewId;
+      if (this.#deleteReservations.get(reviewId)?.token !== reservation.token)
+        return yield* new ReviewError({
+          code: "review.not_ready",
+          message: "The review deletion reservation is no longer active",
+        });
       const now = yield* Clock.currentTimeMillis;
       yield* this.#expireTombstones(now);
       const existingTombstone = this.#state.tombstones.find(
         (tombstone) => tombstone.id === reviewId,
       );
+      const review = this.#state.reviews[this.#reviewIndex(reviewId)];
+      if (
+        review !== reservation.review ||
+        existingTombstone !== reservation.tombstone
+      )
+        return yield* new ReviewError({
+          code: "review.not_ready",
+          message: "The review changed while deletion was in progress; retry",
+        });
       if (existingTombstone?.kind === "deleted")
         return {
           review: reviewId,
@@ -479,7 +528,6 @@ export class AnnotationRegistry {
           discardedDrafts: existingTombstone.discardedDrafts,
           discardedFeedback: existingTombstone.discardedFeedback,
         };
-      const review = this.#state.reviews[this.#reviewIndex(reviewId)];
       if (review === undefined && existingTombstone === undefined)
         return yield* this.#reviewNotFound(reviewId);
       const drafts = review?.drafts.length ?? 0;
@@ -516,6 +564,7 @@ export class AnnotationRegistry {
           },
         ],
       });
+      this.#deleteReservations.delete(reviewId);
       this.#wake(reviewId);
       return {
         review: reviewId,
@@ -523,6 +572,16 @@ export class AnnotationRegistry {
         discardedDrafts: drafts,
         discardedFeedback: feedback,
       };
+    });
+  }
+
+  #releaseDelete(reservation: DeleteReservation): Effect.Effect<void> {
+    return Effect.sync(() => {
+      if (
+        this.#deleteReservations.get(reservation.reviewId)?.token ===
+        reservation.token
+      )
+        this.#deleteReservations.delete(reservation.reviewId);
     });
   }
 

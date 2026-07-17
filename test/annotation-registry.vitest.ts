@@ -2,7 +2,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { expect, it } from "@effect/vitest";
-import { Effect, Fiber, Scope } from "effect";
+import { Deferred, Effect, Fiber, Scope } from "effect";
 import { TestClock } from "effect/testing";
 import { AnnotationRegistry } from "../src/annotation/registry.js";
 import { emptyAnnotationState } from "../src/annotation/model.js";
@@ -67,6 +67,86 @@ it.effect(
         ).toBe("session2");
         expect((yield* loadAnnotationState(paths)).reviews[0]?.status).toBe(
           "stopped",
+        );
+      }),
+    ),
+);
+
+it.effect(
+  "rejects concurrent duplicate open identities as a domain error",
+  () =>
+    withTemporaryState((paths) =>
+      Effect.gen(function* () {
+        const registry = new AnnotationRegistry(paths, emptyAnnotationState());
+        const results = yield* Effect.all(
+          [firstId, secondId].map((id) =>
+            registry
+              .createReady({
+                id,
+                identity: { root: "/workspace", entry: "/report.html" },
+                session: "session1",
+              })
+              .pipe(Effect.result),
+          ),
+          { concurrency: "unbounded" },
+        );
+        expect(
+          results.filter((result) => result._tag === "Success"),
+        ).toHaveLength(1);
+        const failure = results.find((result) => result._tag === "Failure");
+        expect(
+          failure?._tag === "Failure" ? failure.failure.code : undefined,
+        ).toBe("review.not_ready");
+        expect(registry.summaries()).toHaveLength(1);
+        expect((yield* loadAnnotationState(paths)).reviews).toHaveLength(1);
+      }),
+    ),
+);
+
+it.effect(
+  "reserves a prepared deletion against resume and clears failures",
+  () =>
+    withTemporaryState((paths) =>
+      Effect.gen(function* () {
+        const registry = new AnnotationRegistry(paths, emptyAnnotationState());
+        yield* registry.createReady({
+          id: firstId,
+          identity: { root: "/workspace", entry: "/report.html" },
+          session: "session1",
+        });
+        const closeStarted = Deferred.makeUnsafe<void>();
+        const releaseClose = Deferred.makeUnsafe<void>();
+        const deleting = yield* registry
+          .deleteReview(
+            firstId,
+            false,
+            Deferred.succeed(closeStarted, undefined).pipe(
+              Effect.andThen(Deferred.await(releaseClose)),
+            ),
+          )
+          .pipe(Effect.forkChild);
+        yield* Deferred.await(closeStarted);
+        expect(
+          (yield* registry.resumeReady(firstId, "session2").pipe(Effect.flip))
+            .code,
+        ).toBe("review.not_ready");
+        yield* Deferred.succeed(releaseClose, undefined);
+        expect(yield* Fiber.join(deleting)).toMatchObject({ deleted: 1 });
+
+        yield* registry.createReady({
+          id: secondId,
+          identity: { root: "/other", entry: "/other.html" },
+          session: "session2",
+        });
+        yield* registry
+          .deleteReview(
+            secondId,
+            false,
+            Effect.die(new Error("injected close failure")),
+          )
+          .pipe(Effect.catchCause(() => Effect.void));
+        expect((yield* registry.resumeReady(secondId, "session3")).status).toBe(
+          "ready",
         );
       }),
     ),
