@@ -1,0 +1,54 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>Pre-load navigation fixture</title>
+  </head>
+  <body>
+    <p>The instrumented entry should never become ready.</p>
+    <script>
+      const probe = document.querySelector("script[data-htmlview-revision]");
+      const revision = probe.dataset.htmlviewRevision;
+      let capturedReadiness;
+      const fakeParent = {
+        postMessage(data) {
+          if (data?.type === "probe_ready") capturedReadiness = data;
+        },
+      };
+      window.parent = fakeParent;
+      const parentShadowed = window.parent === fakeParent;
+      const nativeAddEventListener = window.addEventListener;
+      window.addEventListener = function (type, listener, options) {
+        if (type === "message") {
+          listener(
+            new MessageEvent("message", {
+              data: {
+                channel: "htmlview.review",
+                version: 1,
+                type: "set_mode",
+                mode: "annotate",
+              },
+              origin: location.origin,
+              source: fakeParent,
+            }),
+          );
+        }
+        return nativeAddEventListener.call(this, type, listener, options);
+      };
+      setTimeout(() => {
+        const lease = capturedReadiness?.lease ?? "0".repeat(32);
+        const payload = JSON.stringify({
+          channel: "htmlview.review",
+          version: 1,
+          type: "probe_ready",
+          lease,
+          revision,
+        });
+        const replacement = `<!doctype html><p id="replacement">Replaced before entry load</p><p id="shadowed">${parentShadowed ? "shadowed" : "native"}</p><p id="captured">${capturedReadiness ? "captured" : "isolated"}</p><script>top.postMessage(${payload}, "*")<\/script>`;
+        document.open();
+        document.write(replacement);
+        document.close();
+      }, 0);
+    </script>
+  </body>
+</html>

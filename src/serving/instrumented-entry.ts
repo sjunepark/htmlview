@@ -6,7 +6,7 @@ import {
   type ParserError,
 } from "parse5";
 
-export const reviewProbePath = "/.htmlview/probe.js";
+export const reviewProbePathPrefix = "/.htmlview/probe/";
 export const maximumInstrumentedEntryBytes = 8 * 1024 * 1024;
 
 export type ReviewEntryLimitation =
@@ -203,7 +203,7 @@ function hasUnsafeInsertionState(
     }
     if (
       element.tagName === "script" &&
-      attribute(element, "src") === reviewProbePath
+      attribute(element, "src")?.startsWith(reviewProbePathPrefix) === true
     ) {
       unsafe = true;
       return false;
@@ -212,17 +212,44 @@ function hasUnsafeInsertionState(
   return unsafe;
 }
 
-function insertionOffset(
-  document: DefaultTreeAdapterTypes.Document,
-  sourceLength: number,
-): number {
-  const body = findElement(document, "body");
-  if (body?.sourceCodeLocation?.endTag !== undefined)
-    return body.sourceCodeLocation.endTag.startOffset;
+function insertionOffset(document: DefaultTreeAdapterTypes.Document): number {
+  // The probe is a classic parser-blocking script. Placing it at the first
+  // parser-created head position lets it capture browser intrinsics before any
+  // authored script can replace them. Explicit head/html start tags preserve
+  // preceding comments and the document mode selected by an authored doctype.
   const html = findElement(document, "html");
-  if (html?.sourceCodeLocation?.endTag !== undefined)
-    return html.sourceCodeLocation.endTag.startOffset;
-  return sourceLength;
+  const head = findElement(document, "head");
+  if (head?.sourceCodeLocation?.startTag !== undefined)
+    return head.sourceCodeLocation.startTag.endOffset;
+  if (html?.sourceCodeLocation?.startTag !== undefined)
+    return html.sourceCodeLocation.startTag.endOffset;
+
+  const doctype = document.childNodes.find(
+    (node) => node.nodeName === "#documentType",
+  );
+  if (doctype?.sourceCodeLocation != null)
+    return doctype.sourceCodeLocation.endOffset;
+  return 0;
+}
+
+function hasAuthoredElementBeforeProbe(
+  document: DefaultTreeAdapterTypes.Document,
+  offset: number,
+): boolean {
+  let authoredElement = false;
+  walkElements(document, (element) => {
+    const start = element.sourceCodeLocation?.startTag?.startOffset;
+    if (
+      start !== undefined &&
+      start < offset &&
+      element.tagName !== "html" &&
+      element.tagName !== "head"
+    ) {
+      authoredElement = true;
+      return false;
+    }
+  });
+  return authoredElement;
 }
 
 function exactContentOrigin(value: string): URL {
@@ -241,6 +268,7 @@ function exactContentOrigin(value: string): URL {
 export function transformReviewEntry(
   source: Buffer,
   contentOrigin: string,
+  probePath: string,
 ): ReviewEntryTransform {
   if (source.length > maximumInstrumentedEntryBytes)
     return { outcome: "unsupported", reason: "entry_too_large" };
@@ -280,11 +308,15 @@ export function transformReviewEntry(
 
   const revision =
     `sha256:${createHash("sha256").update(source).digest("hex")}` as const;
-  const probeUrl = new URL(reviewProbePath, exactContentOrigin(contentOrigin));
+  if (!/^\/\.htmlview\/probe\/[0-9a-f]{32}\.js$/.test(probePath))
+    throw new TypeError("Invalid review probe path");
+  const probeUrl = new URL(probePath, exactContentOrigin(contentOrigin));
   const script = Buffer.from(
-    `<script src="${probeUrl.href}" data-htmlview-revision="${revision}"></script>`,
+    `<meta charset="utf-8"><script src="${probeUrl.href}" data-htmlview-revision="${revision}"></script>`,
   );
-  const characterOffset = insertionOffset(document, decoded.length);
+  const characterOffset = insertionOffset(document);
+  if (hasAuthoredElementBeforeProbe(document, characterOffset))
+    return { outcome: "unsupported", reason: "unsupported_markup" };
   const byteOffset =
     bomBytes + Buffer.byteLength(decoded.slice(0, characterOffset), "utf8");
   return {

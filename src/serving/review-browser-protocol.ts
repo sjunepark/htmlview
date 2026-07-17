@@ -12,6 +12,11 @@ import {
 
 const strict = { onExcessProperty: "error" } as const;
 
+export const ActivateProbeRequestSchema = Schema.Struct({
+  lease: Schema.String.check(Schema.isPattern(/^[0-9a-f]{32}$/)),
+});
+export type ActivateProbeRequest = typeof ActivateProbeRequestSchema.Type;
+
 export const QueueDraftRequestSchema = Schema.Union([
   Schema.Struct({
     kind: Schema.Literal("element"),
@@ -50,6 +55,10 @@ export type EndReviewRequest = typeof EndReviewRequestSchema.Type;
 
 export const decodeQueueDraftRequest = Schema.decodeUnknownResult(
   QueueDraftRequestSchema,
+  strict,
+);
+export const decodeActivateProbeRequest = Schema.decodeUnknownResult(
+  ActivateProbeRequestSchema,
   strict,
 );
 export const decodeSendDraftsRequest = Schema.decodeUnknownResult(

@@ -18,9 +18,9 @@ first-release feature. Its public contracts are accepted. The Effect CLI,
 native output boundary, symmetric state/grant exclusion, foreground/private
 diagnostic sinks, durable annotation delivery, and the trusted browser review
 surface are implemented. Release hardening remains, so `0.1.0` is not ready to
-publish. The annotation authorization, hostile-content, and explicit
-instrumentation-limitation matrices now pass; packaging and the final release
-matrix remain.
+publish. The annotation authorization, hostile-content, authenticated
+probe-readiness, and explicit instrumentation-limitation matrices now pass;
+packaging and the final release matrix remain.
 
 Documentation now has explicit ownership and current-versus-target status; see
 [`docs/README.md`](docs/README.md). There is no external blocker.

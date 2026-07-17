@@ -2,6 +2,8 @@
 
 - Status: Accepted
 - Date: 2026-07-16
+- Amended: 2026-07-17 to authenticate document readiness with one-use probe
+  leases
 - Extends: [ADR 0001](0001-separate-serving-from-browser-control.md)
 - Related: [ADR 0009](0009-adopt-effect-cli-and-logging.md) defines the CLI and
   diagnostic boundary
@@ -43,6 +45,19 @@ explicit review attached to a live raw session:
   context through a strictly validated message boundary. Authored scripts may
   still forge target messages; `0.1.0` does not claim annotation authenticity
   against malicious rendered code.
+- Only the shell's cross-site iframe-navigation requests for the selected entry
+  receive instrumentation; same-origin nested iframe loads remain raw. Each
+  transformed response references a one-use random probe URL. That URL serves
+  one uncached script containing a separate random lease which is absent from
+  the HTML; the shell must redeem the lease through its protected mutation API
+  before the entry revision becomes active. Replays, ordinary authored fetches,
+  synthetic mode messages, and forged `probe_ready` messages fail closed. The
+  parser-blocking probe runs before authored scripts and captures the real
+  parent plus pristine messaging primitives, keeping its lease inaccessible
+  even if authored code later shadows browser globals.
+  Service-worker script requests are unavailable on the fresh content origin
+  so authored code cannot intercept the one-use response. This authenticates
+  document readiness, not the target metadata that the document later reports.
 - Review mutations require the exact shell authority and origin. Browser routes
   never expose raw-session creation or stop, root selection, listing, or other
   supervisor control, which remains on the user-private Unix socket.
@@ -117,8 +132,9 @@ source changes.
   closely than an opaque-origin iframe while keeping comment text out of the
   authored page's realm.
 - Review rendering still differs from raw rendering because it is framed,
-  sandboxed, and instrumented. Those differences are explicit product output
-  and release-test subjects.
+  sandboxed, instrumented, and unable to install a content-origin service
+  worker. Those differences are explicit product output and release-test
+  subjects.
 - Durable drafts and cursor acknowledgement add bounded private state and
   lifecycle transitions that the supervisor must serialize and recover.
 - Release evidence must compare the raw HTTP contract before and after review

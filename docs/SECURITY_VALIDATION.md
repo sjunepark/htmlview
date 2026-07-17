@@ -7,39 +7,40 @@ set; Linux package installation is the separate
 implemented raw-serving, native CLI, logging, annotation, and browser-review
 baseline. The separate release commands still must pass before `0.1.0`.
 
-| Control or adversarial case                                             | Evidence                                                                                                                    |
-| ----------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------- |
-| Loopback content, private Unix control socket, and no public bind       | Fixed addresses in `src/serving/listener.ts` and `src/supervisor/server.ts`; strict CLI unknown-flag tests                  |
-| Exact content and control `Host` validation                             | Forged, missing, wrong-port, case, trailing-dot, and duplicate-Host HTTP/control/review tests                               |
-| Fresh, high-entropy session names                                       | `generateSessionHostname()` uses 128 random bits; lifecycle and browser-origin tests require distinct observed hostnames    |
-| No permissive CORS; foreign page cannot read content                    | response-header integration test and Playwright cross-origin fetch test                                                     |
-| Raw browser responses require cache revalidation                        | `Cache-Control: no-cache` assertions in HTTP integration and Playwright raw-handler checks                                  |
-| Entry/root disclosure, broad-root and state-beneath-root rejection      | `test/grant.vitest.ts`, current supervisor overlap test, raw HTTP tests, and complete browser fixture                       |
-| Plain/encoded traversal, malformed UTF-8, controls, separators, Unicode | generated single-decode and Unicode filename cases in `test/http.integration.vitest.ts`                                     |
-| Root containment and entry escape                                       | 500 generated containment shapes plus default/explicit grant tests                                                          |
-| Symlink escape and replacement during concurrent requests               | fixed escape and 80 concurrent swap/request cases in `test/http.integration.vitest.ts`                                      |
-| Read-only source behavior and no project-local state                    | project-clean detached E2E, fixture directory assertions, and external state-path tests                                     |
-| Private socket authorization and bounded bodies                         | `0700`/`0600`, wrong-Host, 65 KiB body, and non-portable socket-path tests                                                  |
-| Authoritative ownership and safe stale recovery                         | list/serve transient-health preservation, live foreign owner, killed-owner recovery, mismatch, and lock fencing             |
-| Concurrent startup, sessions, crashes, and idempotent cleanup           | detached E2E plus supervisor concurrency, SIGKILL, SIGTERM, and stop no-op tests                                            |
-| Header, connection, request, and shutdown bounds                        | server configuration plus oversized-body, FIFO, growing/large-file, held-request, and aborted-reader tests                  |
-| Cancellation and acquisition cleanup                                    | interruption tests for ownership, listener acquisition/readiness, transport/body reads, streams, and supervisor root scope  |
-| Finalizer failure isolation                                             | injected session-scope finalizer defect plus failure/interruption cleanup for files, listeners, control, and ownership      |
-| Browser cookies, storage, cache, and service-worker isolation           | five-case Playwright origin suite in `validation/browser-origin/`                                                           |
-| Structured-output injection and shape preservation                      | official TOON v3.3 fixtures plus 500 generated hostile-value round trips through TOON and JSON                              |
-| Effect CLI grammar and native/domain channel separation                 | `test/command.vitest.ts`, `test/app.vitest.ts`, and black-box metadata/syntax/log-level cases in `test-e2e/cli.test.mjs`    |
-| Browser-controller separation                                           | real CLI URL checks under `validation/interoperability/`; package contents reject `validation/` files                       |
-| Reproducible package version and lifecycle                              | clean-prefix pack/install/serve/reinstall/uninstall checks on the current platform and Node 22 Debian                       |
-| Bundle dependency, license, and map policy                              | exact Effect pins, build-time import/license-set checks, third-party notices, linked maps without embedded source content   |
-| Distribution size and process cost                                      | Clean-package measurements recorded in the repository Effect plan cover size, file count, cold commands, readiness, and RSS |
-| State and serving grants are canonically disjoint                       | Equality, inverse nesting, symlink directions, descendant-root, and ordinary disjoint cases at service and supervisor seams |
-| Foreground and detached diagnostics stay separate, private, and bounded | All-level channel tests, closed-event canaries, exact rotation limits, private modes, restart, cleanup, and overlap checks  |
-| Selected-entry instrumentation remains isolated and byte preserving     | Token-aware transform corpus, raw before/after integration comparison, and Playwright raw-byte comparison                   |
-| Annotation state and feedback are durable and bounded                   | Permission/schema/recovery/limit tests; atomic send/end/discard; cursor retry, cancellation, restart, and tombstones        |
-| Human browser feedback reaches the foreground agent                     | Playwright element/freeform queue, shell-only comment, send, explicit-discard End, listener closure, and CLI feedback flow  |
-| Review browser authorization is adversarially complete                  | Ambiguous authority/fetch headers, content-type/method/query variants, no-CORS, and browser capability tests                |
-| Hostile authored content cannot read typed comments                     | Playwright shell API attempts, sandbox/frame-busting, message spoofing, stored XSS, and forged targets                      |
-| Instrumentation failure remains explicit                                | Playwright CSP/encoding/markup limits, navigation/recovery, native controls, modes, and stale revisions                     |
+| Control or adversarial case                                             | Evidence                                                                                                                                          |
+| ----------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Loopback content, private Unix control socket, and no public bind       | Fixed addresses in `src/serving/listener.ts` and `src/supervisor/server.ts`; strict CLI unknown-flag tests                                        |
+| Exact content and control `Host` validation                             | Forged, missing, wrong-port, case, trailing-dot, and duplicate-Host HTTP/control/review tests                                                     |
+| Fresh, high-entropy session names                                       | `generateSessionHostname()` uses 128 random bits; lifecycle and browser-origin tests require distinct observed hostnames                          |
+| No permissive CORS; foreign page cannot read content                    | response-header integration test and Playwright cross-origin fetch test                                                                           |
+| Raw browser responses require cache revalidation                        | `Cache-Control: no-cache` assertions in HTTP integration and Playwright raw-handler checks                                                        |
+| Entry/root disclosure, broad-root and state-beneath-root rejection      | `test/grant.vitest.ts`, current supervisor overlap test, raw HTTP tests, and complete browser fixture                                             |
+| Plain/encoded traversal, malformed UTF-8, controls, separators, Unicode | generated single-decode and Unicode filename cases in `test/http.integration.vitest.ts`                                                           |
+| Root containment and entry escape                                       | 500 generated containment shapes plus default/explicit grant tests                                                                                |
+| Symlink escape and replacement during concurrent requests               | fixed escape and 80 concurrent swap/request cases in `test/http.integration.vitest.ts`                                                            |
+| Read-only source behavior and no project-local state                    | project-clean detached E2E, fixture directory assertions, and external state-path tests                                                           |
+| Private socket authorization and bounded bodies                         | `0700`/`0600`, wrong-Host, 65 KiB body, and non-portable socket-path tests                                                                        |
+| Authoritative ownership and safe stale recovery                         | list/serve transient-health preservation, live foreign owner, killed-owner recovery, mismatch, and lock fencing                                   |
+| Concurrent startup, sessions, crashes, and idempotent cleanup           | detached E2E plus supervisor concurrency, SIGKILL, SIGTERM, and stop no-op tests                                                                  |
+| Header, connection, request, and shutdown bounds                        | server configuration plus oversized-body, FIFO, growing/large-file, held-request, and aborted-reader tests                                        |
+| Cancellation and acquisition cleanup                                    | interruption tests for ownership, listener acquisition/readiness, transport/body reads, streams, and supervisor root scope                        |
+| Finalizer failure isolation                                             | injected session-scope finalizer defect plus failure/interruption cleanup for files, listeners, control, and ownership                            |
+| Browser cookies, storage, cache, and service-worker isolation           | five-case Playwright origin suite in `validation/browser-origin/`                                                                                 |
+| Structured-output injection and shape preservation                      | official TOON v3.3 fixtures plus 500 generated hostile-value round trips through TOON and JSON                                                    |
+| Effect CLI grammar and native/domain channel separation                 | `test/command.vitest.ts`, `test/app.vitest.ts`, and black-box metadata/syntax/log-level cases in `test-e2e/cli.test.mjs`                          |
+| Browser-controller separation                                           | real CLI URL checks under `validation/interoperability/`; package contents reject `validation/` files                                             |
+| Reproducible package version and lifecycle                              | clean-prefix pack/install/serve/reinstall/uninstall checks on the current platform and Node 22 Debian                                             |
+| Bundle dependency, license, and map policy                              | exact Effect pins, build-time import/license-set checks, third-party notices, linked maps without embedded source content                         |
+| Distribution size and process cost                                      | Clean-package measurements recorded in the repository Effect plan cover size, file count, cold commands, readiness, and RSS                       |
+| State and serving grants are canonically disjoint                       | Equality, inverse nesting, symlink directions, descendant-root, and ordinary disjoint cases at service and supervisor seams                       |
+| Foreground and detached diagnostics stay separate, private, and bounded | All-level channel tests, closed-event canaries, exact rotation limits, private modes, restart, cleanup, and overlap checks                        |
+| Selected-entry instrumentation remains isolated and byte preserving     | Token-aware transform corpus, raw before/after integration comparison, and Playwright raw-byte comparison                                         |
+| Annotation state and feedback are durable and bounded                   | Permission/schema/recovery/limit tests; atomic send/end/discard; cursor retry, cancellation, restart, and tombstones                              |
+| Human browser feedback reaches the foreground agent                     | Playwright element/freeform queue, shell-only comment, send, explicit-discard End, listener closure, and CLI feedback flow                        |
+| Review browser authorization is adversarially complete                  | Ambiguous authority/fetch headers, content-type/method/query variants, no-CORS, and browser capability tests                                      |
+| Hostile authored content cannot read typed comments                     | Playwright shell API attempts, sandbox/frame-busting, stored XSS, forged targets, and service-worker rejection                                    |
+| Instrumentation readiness cannot be forged or replayed                  | One-use probe URL/lease, same-origin nested-frame rejection, pristine-parent capture, synthetic events, redemption, replay, and forged navigation |
+| Instrumentation failure remains explicit                                | Playwright CSP/encoding/markup limits, authenticated navigation/recovery, native controls, modes, and stale revisions                             |
 
 ## Required `0.1.0` evidence (pending)
 

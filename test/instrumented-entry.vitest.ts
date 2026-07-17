@@ -3,17 +3,18 @@ import { createHash } from "node:crypto";
 import { describe, it } from "vitest";
 import {
   maximumInstrumentedEntryBytes,
-  reviewProbePath,
+  reviewProbePathPrefix,
   transformReviewEntry,
 } from "../src/serving/instrumented-entry.js";
 
 const contentOrigin = `http://c-${"0".repeat(32)}.localhost:4321`;
+const probePath = `${reviewProbePathPrefix}${"1".repeat(32)}.js`;
 const insertedTag = (revision: string) =>
-  `<script src="${contentOrigin}${reviewProbePath}" data-htmlview-revision="${revision}"></script>`;
+  `<meta charset="utf-8"><script src="${contentOrigin}${probePath}" data-htmlview-revision="${revision}"></script>`;
 
 function instrumented(source: Buffer | string) {
   const bytes = typeof source === "string" ? Buffer.from(source) : source;
-  const result = transformReviewEntry(bytes, contentOrigin);
+  const result = transformReviewEntry(bytes, contentOrigin, probePath);
   if (result.outcome !== "instrumented") throw new Error(result.reason);
   return { source: bytes, ...result };
 }
@@ -22,6 +23,7 @@ function unsupported(source: Buffer | string, reason: string): void {
   const result = transformReviewEntry(
     typeof source === "string" ? Buffer.from(source) : source,
     contentOrigin,
+    probePath,
   );
   assert.deepEqual(result, { outcome: "unsupported", reason });
 }
@@ -45,8 +47,8 @@ describe("instrumented review entry transform", () => {
       original,
     );
     assert.equal(
-      result.body.subarray(offset + tag.length).toString(),
-      "</body></html>",
+      offset,
+      original.indexOf(Buffer.from("<head>")) + Buffer.byteLength("<head>"),
     );
     assert.equal(result.body.indexOf(tag, offset + 1), -1);
   });
@@ -58,11 +60,16 @@ describe("instrumented review entry transform", () => {
     ]);
     const result = instrumented(original);
     assert.deepEqual(result.body.subarray(0, 3), original.subarray(0, 3));
-    assert.equal(
-      result.body.subarray(3, original.length).includes(Buffer.from("🙂")),
-      true,
+    const tag = Buffer.from(insertedTag(result.revision));
+    const offset = result.body.indexOf(tag);
+    assert.deepEqual(
+      Buffer.concat([
+        result.body.subarray(0, offset),
+        result.body.subarray(offset + tag.length),
+      ]),
+      original,
     );
-    assert.equal(result.body.subarray(-9).toString(), "</script>");
+    assert.equal(offset, original.indexOf(Buffer.from("><")) + 1);
   });
 
   it("uses parser locations instead of body-like text in raw and inert content", () => {
@@ -76,9 +83,19 @@ describe("instrumented review entry transform", () => {
       const result = instrumented(source);
       assert.match(
         result.body.toString(),
-        /<script src="http:\/\/c-0{32}\.localhost:4321\/\.htmlview\/probe\.js"/,
+        /<script src="http:\/\/c-0{32}\.localhost:4321\/\.htmlview\/probe\/1{32}\.js"/,
       );
-      assert.match(result.body.toString(), /<\/script><\/b[oO][dD][yY]>$/i);
+      const tag = Buffer.from(insertedTag(result.revision));
+      const offset = result.body.indexOf(tag);
+      assert.deepEqual(
+        Buffer.concat([
+          result.body.subarray(0, offset),
+          result.body.subarray(offset + tag.length),
+        ]).toString(),
+        source,
+      );
+      const authoredScript = source.toLowerCase().indexOf("<script");
+      if (authoredScript >= 0) assert.ok(offset < authoredScript);
     }
   });
 
@@ -89,11 +106,15 @@ describe("instrumented review entry transform", () => {
       "<p>one<p>two",
     ]) {
       const result = instrumented(source);
-      assert.equal(
-        result.body.subarray(0, Buffer.byteLength(source)).toString(),
+      const tag = Buffer.from(insertedTag(result.revision));
+      const offset = result.body.indexOf(tag);
+      assert.deepEqual(
+        Buffer.concat([
+          result.body.subarray(0, offset),
+          result.body.subarray(offset + tag.length),
+        ]).toString(),
         source,
       );
-      assert.equal(result.body.toString().endsWith("</script>"), true);
     }
   });
 
@@ -104,13 +125,31 @@ describe("instrumented review entry transform", () => {
     assert.match(
       result.body.toString(),
       new RegExp(
-        `<script src="${contentOrigin.replaceAll(".", "\\.")}\\/\\.htmlview\\/probe\\.js"`,
+        `<script src="${contentOrigin.replaceAll(".", "\\.")}\\/\\.htmlview\\/probe\\/1{32}\\.js"`,
       ),
     );
     assert.doesNotMatch(
       result.body.toString(),
-      /<script src="\/\.htmlview\/probe\.js"/,
+      /<script src="\/\.htmlview\/probe\//,
     );
+  });
+
+  it("requires an exact unguessable probe path", () => {
+    for (const candidate of [
+      "/.htmlview/probe.js",
+      "/.htmlview/probe/not-hex.js",
+      `/.htmlview/probe/${"0".repeat(31)}.js`,
+      `/.htmlview/probe/${"0".repeat(32)}.js?replay=1`,
+    ])
+      assert.throws(
+        () =>
+          transformReviewEntry(
+            Buffer.from("<!doctype html><p>entry</p>"),
+            contentOrigin,
+            candidate,
+          ),
+        /Invalid review probe path/,
+      );
   });
 
   it("rejects unsupported byte encodings and declared charsets", () => {
@@ -168,7 +207,7 @@ describe("instrumented review entry transform", () => {
       '<!doctype html><body><div class="unterminated',
       "<!doctype html><body><template>unterminated",
       "<!doctype html><body><svg><text>unterminated",
-      `<!doctype html><body><script src="${reviewProbePath}"></script></body>`,
+      `<!doctype html><body><script src="${probePath}"></script></body>`,
     ])
       unsupported(source, "unsupported_markup");
   });
@@ -176,7 +215,15 @@ describe("instrumented review entry transform", () => {
   it("handles adversarial depth without recursive tree walking", () => {
     const source = `<!doctype html>${"<div>".repeat(5_000)}deep`;
     const result = instrumented(source);
-    assert.equal(result.body.toString().startsWith(source), true);
+    const tag = Buffer.from(insertedTag(result.revision));
+    const offset = result.body.indexOf(tag);
+    assert.deepEqual(
+      Buffer.concat([
+        result.body.subarray(0, offset),
+        result.body.subarray(offset + tag.length),
+      ]).toString(),
+      source,
+    );
   });
 
   it("accepts the exact size boundary and rejects one byte beyond it", () => {

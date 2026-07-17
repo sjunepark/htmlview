@@ -95,7 +95,10 @@ function holdResponse(
         port: server.port,
         method: "GET",
         path: requestPath,
-        headers: { host: `${server.hostname}:${server.port}` },
+        headers: {
+          host: `${server.hostname}:${server.port}`,
+          ...documentNavigationHeaders,
+        },
       },
       (response) => {
         response.pause();
@@ -116,6 +119,16 @@ const browserHeaders = {
   "sec-fetch-site": "same-origin",
   "sec-fetch-mode": "cors",
   "sec-fetch-dest": "empty",
+};
+const documentNavigationHeaders = {
+  "sec-fetch-site": "cross-site",
+  "sec-fetch-mode": "navigate",
+  "sec-fetch-dest": "iframe",
+};
+const scriptRequestHeaders = {
+  "sec-fetch-site": "same-origin",
+  "sec-fetch-mode": "no-cors",
+  "sec-fetch-dest": "script",
 };
 
 interface TestSurface {
@@ -256,7 +269,9 @@ describe("review origins", () => {
         Buffer.alloc(8 * 1024 * 1024, 0x20),
         async ({ content, configuration }) => {
           const release = await holdResponse(content, "/report.html");
-          const second = send(content, "GET", "/report.html");
+          const second = send(content, "GET", "/report.html", {
+            headers: documentNavigationHeaders,
+          });
           await new Promise((resolve) => setTimeout(resolve, 50));
           await writeFile(
             configuration.grant.routeEntry,
@@ -513,6 +528,7 @@ describe("review origins", () => {
       );
 
       for (const route of [
+        "/.htmlview/api/probe",
         "/.htmlview/api/drafts",
         "/.htmlview/api/send",
         "/.htmlview/api/end",
@@ -536,6 +552,7 @@ describe("review origins", () => {
       }
 
       for (const [route, body] of [
+        ["/.htmlview/api/probe", { lease: "0".repeat(32), extra: true }],
         [
           "/.htmlview/api/drafts",
           {
@@ -593,7 +610,35 @@ describe("review origins", () => {
     withSurface(
       "<!doctype html><html><body><h1>Hello</h1></body></html>",
       async ({ shell, content, configuration, queued, closeCount }) => {
-        const entry = await send(content, "GET", "/report.html?theme=dark");
+        const fetchedEntry = await send(
+          content,
+          "GET",
+          "/report.html?theme=dark",
+        );
+        assert.equal(fetchedEntry.status, 200);
+        assert.equal(
+          fetchedEntry.body.includes(Buffer.from("/.htmlview/probe/")),
+          false,
+        );
+        const nestedEntry = await send(
+          content,
+          "GET",
+          "/report.html?theme=dark",
+          {
+            headers: {
+              ...documentNavigationHeaders,
+              "sec-fetch-site": "same-origin",
+            },
+          },
+        );
+        assert.equal(nestedEntry.status, 200);
+        assert.equal(
+          nestedEntry.body.includes(Buffer.from("/.htmlview/probe/")),
+          false,
+        );
+        const entry = await send(content, "GET", "/report.html?theme=dark", {
+          headers: documentNavigationHeaders,
+        });
         assert.equal(entry.status, 200);
         assert.match(
           String(entry.headers["content-security-policy"]),
@@ -606,9 +651,13 @@ describe("review origins", () => {
         assert.match(
           transformed,
           new RegExp(
-            `src="${content.origin.replaceAll(".", "\\.")}\\/\\.htmlview\\/probe\\.js"`,
+            `src="${content.origin.replaceAll(".", "\\.")}\\/\\.htmlview\\/probe\\/[0-9a-f]{32}\\.js"`,
           ),
         );
+        const probePath = transformed.match(
+          /src="[^"/]+:\/\/[^/]+(\/\.htmlview\/probe\/[0-9a-f]{32}\.js)"/,
+        )?.[1];
+        assert.ok(probePath !== undefined);
         const revision = transformed.match(
           /data-htmlview-revision="(sha256:[0-9a-f]{64})"/,
         )?.[1];
@@ -620,12 +669,32 @@ describe("review origins", () => {
           (await send(content, "GET", "/.htmlview/authored.txt")).status,
           404,
         );
+        assert.equal((await send(content, "GET", probePath)).status, 404);
+        const probe = await send(content, "GET", probePath, {
+          headers: scriptRequestHeaders,
+        });
+        assert.doesNotThrow(() => new Script(probe.body.toString("utf8")));
+        assert.equal(probe.headers["cache-control"], "no-store");
         assert.equal(
-          (await send(content, "GET", "/.htmlview/probe.js?x=1")).status,
+          (
+            await send(content, "GET", probePath, {
+              headers: scriptRequestHeaders,
+            })
+          ).status,
           404,
         );
-        const probe = await send(content, "GET", "/.htmlview/probe.js");
-        assert.doesNotThrow(() => new Script(probe.body.toString("utf8")));
+        const lease = probe.body
+          .toString("utf8")
+          .match(/const lease = "([0-9a-f]{32})";/)?.[1];
+        assert.ok(lease !== undefined);
+        assert.equal(
+          (
+            await send(content, "GET", "/asset.txt", {
+              headers: { "sec-fetch-dest": "serviceworker" },
+            })
+          ).status,
+          403,
+        );
 
         const mutationHeaders = {
           ...browserHeaders,
@@ -637,6 +706,29 @@ describe("review origins", () => {
           comment: "Tighten this heading",
           revision,
         });
+        assert.equal(
+          (
+            await send(shell, "POST", "/.htmlview/api/drafts", {
+              headers: mutationHeaders,
+              body: validDraft,
+            })
+          ).status,
+          409,
+        );
+        const activated = await send(shell, "POST", "/.htmlview/api/probe", {
+          headers: mutationHeaders,
+          body: JSON.stringify({ lease }),
+        });
+        assert.deepEqual(jsonBody(activated), { revision });
+        assert.equal(
+          (
+            await send(shell, "POST", "/.htmlview/api/probe", {
+              headers: mutationHeaders,
+              body: JSON.stringify({ lease }),
+            })
+          ).status,
+          409,
+        );
         assert.equal(
           (
             await send(shell, "POST", "/.htmlview/api/drafts", {
@@ -728,7 +820,9 @@ describe("review origins", () => {
     withSurface(
       '<!doctype html><meta http-equiv="content-security-policy" content="script-src \'none\'"><p>blocked</p>',
       async ({ shell, content }) => {
-        const entry = await send(content, "GET", "/report.html");
+        const entry = await send(content, "GET", "/report.html", {
+          headers: documentNavigationHeaders,
+        });
         assert.equal(entry.status, 422);
         assert.match(entry.body.toString(), /csp_blocked/);
         const state = await send(shell, "GET", "/.htmlview/api/state", {

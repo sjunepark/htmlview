@@ -14,7 +14,7 @@ import type { ServingGrant } from "./grant.js";
 import { createStaticHandler } from "./http.js";
 import {
   maximumInstrumentedEntryBytes,
-  reviewProbePath,
+  reviewProbePathPrefix,
   transformReviewEntry,
   type ReviewEntryLimitation,
 } from "./instrumented-entry.js";
@@ -23,8 +23,13 @@ import {
   startLoopbackHttpListener,
   type LoopbackHttpListener,
 } from "./listener.js";
-import { reviewAssets, type ReviewAsset } from "./review-assets.js";
 import {
+  reviewAssets,
+  reviewProbeAsset,
+  type ReviewAsset,
+} from "./review-assets.js";
+import {
+  decodeActivateProbeRequest,
   decodeEndReviewRequest,
   decodeQueueDraftRequest,
   decodeSendDraftsRequest,
@@ -63,6 +68,11 @@ export interface ReviewSurfaceConfiguration {
 export class ReviewSurfaceState {
   #configuration: ReviewSurfaceConfiguration | undefined;
   readonly #revisions: string[] = [];
+  readonly #pendingProbes = new Map<
+    string,
+    { readonly lease: string; readonly revision: string }
+  >();
+  readonly #issuedProbeLeases = new Map<string, string>();
   readonly #entryTransforms = Semaphore.makeUnsafe(1);
   #limitation: ReviewEntryLimitation | undefined;
 
@@ -86,6 +96,43 @@ export class ReviewSurfaceState {
 
   hasRevision(revision: string): boolean {
     return this.#revisions.includes(revision);
+  }
+
+  prepareProbe(path: string, revision: string): void {
+    if (!/^\/\.htmlview\/probe\/[0-9a-f]{32}\.js$/.test(path))
+      throw new TypeError("Invalid review probe path");
+    this.#pendingProbes.set(path, {
+      lease: randomBytes(16).toString("hex"),
+      revision,
+    });
+    while (this.#pendingProbes.size > 8) {
+      const oldest = this.#pendingProbes.keys().next().value as
+        string | undefined;
+      if (oldest === undefined) break;
+      this.#pendingProbes.delete(oldest);
+    }
+  }
+
+  issueProbeLease(path: string): string | undefined {
+    const pending = this.#pendingProbes.get(path);
+    if (pending === undefined) return undefined;
+    this.#pendingProbes.delete(path);
+    this.#issuedProbeLeases.set(pending.lease, pending.revision);
+    while (this.#issuedProbeLeases.size > 8) {
+      const oldest = this.#issuedProbeLeases.keys().next().value as
+        string | undefined;
+      if (oldest === undefined) break;
+      this.#issuedProbeLeases.delete(oldest);
+    }
+    return pending.lease;
+  }
+
+  activateProbe(lease: string): string | undefined {
+    const revision = this.#issuedProbeLeases.get(lease);
+    if (revision === undefined) return undefined;
+    this.#issuedProbeLeases.delete(lease);
+    this.admitRevision(revision);
+    return revision;
   }
 
   limit(reason: ReviewEntryLimitation): void {
@@ -129,6 +176,22 @@ function browserFetchIsSameOrigin(request: IncomingMessage): boolean {
     singleHeader(request, "sec-fetch-site") === "same-origin" &&
     singleHeader(request, "sec-fetch-mode") === "cors" &&
     singleHeader(request, "sec-fetch-dest") === "empty"
+  );
+}
+
+function browserDocumentNavigation(request: IncomingMessage): boolean {
+  return (
+    singleHeader(request, "sec-fetch-site") === "cross-site" &&
+    singleHeader(request, "sec-fetch-mode") === "navigate" &&
+    singleHeader(request, "sec-fetch-dest") === "iframe"
+  );
+}
+
+function browserScriptRequest(request: IncomingMessage): boolean {
+  return (
+    singleHeader(request, "sec-fetch-site") === "same-origin" &&
+    singleHeader(request, "sec-fetch-mode") === "no-cors" &&
+    singleHeader(request, "sec-fetch-dest") === "script"
   );
 }
 
@@ -440,6 +503,7 @@ function shellHandler(
     if (
       request.method === "POST" &&
       [
+        "/.htmlview/api/probe",
         "/.htmlview/api/drafts",
         "/.htmlview/api/send",
         "/.htmlview/api/end",
@@ -472,65 +536,81 @@ function shellHandler(
         );
 
       const operation: Effect.Effect<unknown, ReviewError | RuntimeStateError> =
-        request.url === "/.htmlview/api/drafts"
+        request.url === "/.htmlview/api/probe"
           ? (() => {
               const decoded = decodedOrUndefined(
-                decodeQueueDraftRequest(body.value),
+                decodeActivateProbeRequest(body.value),
               );
               if (decoded === undefined) return Effect.void;
-              if (!state.hasRevision(decoded.revision))
-                return Effect.fail(
-                  new ReviewError({
-                    code: "review.not_ready",
-                    message: "The rendered document revision is not active",
-                  }),
-                );
-              const input: AnnotationDraftInput =
-                decoded.kind === "freeform"
-                  ? {
-                      kind: "freeform",
-                      comment: decoded.comment,
-                      revision: decoded.revision,
-                      entry: configuration.grant.entryUrlPath,
-                    }
-                  : {
-                      kind: "element",
-                      comment: decoded.comment,
-                      revision: decoded.revision,
-                      entry: configuration.grant.entryUrlPath,
-                      anchor: {
-                        selector: decoded.anchor.selector,
-                        domPath: decoded.anchor.dom_path,
-                        tag: decoded.anchor.tag,
-                        ...(decoded.anchor.text === undefined
-                          ? {}
-                          : { text: decoded.anchor.text }),
-                      },
-                    };
-              return configuration.service
-                .queue(input)
-                .pipe(Effect.map((draft) => ({ draft: publicDraft(draft) })));
+              const revision = state.activateProbe(decoded.lease);
+              return revision === undefined
+                ? Effect.fail(
+                    new ReviewError({
+                      code: "review.not_ready",
+                      message: "The review probe lease is not active",
+                    }),
+                  )
+                : Effect.succeed({ revision });
             })()
-          : request.url === "/.htmlview/api/send"
+          : request.url === "/.htmlview/api/drafts"
             ? (() => {
                 const decoded = decodedOrUndefined(
-                  decodeSendDraftsRequest(body.value),
+                  decodeQueueDraftRequest(body.value),
                 );
-                return decoded === undefined
-                  ? Effect.void
-                  : configuration.service.send(decoded.drafts);
+                if (decoded === undefined) return Effect.void;
+                if (!state.hasRevision(decoded.revision))
+                  return Effect.fail(
+                    new ReviewError({
+                      code: "review.not_ready",
+                      message: "The rendered document revision is not active",
+                    }),
+                  );
+                const input: AnnotationDraftInput =
+                  decoded.kind === "freeform"
+                    ? {
+                        kind: "freeform",
+                        comment: decoded.comment,
+                        revision: decoded.revision,
+                        entry: configuration.grant.entryUrlPath,
+                      }
+                    : {
+                        kind: "element",
+                        comment: decoded.comment,
+                        revision: decoded.revision,
+                        entry: configuration.grant.entryUrlPath,
+                        anchor: {
+                          selector: decoded.anchor.selector,
+                          domPath: decoded.anchor.dom_path,
+                          tag: decoded.anchor.tag,
+                          ...(decoded.anchor.text === undefined
+                            ? {}
+                            : { text: decoded.anchor.text }),
+                        },
+                      };
+                return configuration.service
+                  .queue(input)
+                  .pipe(Effect.map((draft) => ({ draft: publicDraft(draft) })));
               })()
-            : (() => {
-                const decoded = decodedOrUndefined(
-                  decodeEndReviewRequest(body.value),
-                );
-                return decoded === undefined
-                  ? Effect.void
-                  : configuration.service.send(decoded.drafts, {
-                      end: true,
-                      discardRemaining: decoded.discard_remaining,
-                    });
-              })();
+            : request.url === "/.htmlview/api/send"
+              ? (() => {
+                  const decoded = decodedOrUndefined(
+                    decodeSendDraftsRequest(body.value),
+                  );
+                  return decoded === undefined
+                    ? Effect.void
+                    : configuration.service.send(decoded.drafts);
+                })()
+              : (() => {
+                  const decoded = decodedOrUndefined(
+                    decodeEndReviewRequest(body.value),
+                  );
+                  return decoded === undefined
+                    ? Effect.void
+                    : configuration.service.send(decoded.drafts, {
+                        end: true,
+                        discardRemaining: decoded.discard_remaining,
+                      });
+                })();
       const result = yield* Effect.result(operation);
       if (result._tag === "Failure")
         return yield* Effect.sync(() =>
@@ -621,19 +701,33 @@ function contentHandler(
         return yield* Effect.sync(() =>
           sendText(request, response, 503, "Review is not ready"),
         );
-      if (
-        (request.method === "GET" || request.method === "HEAD") &&
-        request.url === reviewProbePath
-      )
+      if (singleHeader(request, "sec-fetch-dest") === "serviceworker")
         return yield* Effect.sync(() =>
-          sendAsset(request, response, reviewAssets.probeJs),
+          sendText(request, response, 403, "Service workers are unavailable"),
         );
+      if (request.url?.startsWith(reviewProbePathPrefix) === true) {
+        if (request.method !== "GET" || !browserScriptRequest(request))
+          return yield* Effect.sync(() =>
+            sendText(request, response, 404, "Not Found"),
+          );
+        const lease = state.issueProbeLease(request.url);
+        if (lease === undefined)
+          return yield* Effect.sync(() =>
+            sendText(request, response, 404, "Not Found"),
+          );
+        return yield* Effect.sync(() =>
+          sendAsset(request, response, reviewProbeAsset(lease), {
+            "cache-control": "no-store",
+          }),
+        );
+      }
       if (request.url?.startsWith("/.htmlview/") === true)
         return yield* Effect.sync(() =>
           sendText(request, response, 404, "Not Found"),
         );
       if (
-        (request.method === "GET" || request.method === "HEAD") &&
+        request.method === "GET" &&
+        browserDocumentNavigation(request) &&
         requestPath === configuration.grant.entryUrlPath
       ) {
         return yield* state.withEntryTransform(
@@ -681,9 +775,11 @@ function contentHandler(
                   "Review entry could not be read",
                 ),
               );
+            const probePath = `${reviewProbePathPrefix}${randomBytes(16).toString("hex")}.js`;
             const transformed = transformReviewEntry(
               source,
               configuration.contentOrigin,
+              probePath,
             );
             if (transformed.outcome === "unsupported") {
               state.limit(transformed.reason);
@@ -696,8 +792,7 @@ function contentHandler(
                 ),
               );
             }
-            if (request.method === "GET")
-              state.admitRevision(transformed.revision);
+            state.prepareProbe(probePath, transformed.revision);
             return yield* sendBufferAndWait(
               request,
               response,

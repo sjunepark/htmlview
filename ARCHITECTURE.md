@@ -181,19 +181,34 @@ target context and current geometry. The shell checks the source window and
 exact origin.
 
 Authored code can forge target messages from its own frame, so element metadata
-is explicitly untrusted. Exact Host, Origin, method, content type, and
-fetch-metadata checks protect browser mutations. Browser routes operate only on
-their addressed review; raw-session creation, stop, listing, root selection, and
-supervisor health remain private-socket operations.
+is explicitly untrusted. It cannot assert that annotation instrumentation is
+ready: each document navigation receives a one-use random probe URL, that URL
+serves one uncached script containing a separate random lease, and the shell
+must redeem the lease through its protected mutation API before a revision is
+admitted. The parser-blocking probe is the document's first executable code and
+captures the real parent window plus pristine message primitives before
+authored code runs. Its readiness listener accepts only a trusted browser event
+from that captured parent. The lease appears in neither HTML, DOM attributes,
+nor shell-to-frame messages; stale/replayed leases fail closed, and
+content-origin service-worker script requests are rejected so authored code
+cannot intercept the probe response. Exact Host, Origin, method, content type,
+and fetch-metadata checks protect browser mutations. Browser routes operate
+only on their addressed review; raw-session creation, stop, listing, root
+selection, and supervisor health remain private-socket operations.
 
-The review entry transform inserts one external probe reference without parsing
-and reserializing the document. It never weakens authored CSP. Unsupported
-encoding, policy, framing, or markup produces an explicit review limitation;
-the raw URL remains usable and annotation-only actions are disabled. The shell
-tracks iframe document replacement: a selected-entry reload recovers when its
-new probe reports ready, while later HTML-document navigation is reported as
-an explicit unsupported-navigation limitation. Instrumentation covers the
-selected entry and its live SPA DOM, not the navigated document.
+The review entry transform inserts one external probe reference at the first
+parser-created head position without parsing and reserializing the document.
+Only the shell's cross-site iframe-navigation request for the selected entry
+receives that transform; authored fetches and same-origin nested iframe loads
+receive ordinary granted bytes and cannot disclose a probe lease. It never
+weakens authored CSP.
+Unsupported encoding, policy, framing, or markup produces an explicit review
+limitation; the raw URL remains usable and annotation-only actions are disabled.
+The shell tracks iframe document replacement: a shell-initiated selected-entry
+reload recovers only after redeeming its new probe lease, while later
+HTML-document navigation cannot replay an earlier lease and is reported as an explicit
+unsupported-navigation limitation. Instrumentation covers the selected entry
+and its live SPA DOM, not the navigated document.
 
 ### Annotation store and feedback delivery (implemented)
 

@@ -10,6 +10,11 @@ const execute = promisify(execFile);
 const cli = path.resolve("dist/cli.js");
 const baseEntryPath = path.join(fixtureRoot, "pages", "base.html");
 const controlsEntryPath = path.join(fixtureRoot, "pages", "controls.html");
+const preloadNavigationEntryPath = path.join(
+  fixtureRoot,
+  "pages",
+  "preload-navigation.html",
+);
 
 async function command(environment, ...args) {
   const result = await execute(process.execPath, [cli, ...args, "--json"], {
@@ -57,7 +62,9 @@ test("a human can deliver durable element and page feedback without changing raw
 
     await content.locator("#title").click();
     await expect(page.locator("#editor")).toBeVisible();
-    await content.locator("#title").evaluate(() => location.reload());
+    await page.locator("#content").evaluate((iframe) => {
+      iframe.setAttribute("src", iframe.src);
+    });
     await expect(page.locator("#editor")).toBeHidden();
     await expect(content.locator("#title")).toHaveText("fixture");
     await expect(page.locator("#live")).toHaveText("Annotation tools ready");
@@ -481,6 +488,48 @@ test("explicit instrumentation limitations preserve the raw page", async ({
   }
 });
 
+test("networkless document replacement cannot forge probe readiness", async ({
+  page,
+}) => {
+  const stateParent = await mkdtemp(path.join(tmpdir(), "hv-review-preload-"));
+  const environment = {
+    ...process.env,
+    HTMLVIEW_STATE_DIR: path.join(stateParent, "state"),
+    HTMLVIEW_IDLE_MS: "10000",
+  };
+  delete environment.NO_COLOR;
+  delete environment.FORCE_COLOR;
+  try {
+    const served = await command(
+      environment,
+      "serve",
+      preloadNavigationEntryPath,
+      "--root",
+      fixtureRoot,
+    );
+    const opened = await command(environment, "review", served.session.id);
+    await page.goto(opened.review.url);
+    const content = page.frameLocator("#content");
+    await expect(content.locator("#replacement")).toHaveText(
+      "Replaced before entry load",
+    );
+    await expect(content.locator("#shadowed")).toHaveText("shadowed");
+    await expect(content.locator("#captured")).toHaveText("isolated");
+    await expect(page.locator("#limitation")).toHaveText(
+      "This page cannot be annotated: instrumentation unavailable. The raw page remains available.",
+    );
+    await expect(page.getByRole("button", { name: "Annotate" })).toBeDisabled();
+    await expect(
+      page.getByRole("button", { name: "Page note" }),
+    ).toBeDisabled();
+  } finally {
+    await execute(process.execPath, [cli, "stop", "--all", "--json"], {
+      env: environment,
+    }).catch(() => undefined);
+    await rm(stateParent, { recursive: true, force: true });
+  }
+});
+
 test("Annotate isolates native controls while Explore permits navigation", async ({
   page,
 }) => {
@@ -504,11 +553,16 @@ test("Annotate isolates native controls while Explore permits navigation", async
       return;
     }
     delayNextState = false;
+    const response = await route.fetch();
+    const staleState = await response.json();
     stateInterceptedResolve();
     await new Promise((resolve) => {
       releaseState = resolve;
     });
-    await route.continue();
+    await route.fulfill({
+      response,
+      json: { ...staleState, limitation: "csp_blocked" },
+    });
     stateCompletedResolve();
   });
   try {
@@ -529,6 +583,32 @@ test("Annotate isolates native controls while Explore permits navigation", async
     await expect(page.locator("#live")).toHaveText("Annotation tools ready");
     await expect(content.locator("#frame-bust")).toHaveText("SecurityError");
     expect(page.url()).toBe(shellUrl);
+    expect(
+      await content
+        .locator("body")
+        .evaluate(() => window.__parentPostMessagePatch),
+    ).toBe("SecurityError");
+    const probeIdentity = await content.locator("body").evaluate(async () => ({
+      revision: document.querySelector("script[data-htmlview-revision]")
+        ?.dataset.htmlviewRevision,
+      race: await window.__probeRace,
+    }));
+    expect(probeIdentity.revision).toMatch(/^sha256:[0-9a-f]{64}$/);
+    expect(probeIdentity.race).toEqual({ status: 404, body: "Not Found" });
+    expect(
+      await content.locator("body").evaluate(() => window.__nestedProbe),
+    ).toBe(false);
+    const serviceWorker = await content.locator("body").evaluate(() =>
+      navigator.serviceWorker
+        .register("/pages/module%20%C3%BC.js", {
+          type: "module",
+        })
+        .then(
+          () => "registered",
+          (error) => error.name,
+        ),
+    );
+    expect(serviceWorker).not.toBe("registered");
 
     const counter = content.locator("#counter");
     await counter.click();
@@ -575,9 +655,35 @@ test("Annotate isolates native controls while Explore permits navigation", async
       page.getByRole("button", { name: "Page note" }),
     ).toBeDisabled();
     expect(page.url()).toBe(shellUrl);
+    const fetchedEntry = await content
+      .locator("body")
+      .evaluate(async () =>
+        fetch("/pages/controls.html").then((response) => response.text()),
+      );
+    expect(fetchedEntry).not.toContain("data-htmlview-revision");
+    await content.locator("body").evaluate((_, revision) => {
+      window.parent.postMessage(
+        {
+          channel: "htmlview.review",
+          version: 1,
+          type: "probe_ready",
+          lease: "0".repeat(32),
+          revision,
+        },
+        "*",
+      );
+    }, probeIdentity.revision);
+    await page.waitForTimeout(100);
+    await expect(page.locator("#limitation")).toHaveText(
+      "This page cannot be annotated: unsupported navigation. The raw page remains available.",
+    );
+    await expect(page.getByRole("button", { name: "Annotate" })).toBeDisabled();
+    await expect(
+      page.getByRole("button", { name: "Page note" }),
+    ).toBeDisabled();
 
-    await content.locator("body").evaluate(() => {
-      location.href = "/pages/controls.html";
+    await page.locator("#content").evaluate((iframe) => {
+      iframe.src = new URL("/pages/controls.html", iframe.src).href;
     });
     await expect(content.locator("#controls-title")).toHaveText(
       "Review controls fixture",
@@ -599,8 +705,8 @@ test("Annotate isolates native controls while Explore permits navigation", async
       "Navigated document",
     );
     await stateIntercepted;
-    await content.locator("body").evaluate(() => {
-      location.href = "/pages/controls.html";
+    await page.locator("#content").evaluate((iframe) => {
+      iframe.src = new URL("/pages/controls.html", iframe.src).href;
     });
     await expect(content.locator("#controls-title")).toHaveText(
       "Review controls fixture",
@@ -666,7 +772,9 @@ test("source reloads preserve drafts with their original revisions", async ({
       entry,
       '<!doctype html><html><body><h1 id="target">Second revision</h1></body></html>',
     );
-    await content.locator("body").evaluate(() => location.reload());
+    await page.locator("#content").evaluate((iframe) => {
+      iframe.setAttribute("src", iframe.src);
+    });
     await expect(content.locator("#target")).toHaveText("Second revision");
     await expect(page.locator("#live")).toHaveText("Annotation tools ready");
     await page.getByRole("button", { name: "Page note" }).click();

@@ -69,7 +69,11 @@ test("architecture and threat model preserve raw fidelity and review isolation",
 
   assert.match(threatModel, /exact shell `Origin`/);
   assert.match(threatModel, /schema-validated `postMessage` boundary/);
-  assert.match(threatModel, /can still forge valid-looking target context/i);
+  assert.match(threatModel, /authored scripts can forge it/i);
+  assert.match(
+    threatModel,
+    /one random probe URL per instrumented navigation/i,
+  );
   assert.match(threatModel, /private Unix-domain control socket/);
   assert.match(threatModel, /raw remains the fidelity reference/);
 });

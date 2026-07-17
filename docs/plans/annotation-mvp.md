@@ -160,6 +160,11 @@ channel that later needs replacing.
 - **Complete:** add black-box and real-browser workflows for element/freeform feedback,
   native controls, reload/closure/restart, cursor retry, stale revision, CSP
   failure, End, explicit discard, and retained-work discovery.
+- **Complete:** authenticate selected-entry readiness with one-use probe URLs
+  and shell-redeemed leases; reject probe fetch/replay and content-origin
+  service-worker interception; keep same-origin nested iframe loads raw; and
+  capture the parent/messaging primitives before authored scripts so later
+  navigation cannot reactivate annotation.
 - Update build/package checks, examples, install guidance, and macOS/Node 22
   Linux lifecycle evidence; keep browser controllers external.
 - Run the complete release gate and final implementation/diet review.

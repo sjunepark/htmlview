@@ -171,9 +171,13 @@ const shellJs = embeddedJavaScript(String.raw`(() => {
   let selectedTarget;
   let editorGeneration = 0;
   let readyTimer;
+  let readyInterval;
+  let readyIntervalTimer;
   let navigationPending = false;
   let localLimitation;
   let loadGeneration = 0;
+  const activatingProbeLeases = new Set();
+  const usedProbeLeases = new Set();
 
   const announce = (message) => { live.textContent = message; };
   const exactKeys = (value, keys) => {
@@ -242,6 +246,13 @@ const shellJs = embeddedJavaScript(String.raw`(() => {
     renderAnnotationAvailability();
   }
 
+  function stopModeRetry() {
+    clearInterval(readyInterval);
+    clearTimeout(readyIntervalTimer);
+    readyInterval = undefined;
+    readyIntervalTimer = undefined;
+  }
+
   function render() {
     status.textContent = state.review.status === "ready" ? "Annotation review" : \`Review \${state.review.status}\`;
     draftCount.textContent = String(state.drafts.length);
@@ -252,8 +263,10 @@ const shellJs = embeddedJavaScript(String.raw`(() => {
     renderLimitation();
   }
 
-  async function refresh() {
-    state = await api("/.htmlview/api/state");
+  async function refresh(expectedLoadGeneration) {
+    const nextState = await api("/.htmlview/api/state");
+    if (expectedLoadGeneration !== undefined && expectedLoadGeneration !== loadGeneration) return;
+    state = nextState;
     contentOrigin = new URL(state.content_url).origin;
     render();
     if (!iframe.hasAttribute("src")) iframe.src = state.content_url;
@@ -291,29 +304,37 @@ const shellJs = embeddedJavaScript(String.raw`(() => {
     comment.focus();
   }
 
-  window.addEventListener("message", (event) => {
-    if (event.source !== iframe.contentWindow || event.origin !== contentOrigin) return;
-    const data = event.data;
-    if (!data || data.channel !== channel || data.version !== version || typeof data.type !== "string") return;
-    if (data.type === "probe_ready" && exactKeys(data, ["channel", "revision", "type", "version"]) && /^sha256:[0-9a-f]{64}$/.test(data.revision)) {
-      const changed = revision !== data.revision;
-      const replaced = revision !== undefined && changed;
-      revision = data.revision;
+  async function activateProbe(data) {
+    if (revision !== undefined || activatingProbeLeases.has(data.lease) || usedProbeLeases.has(data.lease) || activatingProbeLeases.size >= 8) return;
+    const generation = loadGeneration;
+    activatingProbeLeases.add(data.lease);
+    try {
+      const result = await api("/.htmlview/api/probe", { method: "POST", body: JSON.stringify({ lease: data.lease }) });
+      usedProbeLeases.add(data.lease);
+      if (usedProbeLeases.size > 8) usedProbeLeases.delete(usedProbeLeases.values().next().value);
+      if (generation !== loadGeneration || result.revision !== data.revision || !/^sha256:[0-9a-f]{64}$/.test(result.revision || "")) return;
+      revision = result.revision;
       navigationPending = false;
       localLimitation = undefined;
       if (state) delete state.limitation;
       clearTimeout(readyTimer);
-      if (replaced) {
-        editorGeneration += 1;
-        selectedTarget = undefined;
-        editor.hidden = true;
-        highlight.removeAttribute("data-visible");
-      }
-      if (changed) {
-        announce("Annotation tools ready");
-        sendMode();
-      }
+      stopModeRetry();
+      announce("Annotation tools ready");
+      sendMode();
       renderLimitation();
+    } catch {
+      // Forged, stale, and replayed leases fail closed without changing the shell.
+    } finally {
+      activatingProbeLeases.delete(data.lease);
+    }
+  }
+
+  window.addEventListener("message", (event) => {
+    if (event.source !== iframe.contentWindow || event.origin !== contentOrigin) return;
+    const data = event.data;
+    if (!data || data.channel !== channel || data.version !== version || typeof data.type !== "string") return;
+    if (data.type === "probe_ready" && exactKeys(data, ["channel", "lease", "revision", "type", "version"]) && /^[0-9a-f]{32}$/.test(data.lease) && /^sha256:[0-9a-f]{64}$/.test(data.revision)) {
+      activateProbe(data);
       return;
     }
     if ((data.type === "target_preview" || data.type === "target_selected") && exactKeys(data, ["anchor", "channel", "handle", "rect", "type", "version"]) && bounded(data.handle, 64) && validAnchor(data.anchor) && validRect(data.rect)) {
@@ -335,17 +356,18 @@ const shellJs = embeddedJavaScript(String.raw`(() => {
     highlight.removeAttribute("data-visible");
     announce("Loading annotation tools");
     clearTimeout(readyTimer);
-    const interval = setInterval(sendMode, 100);
+    stopModeRetry();
+    readyInterval = setInterval(sendMode, 100);
     readyTimer = setTimeout(() => {
-      clearInterval(interval);
+      stopModeRetry();
       if (generation !== loadGeneration) return;
-      refresh().catch(() => undefined).finally(() => {
+      refresh(generation).catch(() => undefined).finally(() => {
         if (generation !== loadGeneration || revision) return;
         if (!state?.limitation) localLimitation = navigationPending ? "unsupported_navigation" : "instrumentation_unavailable";
         renderLimitation();
       });
     }, 1800);
-    setTimeout(() => clearInterval(interval), 2000);
+    readyIntervalTimer = setTimeout(stopModeRetry, 2000);
   });
 
   async function queueDraft() {
@@ -412,10 +434,19 @@ const shellJs = embeddedJavaScript(String.raw`(() => {
   refresh().catch((error) => { limitation.hidden = false; limitation.textContent = error.message; });
 })();`);
 
-const probeJs = embeddedJavaScript(String.raw`(() => {
+function probeJavaScript(lease: string): string {
+  if (!/^[0-9a-f]{32}$/.test(lease))
+    throw new TypeError("Invalid review probe lease");
+  return embeddedJavaScript(String.raw`(() => {
   "use strict";
   const channel = "htmlview.review";
   const version = 1;
+  const lease = "${lease}";
+  const trustedWindow = window;
+  const trustedParent = window.parent;
+  const trustedAddEventListener = window.addEventListener;
+  const trustedPostMessage = window.postMessage;
+  const trustedApply = Reflect.apply;
   const script = document.currentScript;
   const revision = script?.dataset.htmlviewRevision;
   if (!/^sha256:[0-9a-f]{64}$/.test(revision || "")) return;
@@ -424,6 +455,9 @@ const probeJs = embeddedJavaScript(String.raw`(() => {
   let parentOrigin;
   let mode = "annotate";
   let sequence = 0;
+  let documentLoaded = document.readyState === "complete";
+  const listen = (type, listener, options) => trustedApply(trustedAddEventListener, trustedWindow, [type, listener, options]);
+  const postToParent = (data, origin) => trustedApply(trustedPostMessage, trustedParent, [data, origin]);
   const truncate = (value, bytes) => {
     let result = "";
     let size = 0;
@@ -492,32 +526,42 @@ const probeJs = embeddedJavaScript(String.raw`(() => {
   };
   const send = (type, element) => {
     if (!parentOrigin) return;
-    if (!element) { parent.postMessage({ channel, version, type: "target_cleared" }, parentOrigin); return; }
+    if (!element) { postToParent({ channel, version, type: "target_cleared" }, parentOrigin); return; }
     const rect = element.getBoundingClientRect();
-    parent.postMessage({ channel, version, type, handle: \`target-\${++sequence}\`, anchor: anchorFor(element), rect: { x: rect.x, y: rect.y, width: rect.width, height: rect.height } }, parentOrigin);
+    postToParent({ channel, version, type, handle: \`target-\${++sequence}\`, anchor: anchorFor(element), rect: { x: rect.x, y: rect.y, width: rect.width, height: rect.height } }, parentOrigin);
   };
-  addEventListener("message", (event) => {
+  listen("message", (event) => {
     const data = event.data;
-    if (event.source !== parent || !data || data.channel !== channel || data.version !== version || data.type !== "set_mode" || (data.mode !== "explore" && data.mode !== "annotate")) return;
+    if (!event.isTrusted || event.source !== trustedParent || !data || data.channel !== channel || data.version !== version || data.type !== "set_mode" || (data.mode !== "explore" && data.mode !== "annotate")) return;
     parentOrigin = event.origin;
     mode = data.mode;
-    parent.postMessage({ channel, version, type: "probe_ready", revision }, parentOrigin);
+    if (!documentLoaded) return;
+    postToParent({ channel, version, type: "probe_ready", lease, revision }, parentOrigin);
   });
-  addEventListener("pointermove", (event) => { if (mode === "annotate" && event.target instanceof Element) send("target_preview", event.target); }, { passive: true });
-  addEventListener("pointerleave", () => { if (mode === "annotate") send("target_cleared"); }, { passive: true });
-  addEventListener("click", (event) => {
+  listen("load", () => { documentLoaded = true; }, { once: true });
+  listen("pointermove", (event) => { if (mode === "annotate" && event.target instanceof Element) send("target_preview", event.target); }, { passive: true });
+  listen("pointerleave", () => { if (mode === "annotate") send("target_cleared"); }, { passive: true });
+  listen("click", (event) => {
     if (mode !== "annotate" || !(event.target instanceof Element)) return;
     event.preventDefault(); event.stopImmediatePropagation(); send("target_selected", event.target);
   }, true);
-  addEventListener("keydown", (event) => {
+  listen("keydown", (event) => {
     if (mode !== "annotate" || (event.key !== "Enter" && event.key !== " ") || !(event.target instanceof Element)) return;
     event.preventDefault(); event.stopImmediatePropagation(); send("target_selected", event.target);
   }, true);
 })();`);
+}
 
 export interface ReviewAsset {
   readonly body: Buffer;
   readonly contentType: string;
+}
+
+export function reviewProbeAsset(lease: string): ReviewAsset {
+  return {
+    body: Buffer.from(probeJavaScript(lease)),
+    contentType: "text/javascript; charset=utf-8",
+  };
 }
 
 export const reviewAssets = {
@@ -531,10 +575,6 @@ export const reviewAssets = {
   },
   shellJs: {
     body: Buffer.from(shellJs),
-    contentType: "text/javascript; charset=utf-8",
-  },
-  probeJs: {
-    body: Buffer.from(probeJs),
     contentType: "text/javascript; charset=utf-8",
   },
 } as const satisfies Record<string, ReviewAsset>;

@@ -115,9 +115,17 @@ metadata reported by authored code is authentic.
   state API authority. Never send comment text into the content frame.
 - **Forged or oversized frame messages.** Accept target messages only from the
   expected iframe window and exact content origin, validate a versioned bounded
-  schema, and send no capability or sensitive state in either direction.
-  Authored scripts in that frame can still forge valid-looking target context;
-  surface it as untrusted rather than claiming authenticity.
+  schema, and send no sensitive state into authored code. Treat target context
+  as untrusted because authored scripts can forge it. Treat document readiness
+  separately: issue one random probe URL per instrumented navigation, serve it
+  once without caching, keep its separate lease out of HTML, DOM attributes,
+  and shell-to-frame messages, run the parser-blocking probe before authored
+  scripts, and have it capture the real parent and pristine messaging
+  primitives. Accept readiness mode only from a trusted browser event sent by
+  that captured parent, then require the shell to redeem the lease before
+  activating the revision. Reject service-worker script requests on the fresh
+  content origin, ordinary fetches of the probe, same-origin nested entry
+  navigations, synthetic message events, stale leases, and replay.
 - **Plain and encoded traversal.** Decode once, reject malformed encodings and
   forbidden separators, resolve the final target, and enforce canonical root
   containment.
@@ -144,9 +152,11 @@ metadata reported by authored code is authentic.
   can treat source-derived context as untrusted.
 - **Instrumentation weakening fidelity or policy.** Keep all raw response code
   unchanged. Transform only the review entry, never weaken authored CSP, and
-  return a specific review limitation when encoding, policy, or markup makes
-  safe insertion unavailable. The review result identifies itself as
-  `instrumented_review`; raw remains the fidelity reference.
+  only for an iframe document-navigation request; authored fetches receive
+  ordinary granted bytes. Return a specific review limitation when encoding,
+  policy, markup, or authenticated probe activation makes safe insertion
+  unavailable. The review result identifies itself as `instrumented_review`;
+  raw remains the fidelity reference.
 - **Resource exhaustion.** Bound headers, request concurrency, request
   duration, file streaming resources, state size, startup waits, and idle
   lifetime. Make waits and body reads cancellable, and scope listeners,
@@ -263,9 +273,11 @@ described here.
   hostname-to-loopback resolution.
 - Browser execution of untrusted authored code remains dangerous by design and
   is mitigated operationally with an isolated browser environment.
-- Instrumented content can forge selection metadata or disrupt its own review
-  interaction. Origin separation protects comments and mutation authority, not
-  the truth of an annotation anchor.
+- Instrumented content can forge selection metadata or prevent its probe from
+  becoming ready. Origin separation and the one-use lease protect comments,
+  mutation authority, and readiness from false activation; they do not protect
+  the truth of an annotation anchor or guarantee that hostile content remains
+  annotatable.
 - A human comment or source-derived excerpt can contain instructions intended
   to influence the consuming agent. Structured labeling and no implicit LLM
   invocation preserve the boundary, but the agent still decides whether to act.
