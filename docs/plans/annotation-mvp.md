@@ -1,6 +1,6 @@
 # Annotation MVP plan
 
-- Status: Phases 0–6 complete; release-ready and unpublished
+- Status: Phases 0–5 complete; Phase 6 revalidation pending; unpublished
 - Updated: 2026-07-17
 - Parent: [`PLAN.md`](../../PLAN.md)
 - Decision: [ADR 0008](../decisions/0008-separate-raw-serving-from-instrumented-review.md)
@@ -11,9 +11,9 @@
 Ship human annotation in `0.1.0` without changing the raw URL or writing into a
 served project. A human selects an element or leaves freeform feedback in a
 separate review surface; one agent receives durable structured events through a
-foreground CLI operation. After the agent edits the selected entry HTML, the
-ready review refreshes its own iframe automatically so the same human-agent
-feedback loop can continue.
+foreground CLI operation. After the agent edits the selected entry HTML or a
+bounded linked resource loaded by the review, the ready review refreshes its
+own iframe automatically so the same human-agent feedback loop can continue.
 
 The design borrows the useful separation in Lavish AXI—detached serving,
 browser-side review, and a foreground structured wait—but not its public bind,
@@ -58,13 +58,15 @@ specifications.
 - Stop preserves pending work. Deletion of drafts or unacknowledged events
   requires explicit discard; retry tombstones are bounded.
 - Logs remain content-free diagnostics and never deliver feedback.
-- A ready review owns one bounded observer for its original selected entry.
-  Confirmed byte changes notify the trusted shell and refresh only its
+- A ready review owns one bounded observer for its original selected entry and
+  authorized non-entry resources successfully served to the review content
+  origin. Confirmed byte changes notify the trusted shell and refresh only its
   instrumented iframe; raw responses and already-loaded raw consumers remain
   passive.
-- Observation is limited to the selected entry path. It does not watch the
-  whole serving grant, switch to a newly created output file, launch or control
-  a browser, or turn raw serving into a development server.
+- Observation never watches the whole serving grant. Entry identity stays fixed;
+  linked resources enter a bounded set only after completed review GET bodies.
+  The runtime does not launch a browser or turn raw serving into a development
+  server.
 - Browser installation and product browser launch or automation stay outside
   this repository. Development-only browser validation remains package-excluded.
 
@@ -80,9 +82,10 @@ htmlview feedback --wait <review>
 Explore/Annotate switch. Queue persists a draft; Send publishes selected work;
 Send & End publishes the final work and closes the review listeners. The agent
 uses the returned cursor in its next feedback request after applying a batch.
-While the review remains ready, an edit to the original entry automatically
-reloads the review iframe; the human uses Send rather than Send & End to keep
-iterating. The raw URL serves the latest bytes on its next request, but
+While the review remains ready, an edit to the original entry or a linked
+resource loaded by the review automatically reloads its iframe; the human uses
+Send rather than Send & End to keep iterating. The raw URL serves the latest
+bytes on its next request, but
 `htmlview` does not force unrelated raw tabs or other consumers to refetch.
 
 A stopped, unended review resumes for the same canonical-root/public-entry
@@ -92,16 +95,16 @@ counts discoverable.
 
 ## Phase status
 
-| Phase                                     | Status   | Outcome                                         |
-| ----------------------------------------- | -------- | ----------------------------------------------- |
-| 0. Contracts and decisions                | Complete | Public specs, ADRs, domain language, doc tests  |
-| Prerequisite: Effect CLI/logging          | Complete | One final command model and diagnostic boundary |
-| 1. Authorized reads and review lifecycle  | Complete | Review identity, origins, scopes, protocol      |
-| 2. Durable feedback and agent delivery    | Complete | Store, transitions, CLI/control operations      |
-| 3. Instrumented content and trusted shell | Complete | Entry probe, shell UI, browser boundaries       |
-| 4. Security and fidelity hardening        | Complete | Adversarial matrix and authenticated readiness  |
-| 5. Automatic selected-entry refresh       | Complete | Observe, notify, reload, preserve review state  |
-| 6. Packaging and release matrix           | Complete | Measurements, release commands, and review pass |
+| Phase                                     | Status     | Outcome                                         |
+| ----------------------------------------- | ---------- | ----------------------------------------------- |
+| 0. Contracts and decisions                | Complete   | Public specs, ADRs, domain language, doc tests  |
+| Prerequisite: Effect CLI/logging          | Complete   | One final command model and diagnostic boundary |
+| 1. Authorized reads and review lifecycle  | Complete   | Review identity, origins, scopes, protocol      |
+| 2. Durable feedback and agent delivery    | Complete   | Store, transitions, CLI/control operations      |
+| 3. Instrumented content and trusted shell | Complete   | Entry probe, shell UI, browser boundaries       |
+| 4. Security and fidelity hardening        | Complete   | Adversarial matrix and authenticated readiness  |
+| 5. Automatic selected-entry refresh       | Complete   | Observe, notify, reload, preserve review state  |
+| 6. Packaging and release matrix           | Revalidate | Rerun release-only commands and measurements    |
 
 ## Prerequisite: Effect CLI and logging
 
@@ -189,19 +192,21 @@ channel that later needs replacing.
   stopped lifecycle barrier, leaving every failed transition retryable as
   ready-and-live or stopped-and-closed.
 
-## Phase 5: automatic selected-entry refresh
+## Phase 5: automatic review refresh
 
-**Complete.** One scoped observer per ready review combines fixed-path
-filesystem hints with bounded metadata fallback checks, reauthorizes through
-the shared file boundary, confirms byte revisions, and coalesces transitions.
+**Complete.** One scoped observer per ready review combines fixed-entry hints
+with bounded completed-resource registration, exact-path watches, and metadata
+fallback checks. It reauthorizes through the shared file boundary, confirms
+byte revisions, and coalesces transitions without enumerating the grant.
 The shell polls a same-origin bounded entry-state endpoint and stages only its
 instrumented iframe through a one-use expected-revision capability, promoting
-the candidate after authenticated probe readiness. Browser evidence covers
+the candidate after authenticated probe readiness. Pending resource revisions
+survive staged navigation, and dirty feedback defers resource reload. Browser evidence covers
 edit-only refresh, transform-time B→C→B races, failed-candidate preservation,
 rapid and unchanged writes, atomic replacement, temporary unavailability,
 transient poll failure, hidden/page-history pause and resume, terminal peer End,
-multiple shell clients, stale editor clearing, draft revision continuity, and
-raw fidelity.
+multiple shell clients, linked-resource refresh, unrelated-file exclusion,
+stale editor clearing, draft revision continuity, and raw fidelity.
 
 ## Phase 6: packaging and release matrix
 
@@ -209,18 +214,19 @@ raw fidelity.
   installed-package guidance, build/package checks, and macOS/Node 22 Linux
   installed review/observer lifecycle evidence are implemented and tested;
   browser controllers remain external.
-- **Complete:** rerun the automatic-refresh resource and performance
+- **Revalidate:** rerun the automatic-refresh resource and performance
   measurements against the recorded Phase 10 baseline, including one ready
-  review with its bounded observer.
-- **Complete:** the full release-command matrix and final implementation/diet
-  review pass after the automatic-refresh resource and performance bounds were
-  recorded.
+  review with the current bounded served-resource observer.
+- **Revalidate:** rerun the external browser-use check, Linux package check,
+  audit, and final implementation/diet review after the current observer's
+  resource and performance bounds are recorded.
 
 ### Release measurement evidence
 
 Commit `a006c375b35c93c61c2404938a66653cdba87150` was measured on macOS
 26.5.1 arm64 with Node 24.15.0 and pnpm 11.13.0. These are local medians, not
-benchmarks. Package and install figures use one clean packed artifact; process
+benchmarks, and they predate the current served-resource observer. Package and
+install figures use one clean packed artifact; process
 samples use the installed executable. An empty query uses a fresh state root
 and does not launch a supervisor. Empty-supervisor RSS is sampled after its only
 raw session stops; ready-review RSS is sampled after the review observer reports
@@ -244,7 +250,7 @@ increase primarily because the token-aware transform adds external `parse5`
 8.0.1 and `entities` 8.0.0 runtime trees rather than duplicating them into the
 standalone bundles. Cold version, empty-query, and serving readiness show no
 regression in this sample. The complete annotation service raises empty-daemon
-RSS by 9,296 KiB from Phase 10; activating one bounded selected-entry observer
+RSS by 9,296 KiB from Phase 10; activating one bounded refresh observer
 adds 704 KiB (0.8%) over that current empty supervisor.
 
 ## Deliberately deferred
@@ -261,16 +267,18 @@ adds 704 KiB (0.8%) over that current empty supervisor.
 
 ## Next action
 
-Keep the release-ready candidate unpublished. Production promotion is outside
-this plan and requires a later explicit action.
+Rerun the Phase 6 release-only commands and measurements. Keep the candidate
+unpublished; production promotion requires a later explicit action.
 
 ## Completion gate
 
 Annotation is complete only when a human can send element-targeted and freeform
 feedback, one foreground agent command receives it durably across interruption,
-an agent edit to the original entry refreshes the ready review automatically,
+an agent edit to the original entry or a tracked linked resource refreshes the ready review automatically,
 raw serving remains byte-faithful and independent, review limitations are
 explicit, private state stays outside every grant, and the complete release
 matrix passes. Do not publish automatically.
 
-This gate is satisfied for the unpublished `0.1.0` release candidate.
+The implementation portion of this gate is satisfied. Phase 6 release
+revalidation remains before the unpublished `0.1.0` candidate is called
+release-ready again.

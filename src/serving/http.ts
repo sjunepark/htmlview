@@ -1,11 +1,14 @@
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { type IncomingMessage, type ServerResponse } from "node:http";
 import path from "node:path";
 import type { Readable } from "node:stream";
 import { Effect, type Scope } from "effect";
 import { contentType } from "mime-types";
 import { ContentListenerError } from "../errors.js";
-import { openAuthorizedFile } from "./authorized-file.js";
+import {
+  openAuthorizedFile,
+  type AuthorizedFileMetadata,
+} from "./authorized-file.js";
 import type { ServingGrant } from "./grant.js";
 import { hasExactAuthority, startLoopbackHttpListener } from "./listener.js";
 
@@ -19,6 +22,23 @@ export interface StaticSessionServer {
 
 export interface StaticHandlerOptions {
   readonly hostname: string;
+  readonly observeServedFile?: (
+    file: ServedFileDescriptor,
+  ) => ServedFileObservation | undefined;
+}
+
+export interface ServedFileDescriptor {
+  readonly target: string;
+  readonly metadata: AuthorizedFileMetadata;
+}
+
+export interface ServedFileSnapshot extends ServedFileDescriptor {
+  readonly revision: `sha256:${string}`;
+}
+
+export interface ServedFileObservation {
+  complete(revision: `sha256:${string}`): void;
+  cancel(): void;
 }
 
 function send(
@@ -101,26 +121,108 @@ function isNotModified(
 function streamAuthorizedFile(
   stream: Readable,
   response: ServerResponse,
+  observation?: ServedFileObservation,
 ): Effect.Effect<void> {
   return Effect.callback<void>((resume, signal) => {
+    const hash = observation === undefined ? undefined : createHash("sha256");
     const destroy = (): void => {
       if (!stream.destroyed) stream.destroy();
       if (!response.destroyed) response.destroy();
     };
+    let completed = false;
+    let sourceEnded = false;
+    let observationSettled = false;
+    const cancelObservation = (): void => {
+      if (observationSettled || observation === undefined) return;
+      observationSettled = true;
+      try {
+        observation.cancel();
+      } catch {
+        // Observation is auxiliary; a consumer failure must not change serving.
+      }
+    };
+    const completeObservation = (revision: `sha256:${string}`): void => {
+      if (observationSettled || observation === undefined) return;
+      observationSettled = true;
+      try {
+        observation.complete(revision);
+      } catch {
+        // Observation is auxiliary; a consumer failure must not change serving.
+      }
+    };
+    const cleanup = (): void => {
+      stream.off("data", onData);
+      stream.off("end", onEnd);
+      stream.off("error", onStreamError);
+      response.off("finish", onResponseFinish);
+      response.off("close", onResponseClose);
+    };
+    const finish = (): void => {
+      if (completed) return;
+      completed = true;
+      cancelObservation();
+      cleanup();
+      resume(Effect.void);
+    };
+    const onData = (chunk: Buffer | string): void => {
+      hash?.update(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+    };
+    const onEnd = (): void => {
+      sourceEnded = true;
+    };
+    const onStreamError = (): void => {
+      if (!response.destroyed) response.destroy();
+    };
+    const onResponseFinish = (): void => {
+      if (sourceEnded && hash !== undefined)
+        completeObservation(`sha256:${hash.digest("hex")}`);
+      finish();
+    };
+    const onResponseClose = (): void => {
+      if (!response.writableFinished && !stream.destroyed) stream.destroy();
+      finish();
+    };
     try {
-      stream.once("error", () => response.destroy());
-      stream.once("close", () => resume(Effect.void));
-      response.once("close", () => {
-        if (!stream.destroyed) stream.destroy();
-      });
+      if (hash !== undefined) stream.on("data", onData);
+      stream.once("end", onEnd);
+      stream.once("error", onStreamError);
+      response.once("finish", onResponseFinish);
+      response.once("close", onResponseClose);
       if (signal.aborted) destroy();
       else stream.pipe(response);
     } catch (cause) {
       destroy();
+      cancelObservation();
+      cleanup();
+      completed = true;
       resume(Effect.die(cause));
     }
-    return Effect.sync(destroy);
+    return Effect.sync(() => {
+      cancelObservation();
+      cleanup();
+      destroy();
+    });
   });
+}
+
+function beginFileObservation(
+  options: StaticHandlerOptions,
+  target: string,
+  metadata: AuthorizedFileMetadata,
+): ServedFileObservation | undefined {
+  try {
+    return options.observeServedFile?.({ target, metadata });
+  } catch {
+    return undefined;
+  }
+}
+
+function completeEmptyObservation(observation: ServedFileObservation): void {
+  try {
+    observation.complete(`sha256:${createHash("sha256").digest("hex")}`);
+  } catch {
+    // Observation is auxiliary; a consumer failure must not change serving.
+  }
 }
 
 export function createStaticHandler(
@@ -193,10 +295,36 @@ export function createStaticHandler(
           });
 
         yield* Effect.sync(() => response.writeHead(200, headers));
-        if (request.method === "HEAD" || opened.metadata.size === 0n)
+        if (request.method === "HEAD")
           return yield* Effect.sync(() => response.end());
+        const observation = beginFileObservation(
+          options,
+          target,
+          opened.metadata,
+        );
+        if (opened.metadata.size === 0n)
+          return yield* Effect.sync(() => {
+            if (observation !== undefined) {
+              let settled = false;
+              response.once("finish", () => {
+                if (settled) return;
+                settled = true;
+                completeEmptyObservation(observation);
+              });
+              response.once("close", () => {
+                if (settled) return;
+                settled = true;
+                try {
+                  observation.cancel();
+                } catch {
+                  // Observation is auxiliary.
+                }
+              });
+            }
+            response.end();
+          });
         const stream = yield* opened.openReadStream;
-        return yield* streamAuthorizedFile(stream, response);
+        return yield* streamAuthorizedFile(stream, response, observation);
       }),
     );
 }

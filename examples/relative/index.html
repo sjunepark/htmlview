@@ -8,20 +8,63 @@
   </head>
   <body>
     <main>
-      <img src="./assets/mark.svg" alt="Green geometric htmlview mark" />
-      <p class="eyebrow">Relative asset fixture</p>
-      <h1>HTML, CSS, SVG, modules, and fetch</h1>
-      <p id="message">Loading JSON…</p>
-      <dl>
+      <section class="hero">
+        <img src="./assets/mark.svg" alt="Green geometric htmlview mark" />
         <div>
-          <dt>Module status</dt>
-          <dd id="module-status">waiting</dd>
+          <p class="eyebrow">Relative asset fixture</p>
+          <h1>Byte-Faithful HTML Review</h1>
+          <p id="message">Loading JSON…</p>
         </div>
-        <div>
-          <dt>Current origin</dt>
-          <dd id="origin"></dd>
+      </section>
+      <section class="cards" aria-label="Review highlights">
+        <article class="card card-accent">
+          <span class="card-label">Module status</span>
+          <strong id="module-status">waiting</strong>
+          <small>Relative module loaded</small>
+        </article>
+        <article class="card">
+          <span class="card-label">Review mode</span>
+          <strong>Live refresh</strong>
+          <small>Annotations stay in sync</small>
+        </article>
+        <article class="card">
+          <span class="card-label">Asset graph</span>
+          <strong>4 linked files</strong>
+          <small>CSS · SVG · JS · JSON</small>
+        </article>
+      </section>
+      <section class="details" aria-label="Serving details">
+        <div class="section-heading">
+          <span class="eyebrow">Under the hood</span>
+          <span class="pill">Loopback only</span>
         </div>
-      </dl>
+        <dl>
+          <div>
+            <dt>Current origin</dt>
+            <dd id="origin"></dd>
+          </div>
+          <div>
+            <dt>Serving mode</dt>
+            <dd>Loopback-only, byte-faithful delivery</dd>
+          </div>
+          <div>
+            <dt>Asset strategy</dt>
+            <dd>Relative stylesheet, image, module, and JSON references</dd>
+          </div>
+          <div>
+            <dt>Review behavior</dt>
+            <dd>Instrumented annotations with automatic entry refresh</dd>
+          </div>
+          <div>
+            <dt>Feedback delivery</dt>
+            <dd>Durable cursor-based batches for agent workflows</dd>
+          </div>
+          <div>
+            <dt>Asset fidelity</dt>
+            <dd>Original HTML and relative assets remain byte-faithful</dd>
+          </div>
+        </dl>
+      </section>
     </main>
     <script type="module" src="./scripts/app.js"></script>
   </body>

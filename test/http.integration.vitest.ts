@@ -19,16 +19,22 @@ import path from "node:path";
 import { afterEach, beforeEach, describe, it } from "vitest";
 import { promisify } from "node:util";
 import { Effect, Exit, Scope } from "effect";
+import { createHash } from "node:crypto";
 import {
   isWithinRoot,
   resolveServingGrant as resolveServingGrantEffect,
   type ServingGrant,
 } from "../src/serving/grant.js";
 import {
+  createStaticHandler,
   generateSessionHostname,
   startStaticServer as startStaticServerEffect,
+  type ServedFileDescriptor,
+  type ServedFileObservation,
+  type ServedFileSnapshot,
   type StaticSessionServer,
 } from "../src/serving/http.js";
+import { startLoopbackHttpListener } from "../src/serving/listener.js";
 
 interface ResponseResult {
   readonly status: number;
@@ -78,7 +84,52 @@ async function startStaticServer(
   }
 }
 
+async function startObservedStaticServer(
+  sessionGrant: ServingGrant,
+  options: {
+    readonly hostname: string;
+    readonly observeServedFile: (
+      file: ServedFileDescriptor,
+    ) => ServedFileObservation | undefined;
+  },
+): Promise<ManagedStaticSessionServer> {
+  const scope = await Effect.runPromise(Scope.make());
+  try {
+    const listener = await Effect.runPromise(
+      startLoopbackHttpListener(
+        createStaticHandler(sessionGrant, options),
+      ).pipe(Effect.provideService(Scope.Scope, scope)),
+    );
+    const origin = `http://${options.hostname}:${listener.port}`;
+    let closePromise: Promise<void> | undefined;
+    return {
+      bindAddress: listener.bindAddress,
+      hostname: options.hostname,
+      port: listener.port,
+      origin,
+      url: `${origin}${sessionGrant.entryUrlPath}`,
+      close: () =>
+        (closePromise ??= Effect.runPromise(Scope.close(scope, Exit.void))),
+    };
+  } catch (error) {
+    await Effect.runPromise(Scope.close(scope, Exit.void));
+    throw error;
+  }
+}
+
 function rawRequest(
+  rawPath: string,
+  options: {
+    method?: string;
+    host?: string;
+    headers?: Record<string, string>;
+  } = {},
+): Promise<ResponseResult> {
+  return requestServer(server, rawPath, options);
+}
+
+function requestServer(
+  targetServer: StaticSessionServer,
   rawPath: string,
   options: {
     method?: string;
@@ -90,11 +141,11 @@ function rawRequest(
     const operation = request(
       {
         hostname: "127.0.0.1",
-        port: server.port,
+        port: targetServer.port,
         method: options.method ?? "GET",
         path: rawPath,
         headers: {
-          host: options.host ?? `${server.hostname}:${server.port}`,
+          host: options.host ?? `${targetServer.hostname}:${targetServer.port}`,
           ...options.headers,
         },
       },
@@ -285,6 +336,104 @@ describe("faithful static HTTP", () => {
       const response = await rawRequest(url);
       assert.equal(response.status, 200);
       assert.equal(response.body.toString(), expected);
+    }
+  });
+
+  it("observes only admitted, completed GET bodies with exact revisions", async () => {
+    const observed: ServedFileSnapshot[] = [];
+    let cancelledObservations = 0;
+    const rejected = path.join(root, "assets", "rejected.bin");
+    const aborted = path.join(root, "assets", "aborted.bin");
+    const empty = path.join(root, "assets", "observed-empty.txt");
+    const linked = path.join(root, "observed-linked.css");
+    const canonicalRejected = path.join(grant.root, "assets", "rejected.bin");
+    const canonicalAborted = path.join(grant.root, "assets", "aborted.bin");
+    const canonicalEmpty = path.join(
+      grant.root,
+      "assets",
+      "observed-empty.txt",
+    );
+    const canonicalLinked = path.join(grant.root, "observed-linked.css");
+    await writeFile(rejected, "");
+    await writeFile(aborted, "");
+    await truncate(rejected, 16 * 1024 * 1024);
+    await truncate(aborted, 64 * 1024 * 1024);
+    await writeFile(empty, "");
+    await symlink(path.join(root, "assets", "app.css"), linked);
+    const observedServer = await startObservedStaticServer(grant, {
+      hostname: "h-observed.localhost",
+      observeServedFile: (file) =>
+        file.target === canonicalRejected
+          ? undefined
+          : {
+              complete: (revision) => observed.push({ ...file, revision }),
+              cancel: () => {
+                cancelledObservations += 1;
+              },
+            },
+    });
+    try {
+      const stylesheet = await requestServer(observedServer, "/assets/app.css");
+      assert.equal(stylesheet.status, 200);
+      assert.equal(observed.length, 1);
+      assert.equal(
+        observed[0]?.target,
+        path.join(grant.root, "assets", "app.css"),
+      );
+      assert.equal(
+        observed[0]?.revision,
+        `sha256:${createHash("sha256").update(stylesheet.body).digest("hex")}`,
+      );
+
+      await requestServer(observedServer, "/assets/app.css", {
+        method: "HEAD",
+      });
+      await requestServer(observedServer, "/assets/app.css", {
+        headers: { "if-none-match": String(stylesheet.headers.etag) },
+      });
+      assert.equal(observed.length, 1);
+
+      await requestServer(observedServer, "/assets/observed-empty.txt");
+      assert.equal(observed.at(-1)?.target, canonicalEmpty);
+      assert.equal(
+        observed.at(-1)?.revision,
+        `sha256:${createHash("sha256").digest("hex")}`,
+      );
+
+      await requestServer(observedServer, "/observed-linked.css");
+      assert.equal(observed.at(-1)?.target, canonicalLinked);
+      assert.equal(observed.at(-1)?.revision, observed[0]?.revision);
+
+      const beforeRejected = observed.length;
+      await requestServer(observedServer, "/assets/rejected.bin");
+      assert.equal(observed.length, beforeRejected);
+
+      await new Promise<void>((resolve, reject) => {
+        const operation = request(
+          {
+            hostname: "127.0.0.1",
+            port: observedServer.port,
+            path: "/assets/aborted.bin",
+            headers: {
+              host: `${observedServer.hostname}:${observedServer.port}`,
+            },
+          },
+          (response) => {
+            response.once("data", () => response.destroy());
+            response.once("close", resolve);
+          },
+        );
+        operation.once("error", reject);
+        operation.end();
+      });
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      assert.equal(
+        observed.some((file) => file.target === canonicalAborted),
+        false,
+      );
+      assert.equal(cancelledObservations, 1);
+    } finally {
+      await observedServer.close();
     }
   });
 

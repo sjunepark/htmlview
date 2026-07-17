@@ -2,7 +2,7 @@
 
 > **Status:** This is the accepted `0.1.0` target. Raw serving, Effect CLI,
 > foreground/private diagnostics, annotation runtime, and automatic
-> selected-entry refresh are implemented and release validation is complete.
+> review refresh are implemented and release validation is complete.
 > The package remains unpublished. See
 > [the repository plan](https://github.com/sjunepark/htmlview/blob/main/PLAN.md)
 > for implementation status.
@@ -26,8 +26,9 @@ that is already ready for a separately supplied browser tool.
 
 A human reviewer needs a different URL where they can select an element or
 leave page-level feedback. The agent receives that work as durable structured
-feedback. After the agent edits the original selected entry HTML, the review
-updates automatically so the human can inspect the fix and continue the loop.
+feedback. After the agent edits the original selected entry HTML or a linked
+resource that the review loaded, the review updates automatically so the human
+can inspect the fix and continue the loop.
 The human does not need the CLI, and the product never invokes an LLM or edits
 source automatically.
 
@@ -47,8 +48,9 @@ already sufficient.
    review surface without modifying the project.
 7. Let one agent consumer wait for, retry, and explicitly acknowledge sent
    feedback without using logs as transport.
-8. After that agent edits the original selected entry HTML, automatically
-   refresh the ready review so the human can send another feedback batch.
+8. After that agent edits the original selected entry HTML or a linked resource
+   loaded by the review, automatically refresh the ready review so the human
+   can send another feedback batch.
 
 ## `0.1.0` requirements
 
@@ -107,13 +109,15 @@ already sufficient.
 - Keep the workflow one-way: no persistent pins, discussion threads, or agent
   replies in the review page.
 - While a review is ready, observe confirmed byte changes to its original
-  selected entry and automatically reload only the instrumented review iframe.
-  Coalesce rapid writes, preserve durable drafts with their capture revisions,
-  clear selection state tied to the replaced DOM, and require the replacement
-  document to complete authenticated probe readiness before annotation resumes.
-- Keep change observation review-owned and bounded. It does not watch the whole
-  serving grant, switch to a different output file, inject a client into raw
-  HTML, or claim to refresh an already-loaded raw browser or other consumer.
+  selected entry and to bounded, successfully served linked resources, then
+  automatically reload only the instrumented review iframe. Coalesce rapid
+  writes, preserve durable drafts and unsaved feedback, clear selection state
+  tied to changed entry DOM, and require the replacement document to complete
+  authenticated probe readiness before annotation resumes.
+- Keep change observation review-owned and bounded. Track only authorized
+  resource bodies actually completed by the review content origin; never watch
+  the whole serving grant. Do not switch to a different output entry, inject a
+  client into raw HTML, or claim to refresh an already-loaded raw consumer.
 - If the original entry pathname is temporarily missing, forbidden, or
   unreadable, keep the last rendered review visible, show that the entry is
   unavailable, and disable new annotation until authorized readable bytes
@@ -180,9 +184,10 @@ The [Threat Model](THREAT_MODEL.md) owns required controls and residual risks;
 - Raw HTML and assets arrive without injected markup or runtime code.
 - Review creation leaves the raw URL, bytes, headers, paths, origin, security,
   and lifecycle unchanged.
-- Editing the original selected entry automatically refreshes a ready review
-  without a manual browser reload; the raw URL serves the new bytes on its next
-  request without gaining a push or injected reload mechanism.
+- Editing the original selected entry or a bounded linked resource loaded by
+  the review automatically refreshes a ready review without a manual browser
+  reload; the raw URL serves the new bytes on its next request without gaining
+  a push or injected reload mechanism.
 - A human can send element-targeted and freeform feedback, and an agent can
   receive it after browser closure or supervisor restart without reading logs.
 - The agent never chooses a port, manages a background process, or guesses

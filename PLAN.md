@@ -9,9 +9,10 @@
 Deliver a browser-neutral CLI that turns an explicitly granted local HTML tree
 into a byte-faithful loopback URL and, on request, provides a separate human
 review surface whose comments reach one agent as durable structured feedback.
-When that agent edits the selected entry HTML, the live review refreshes its
-own instrumented representation automatically so the human can continue the
-feedback loop without a manual reload.
+When that agent edits the selected entry HTML or a bounded linked resource
+loaded by the review, the live review refreshes its own instrumented
+representation automatically so the human can continue the feedback loop
+without a manual reload.
 
 ## Current state
 
@@ -20,11 +21,13 @@ the existing release gate are implemented. Human annotation is a core
 first-release feature. Its public contracts are accepted. The Effect CLI,
 native output boundary, symmetric state/grant exclusion, foreground/private
 diagnostic sinks, durable annotation delivery, and the trusted browser review
-surface are implemented. Automatic selected-entry refresh and the source-checkout
-`example:review` workflow, installed-package review guidance, and the macOS and
-Node 22 Linux installed review/observer lifecycle checks are now implemented.
-The complete release-command matrix passes, so `0.1.0` is demonstrably
-release-ready and remains unpublished. The annotation authorization,
+surface are implemented. Bounded entry and served-resource refresh and the
+source-checkout `example:review` workflow, installed-package review guidance,
+and the macOS and Node 22 Linux installed review/observer lifecycle checks are
+now implemented. The complete current-platform `pnpm run check` gate passes.
+The external browser-use check, Linux package check, audit, and resource
+measurements still need to be rerun against this observer revision before
+`0.1.0` is called release-ready again. The candidate remains unpublished. The annotation authorization,
 hostile-content, authenticated probe-readiness, and explicit
 instrumentation-limitation matrices pass and must remain intact through the
 refresh work. Review navigation now requires a shell-minted one-use capability,
@@ -43,16 +46,16 @@ Documentation now has explicit ownership and current-versus-target status; see
 The organized surface, contract tests, link/fragment checks, and packaged-link
 closure pass the complete current-platform `pnpm run check` gate.
 
-| Slice                             | Status   | Detail                                                                |
-| --------------------------------- | -------- | --------------------------------------------------------------------- |
-| Raw serving and supervisor        | Complete | Fidelity, confinement, private control, lifecycle, packaging          |
-| Effect execution model            | Complete | Typed failures, schemas, cancellation, scopes, release measurements   |
-| Annotation and CLI contracts      | Complete | Product, CLI, architecture, threat model, ADRs 0008–0009              |
-| Documentation organization        | Complete | Canonical map, ADR index, contract cleanup, validation hardening      |
-| Effect CLI and diagnostic logging | Complete | Native CLI, private logs, measurements, and complete release evidence |
-| Annotation runtime                | Complete | Durable feedback, trusted review UI, and automatic entry refresh      |
-| Packaging and release hardening   | Complete | Installed checks, measurements, release matrix, and review pass       |
-| Publication                       | Pending  | Requires a later explicit production-promotion action                 |
+| Slice                             | Status     | Detail                                                                |
+| --------------------------------- | ---------- | --------------------------------------------------------------------- |
+| Raw serving and supervisor        | Complete   | Fidelity, confinement, private control, lifecycle, packaging          |
+| Effect execution model            | Complete   | Typed failures, schemas, cancellation, scopes, release measurements   |
+| Annotation and CLI contracts      | Complete   | Product, CLI, architecture, threat model, ADRs 0008–0009              |
+| Documentation organization        | Complete   | Canonical map, ADR index, contract cleanup, validation hardening      |
+| Effect CLI and diagnostic logging | Complete   | Native CLI, private logs, measurements, and complete release evidence |
+| Annotation runtime                | Complete   | Durable feedback, trusted review UI, and bounded automatic refresh    |
+| Packaging and release hardening   | Revalidate | Installed checks exist; rerun release-only checks and measurements    |
+| Publication                       | Pending    | Requires a later explicit production-promotion action                 |
 
 ## Release invariants
 
@@ -68,9 +71,9 @@ closure pass the complete current-platform `pnpm run check` gate.
   CLI text and stderr diagnostics stay separate.
 - Review uses different shell/content origins and cannot add to or change the
   raw origin.
-- Entry-change observation belongs to the review lifecycle. It may refresh the
-  instrumented review iframe but never injects a client into the raw page or
-  claims to refresh arbitrary raw consumers.
+- Entry and tracked-resource observation belongs to the review lifecycle. It
+  may refresh the instrumented review iframe but never enumerates the grant,
+  injects a client into the raw page, or claims to refresh raw consumers.
 - Feedback is durable, one-way, cursor-delivered, and never transported through
   logs.
 
@@ -89,7 +92,7 @@ grant/private-state exclusion before the file sink is enabled.
 
 Then execute [`docs/plans/annotation-mvp.md`](docs/plans/annotation-mvp.md).
 Its phases add shared authorized reads, review lifecycle, durable feedback,
-trusted-shell/instrumented-content browser surfaces, automatic selected-entry
+trusted-shell/instrumented-content browser surfaces, bounded automatic review
 refresh, and final fidelity/security hardening. Annotation is not complete when
 only the browser UI works; durable agent delivery and the edit-review loop are
 both part of the feature.
@@ -119,17 +122,23 @@ and a size comparison justifies changing it.
 
 ## Next action
 
-Keep the release-ready `0.1.0` candidate unpublished. Production promotion is
-outside this plan and requires a later explicit action; never publish
-automatically.
+Rerun the external browser-use check, Linux package check, audit, and resource
+measurements against the bounded served-resource observer. Keep `0.1.0`
+unpublished; production promotion requires a later explicit action.
 
 ## Progress log
 
 ### 2026-07-17
 
-- Completed automatic selected-entry refresh with scoped authorization,
-  coalescing, temporary-unavailability handling, authenticated iframe reload,
-  and bounded shell polling.
+- Completed automatic entry and served-resource refresh with scoped
+  authorization, deterministic byte revisions, unrelated-file exclusion,
+  polling fallback, staged follow-up navigation, dirty-feedback deferral, and
+  bounded shell polling.
+- Validation after that implementation: `pnpm run check` passes the full
+  Vitest and browser-origin suites, black-box CLI/example workflows,
+  interoperability, build validation, and package install/reinstall/uninstall
+  smoke. Release-only external/Linux/audit checks and refreshed resource
+  measurements remain pending.
 - Added and documented `pnpm example:review`; its result includes the review
   URL/ID and associated raw-session URL/ID.
 - Bound automatic navigation to the observer-confirmed revision, added bounded
@@ -138,9 +147,8 @@ automatically.
 - Kept the authenticated rendered iframe visible across failed refresh races,
   restored same-revision retry/limitation state, and paused polling for ordinary
   hidden documents as well as page-history transitions.
-- Validation: `pnpm run check` passes 198 Vitest tests, black-box CLI/example
-  workflows, 19 browser-origin tests, interoperability, build validation, and
-  package install/reinstall/uninstall smoke.
+- Before the served-resource observer change, `pnpm run check` passed 198
+  Vitest tests and 19 browser-origin tests.
 - Added one package-excluded installed-artifact workflow shared by the
   current-platform and Node 22 Linux checks. It proves raw fidelity, review
   shell startup, feedback-state reads, observer-detected entry revisions, and
@@ -155,6 +163,6 @@ automatically.
   before flowing, resuming only after scope closure, and requiring an incomplete
   destroyed response. The focused contract passes 100 macOS runs and 50 clean
   Node 22 Bookworm runs.
-- Final release matrix: `pnpm run check`, `pnpm run validate:browser-use`,
-  `pnpm run validate:package:linux`, `pnpm audit`, `pnpm run validate:docs`, and
-  `git diff --check` pass. The package remains unpublished.
+- The prior observer revision passed the full release matrix. That evidence is
+  historical and must not be attributed to the current observer until the
+  release-only checks above are rerun.

@@ -3,8 +3,8 @@
 - Status: Accepted
 - Date: 2026-07-16
 - Amended: 2026-07-17 to authenticate document navigation/readiness and target
-  messages, harden lifecycle persistence, and make selected-entry refresh
-  review-owned, revision-bound, automatic, and terminally bounded
+  messages, harden lifecycle persistence, and make entry plus served-resource
+  refresh review-owned, revision-bound, automatic, and terminally bounded
 - Extends: [ADR 0001](0001-separate-serving-from-browser-control.md)
 - Related: [ADR 0009](0009-adopt-effect-cli-and-logging.md) defines the CLI and
   diagnostic boundary
@@ -72,23 +72,35 @@ explicit review attached to a live raw session:
 - Authored CSP and other document policy are not weakened. If safe
   instrumentation cannot run, the review reports that limitation while the raw
   URL remains available.
-- A ready review owns one bounded observer for the fixed selected-entry pathname
-  represented by its public entry route. The initial canonical target is not a
-  permanent identity: after each change hint, reauthorize the regular file that
-  pathname currently resolves to and confirm its byte revision. This supports
-  safe atomic replacement while still rejecting root escape. Coalesce editor
-  write bursts, do not watch the whole serving grant, and do not switch the
-  review to a different output pathname.
+- A ready review owns one bounded refresh observer. It always observes the fixed
+  selected-entry pathname represented by the public entry route. It may also
+  track a bounded set of non-entry regular files only after the review content
+  origin completes an authorized GET and reports the streamed byte hash. It
+  rejects resources outside those bounds before the handler hashes their bodies,
+  reserves concurrent admissions until their response completes or aborts,
+  watches only those exact paths' parent directories and retains polling as the
+  authoritative fallback; it never recursively watches the serving grant.
+- After each hint or fallback check, reauthorize the current target and confirm
+  its bytes before changing the deterministic entry or aggregate resource
+  revision. This supports atomic replacement and symlink retargeting while
+  rejecting root escape, byte-identical writes, unrequested files, and random
+  watcher noise. Resource count, size, watcher, cadence, and concurrency limits
+  remain implementation bounds rather than grant discovery mechanisms. Forced
+  fallback byte verification rotates across the tracked set rather than hashing
+  every unchanged resource in the same poll.
 - The observer may notify the shell of an authorized availability-state change
-  without a byte revision. A content-change notification is distinct and
-  requires a confirmed revision different from the last successfully rendered
-  bytes; only that notification can trigger an iframe reload.
+  without an entry byte revision. A content-change notification requires a
+  confirmed entry revision or aggregate served-resource revision different from
+  the rendered state; only that notification can trigger an iframe reload.
 - On a confirmed change, the shell automatically reloads only its
   instrumented-content iframe. It stages the replacement under the same content
   origin and promotes it only after authenticated probe readiness, so a raced
   or failed response cannot replace the last successfully rendered document.
-  Preserve durable drafts with their capture revisions and clear transient
-  selection state tied to the replaced DOM. The raw
+  Preserve durable drafts with their capture revisions, defer resource reloads
+  while unsaved feedback is dirty, and clear transient selection state tied to
+  a replaced entry DOM. Keep observed, pending, and successfully rendered
+  resource revisions distinct so a change during staged navigation queues one
+  coalesced follow-up. The raw
   listener receives no notification route or injected reload client, so
   already-loaded raw consumers remain responsible for refetching.
 - Observer-driven navigation binds the confirmed expected revision into the
@@ -176,8 +188,9 @@ cleanable after listener or supervisor stop.
 The MVP is a one-way queue. It does not keep submitted comments as visible
 pins or threads and does not show agent replies in the review shell. Humans
 follow agent progress in their agent session; while the review remains ready,
-an edit to the original selected entry refreshes its iframe automatically so
-the human can inspect the fix and send another batch.
+an edit to the original selected entry or a tracked linked resource refreshes
+its iframe automatically so the human can inspect the fix and send another
+batch.
 
 ## Consequences
 
@@ -197,10 +210,10 @@ the human can inspect the fix and send another batch.
   network URL. The capability is already consumed and cannot be replayed.
 - Durable drafts and cursor acknowledgement add bounded private state and
   lifecycle transitions that the supervisor must serialize and recover.
-- Automatic refresh adds a scoped entry observer and trusted-shell notification
-  mechanism. They must coalesce writes, confirm revisions through authorized
-  reads, close with the review lifecycle, and never become a raw live-reload
-  mechanism.
+- Automatic refresh adds a scoped entry-and-served-resource observer and
+  trusted-shell notification mechanism. They must coalesce writes, confirm
+  revisions through authorized reads, close with the review lifecycle, and
+  never become a whole-grant watcher or raw live-reload mechanism.
 - Release evidence must compare the raw HTTP contract before and after review
   creation and exercise the shell/content boundary, CSP failure, hostile page
   scripts, durable queue, cursor retry, interruption, and package lifecycle in

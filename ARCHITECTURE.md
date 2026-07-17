@@ -4,7 +4,7 @@
 
 The raw-serving core, per-user supervisor, Effect execution model, Effect CLI,
 foreground/private diagnostic sinks, review lifecycle, trusted browser review
-surface, authenticated probe-readiness boundary, and automatic selected-entry
+surface, authenticated probe-readiness boundary, and bounded automatic review
 refresh are implemented. Packaging and the final release matrix remain. The repository
 [implementation plan](https://github.com/sjunepark/htmlview/blob/main/PLAN.md)
 owns their sequencing.
@@ -43,7 +43,7 @@ short-lived agent CLI
         +-- review lifecycle
                 +-- trusted shell origin
                 +-- instrumented-content origin --> granted files
-                +-- selected-entry observer --> shell iframe reload
+                +-- entry + served-resource observer --> shell iframe reload
                 +-- durable feedback queue --> foreground agent wait
 ```
 
@@ -255,21 +255,36 @@ write fails. Forced process shutdown instead closes every listener before
 releasing control and ownership, then reports the persistence failure; startup
 recovery converts any resulting orphaned `ready` record to `stopped`.
 
-### Automatic selected-entry refresh (implemented)
+### Automatic review refresh (implemented)
 
-A ready review owns one scoped observer for the fixed pathname represented
-by its public entry route, not the complete serving grant or its initial
-canonical target. Filesystem or metadata notifications are hints: the observer
-reauthorizes the path's current regular-file target before publishing browser
-state. An availability notification may report that no authorized readable
-entry exists; a content-change notification requires a confirmed different byte
-revision. Bursts are coalesced so ordinary editor writes and atomic path
-replacement produce one stable transition rather than a reload storm.
+A ready review owns one scoped observer for its fixed public entry pathname and
+a bounded set of non-entry resources whose authorized GET bodies completed on
+the review content origin. The HTTP handler reports the exact streamed byte
+hash through a small observer interface. A pre-stream admission check excludes
+the entry, oversized bodies, and resources beyond the tracking cap before any
+observer hashing. Admission reserves capacity until successful completion or
+abort, so concurrent requests cannot race past the cap; raw serving does not
+use that seam.
+The observer watches only registered paths' parent directories and polls every
+registered path as the authoritative fallback. It never recursively watches or
+enumerates the grant.
+
+Filesystem and metadata notifications are hints. The observer reauthorizes each
+current regular-file target before publishing browser state and uses confirmed
+byte hashes to suppress byte-identical writes. Entry availability remains
+distinct from content revision. Linked resources contribute only an aggregate
+hash, so canonical paths and bytes never cross the browser notification seam.
+Resource count, size, watched-directory, inspection-concurrency, quiet-window,
+and polling limits keep hostile fetch or filesystem activity bounded. Metadata
+checks cover the registered set each second, while forced byte verification
+rotates across at most one unchanged resource per poll instead of hashing the
+whole set in one synchronized burst.
 
 The trusted shell polls a bounded same-origin entry-state endpoint and
 stages replacement content in a second isolated iframe. Durable drafts retain
-their capture revisions; transient selection, highlight, and unsaved element
-context from the replaced DOM are cleared. The shell promotes the candidate and
+their capture revisions. Resource refresh waits while feedback is dirty;
+entry replacement clears transient selection, highlight, and unsaved element
+context tied to the replaced DOM. The shell promotes the candidate and
 discards the prior frame only after the new document completes the existing
 one-use probe and lease handshake; failed candidates are discarded without
 replacing the rendered document. Every
@@ -277,6 +292,11 @@ observer-driven navigation capability also carries the expected confirmed
 revision. The content handler rejects different bytes before creating a probe
 or recording a limitation derived from those mismatched bytes, and the shell
 retries without confusing manual Explore navigation with automatic refresh.
+Observed, pending, and rendered resource revisions are separate shell states.
+A resource change arriving during staged navigation remains pending and starts
+one coalesced follow-up after promotion or failure. Entry polling does not await
+navigation acquisition, so a newer entry revision invalidates and supersedes an
+older asset-only candidate.
 
 If the fixed pathname is temporarily missing, forbidden, or unreadable, the
 shell keeps the last successfully rendered iframe visible, shows an unavailable
@@ -325,10 +345,11 @@ raw page or other consumer refreshes only under its own control.
 
 ### Edit-review loop (implemented)
 
-1. A ready review observes its original selected entry outside the raw request
+1. A ready review observes its original selected entry and bounded authorized
+   resources successfully served to its content origin outside the raw request
    path.
-2. After an authorized read confirms a new byte revision, the trusted shell is
-   notified and reloads its content iframe.
+2. After an authorized read confirms a new entry or aggregate resource
+   revision, the trusted shell is notified and reloads its content iframe.
 3. The replacement entry is transformed and completes authenticated probe
    readiness. The shell then re-enables annotation with durable old-revision
    drafts intact and stale DOM selection state cleared.
@@ -388,9 +409,9 @@ reused after a lifecycle ends, isolating cookies, storage, caches, and service
 workers. Raw and review lifecycle mutations share one serialization boundary;
 target review mutations are serialized per review, and at most one foreground
 feedback wait is active for each review. The automatic-refresh slice adds at
-most one selected-entry observer per ready review and bounded shell
-notification work. Exact cadence, coalescing, request limits, and terminal
-retry policy are recorded in Security Validation.
+most one bounded entry-and-served-resource observer per ready review and
+bounded shell notification work. Exact resource, cadence, coalescing, request,
+and terminal retry limits are recorded in Security Validation.
 
 Exact body, connection, timer, and state limits are implementation constants in
 [Security validation](docs/SECURITY_VALIDATION.md), not user-facing tuning
@@ -410,8 +431,9 @@ flags.
 - `src/serving/http.ts`: byte-faithful raw HTTP policy and response assembly.
 - `src/serving/review.ts`: isolated review-origin routing, browser authorization,
   state projection, and durable mutation bridge.
-- `src/serving/review-entry-observer.ts`: scoped fixed-entry observation,
-  authorization, byte-revision confirmation, coalescing, and availability state.
+- `src/serving/review-entry-observer.ts`: scoped entry and served-resource
+  observation, authorization, byte-revision confirmation, coalescing, and
+  availability state.
 - `src/serving/instrumented-entry.ts`: byte-preserving selected-entry probe
   insertion and explicit instrumentation limitations.
 - `src/serving/review-assets.ts`, `src/serving/review-browser-protocol.ts`:

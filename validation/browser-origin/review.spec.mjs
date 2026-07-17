@@ -1758,3 +1758,196 @@ test("entry observation is coalesced, recoverable, and shared by review clients"
     await rm(parent, { recursive: true, force: true });
   }
 });
+
+test("served assets refresh without unrelated reloads or lost in-flight changes", async ({
+  page,
+}) => {
+  const parent = await mkdtemp(path.join(tmpdir(), "hv-review-assets-"));
+  const root = path.join(parent, "root");
+  const assets = path.join(root, "assets");
+  const entry = path.join(root, "index.html");
+  const stylesheet = path.join(assets, "site.css");
+  const unrelated = path.join(root, "unrelated.txt");
+  const environment = {
+    ...process.env,
+    HTMLVIEW_STATE_DIR: path.join(parent, "state"),
+    HTMLVIEW_IDLE_MS: "10000",
+  };
+  delete environment.NO_COLOR;
+  delete environment.FORCE_COLOR;
+  let releaseFirstProbe;
+  let releaseStaleAssetNavigation;
+  try {
+    await mkdir(assets, { recursive: true });
+    await writeFile(
+      entry,
+      '<!doctype html><html><head><link rel="stylesheet" href="/assets/site.css"></head><body><h1 id="target">Asset refresh</h1></body></html>',
+    );
+    await writeFile(stylesheet, "#target { color: rgb(0, 128, 0); }");
+    const served = await command(environment, "serve", entry, "--root", root);
+    const opened = await command(environment, "review", served.session.id);
+    await page.goto(opened.review.url);
+    const content = page.frameLocator("#content");
+    const targetColor = () =>
+      content
+        .locator("#target")
+        .evaluate((target) => getComputedStyle(target).color);
+    const entryAssetRevision = () =>
+      page.evaluate(async () => {
+        const response = await fetch("/.htmlview/api/entry");
+        const result = await response.json();
+        return result.entry.asset_revision;
+      });
+    await expect(page.locator("#live")).toHaveText("Annotation tools ready");
+    await expect.poll(targetColor).toBe("rgb(0, 128, 0)");
+    await page.locator("#content").evaluate((iframe) => {
+      window.__htmlviewAssetFrame = iframe;
+    });
+
+    await page.getByRole("button", { name: "Page note" }).click();
+    await page.locator("#comment").fill("Unsaved asset review feedback");
+    await writeFile(unrelated, "not requested by the review");
+    await page.waitForTimeout(1_500);
+    expect(
+      await page.evaluate(
+        () =>
+          document.querySelector("#content") === window.__htmlviewAssetFrame,
+      ),
+    ).toBe(true);
+    await expect(page.locator("#editor")).toBeVisible();
+    await expect(page.locator("#comment")).toHaveValue(
+      "Unsaved asset review feedback",
+    );
+
+    await writeFile(stylesheet, "#target { color: rgb(0, 0, 255); }");
+    await page.waitForTimeout(1_500);
+    expect(
+      await page.evaluate(
+        () =>
+          document.querySelector("#content") === window.__htmlviewAssetFrame,
+      ),
+    ).toBe(true);
+    await expect(page.locator("#comment")).toHaveValue(
+      "Unsaved asset review feedback",
+    );
+    await expect.poll(targetColor).toBe("rgb(0, 128, 0)");
+    await page.getByRole("button", { name: "Cancel" }).click();
+    await expect.poll(targetColor).toBe("rgb(0, 0, 255)");
+    expect(
+      await page.evaluate(
+        () =>
+          document.querySelector("#content") !== window.__htmlviewAssetFrame,
+      ),
+    ).toBe(true);
+
+    await page.waitForTimeout(1_000);
+    const renderedBlueRevision = await entryAssetRevision();
+    await page.locator("#content").evaluate((iframe) => {
+      window.__htmlviewAssetFrame = iframe;
+    });
+    await page.getByRole("button", { name: "Page note" }).click();
+    await page.locator("#comment").fill("Keep this while an asset reverts");
+    await writeFile(stylesheet, "#target { color: rgb(0, 255, 255); }");
+    await expect.poll(entryAssetRevision).not.toBe(renderedBlueRevision);
+    await writeFile(stylesheet, "#target { color: rgb(0, 0, 255); }");
+    await expect.poll(entryAssetRevision).toBe(renderedBlueRevision);
+    await page.waitForTimeout(750);
+    await expect(page.locator("#comment")).toHaveValue(
+      "Keep this while an asset reverts",
+    );
+    await page.getByRole("button", { name: "Cancel" }).click();
+    await page.waitForTimeout(1_000);
+    expect(
+      await page.evaluate(
+        () =>
+          document.querySelector("#content") === window.__htmlviewAssetFrame,
+      ),
+    ).toBe(true);
+    await expect.poll(targetColor).toBe("rgb(0, 0, 255)");
+
+    let probeRequests = 0;
+    let firstProbeResolve;
+    const firstProbe = new Promise((resolve) => {
+      firstProbeResolve = resolve;
+    });
+    const firstProbeRelease = new Promise((resolve) => {
+      releaseFirstProbe = resolve;
+    });
+    await page.route("**/.htmlview/api/probe", async (route) => {
+      probeRequests += 1;
+      if (probeRequests === 1) {
+        firstProbeResolve();
+        await firstProbeRelease;
+      }
+      await route.continue();
+    });
+
+    await writeFile(stylesheet, "#target { color: rgb(128, 0, 128); }");
+    await firstProbe;
+    await writeFile(stylesheet, "#target { color: rgb(255, 0, 0); }");
+    await page.waitForTimeout(800);
+    releaseFirstProbe();
+    releaseFirstProbe = undefined;
+    await expect.poll(() => probeRequests).toBeGreaterThanOrEqual(2);
+    await expect.poll(targetColor).toBe("rgb(255, 0, 0)");
+    await expect(page.locator("#live")).toHaveText("Annotation tools ready");
+    await page.waitForTimeout(2_000);
+
+    const renderedRedRevision = await entryAssetRevision();
+
+    let failedNavigationRequests = 0;
+    await page.route("**/.htmlview/api/navigation", async (route) => {
+      failedNavigationRequests += 1;
+      if (failedNavigationRequests <= 3) await route.abort();
+      else await route.continue();
+    });
+    await writeFile(stylesheet, "#target { color: rgb(0, 255, 255); }");
+    await expect.poll(() => failedNavigationRequests).toBeGreaterThanOrEqual(3);
+    await expect(page.locator("#limitation")).toContainText(
+      "instrumentation unavailable",
+    );
+    await writeFile(stylesheet, "#target { color: rgb(255, 0, 0); }");
+    await expect.poll(entryAssetRevision).toBe(renderedRedRevision);
+    await expect(page.locator("#limitation")).toBeHidden();
+    await page.unroute("**/.htmlview/api/navigation");
+
+    let supersededNavigationRequests = 0;
+    const staleAssetNavigation = new Promise((resolve) => {
+      releaseStaleAssetNavigation = resolve;
+    });
+    let markStaleAssetNavigationStarted;
+    const staleAssetNavigationStarted = new Promise((resolve) => {
+      markStaleAssetNavigationStarted = resolve;
+    });
+    await page.route("**/.htmlview/api/navigation", async (route) => {
+      supersededNavigationRequests += 1;
+      if (supersededNavigationRequests === 1) {
+        markStaleAssetNavigationStarted();
+        await staleAssetNavigation;
+        await route.abort();
+        return;
+      }
+      await route.continue();
+    });
+    await writeFile(stylesheet, "#target { color: rgb(0, 0, 0); }");
+    await staleAssetNavigationStarted;
+    await writeFile(
+      entry,
+      '<!doctype html><html><head><link rel="stylesheet" href="/assets/site.css"></head><body><h1 id="target">Entry supersedes stale asset navigation</h1></body></html>',
+    );
+    await expect(content.locator("#target")).toHaveText(
+      "Entry supersedes stale asset navigation",
+    );
+    expect(supersededNavigationRequests).toBeGreaterThanOrEqual(2);
+    releaseStaleAssetNavigation();
+    releaseStaleAssetNavigation = undefined;
+    await page.unroute("**/.htmlview/api/navigation");
+  } finally {
+    releaseFirstProbe?.();
+    releaseStaleAssetNavigation?.();
+    await execute(process.execPath, [cli, "stop", "--all", "--json"], {
+      env: environment,
+    }).catch(() => undefined);
+    await rm(parent, { recursive: true, force: true });
+  }
+});
