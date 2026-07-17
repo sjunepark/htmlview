@@ -188,7 +188,7 @@ function runtimeHelp(
           ]
         : [];
     case "SupervisorError":
-      if (error.code === "supervisor.incompatible")
+      if (error.code === "supervisor.version_mismatch")
         return [
           `Run \`htmlview stop --all${jsonSuffix}\` before retrying this command`,
         ];
@@ -384,7 +384,7 @@ function makeHtmlviewCommand(context: AppContext, setFailure: () => void) {
             Effect.map(service.serve(entry, root), (result) => ({
               ...result,
               help: [
-                `Run \`htmlview stop <session>${format === "json" ? " --json" : ""}\` to stop this session`,
+                `Run \`htmlview review <session>${format === "json" ? " --json" : ""}\` for human annotation`,
               ],
             })),
           ),

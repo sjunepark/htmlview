@@ -143,6 +143,7 @@ interface TestSurface {
 async function withSurface<A>(
   source: string | Buffer,
   use: (surface: TestSurface) => Promise<A>,
+  beforeSend: () => Effect.Effect<void> = () => Effect.void,
 ): Promise<A> {
   const parent = await mkdtemp(path.join(tmpdir(), "htmlview-review-"));
   const root = path.join(parent, "site");
@@ -231,11 +232,13 @@ async function withSurface<A>(
                 ? []
                 : remaining,
           };
-          return Effect.succeed({
-            sent: ids.length,
-            discarded,
-            status: record.status,
-          });
+          return beforeSend().pipe(
+            Effect.as({
+              sent: ids.length,
+              discarded,
+              status: record.status,
+            }),
+          );
         },
         closeAfterEnd: Effect.sync(() => {
           closes += 1;
@@ -261,15 +264,80 @@ function jsonBody(response: ResponseResult): Record<string, unknown> {
   return JSON.parse(response.body.toString("utf8")) as Record<string, unknown>;
 }
 
+async function issueNavigation(shell: ReviewOriginServer): Promise<string> {
+  const response = await send(shell, "POST", "/.htmlview/api/navigation", {
+    headers: {
+      ...browserHeaders,
+      origin: shell.origin,
+      "content-type": "application/json",
+    },
+    body: "{}",
+  });
+  assert.equal(response.status, 200);
+  const navigation = jsonBody(response).navigation_url;
+  assert.equal(typeof navigation, "string");
+  const url = new URL(navigation as string);
+  return `${url.pathname}${url.search}`;
+}
+
 describe("review origins", () => {
+  it("closes an ended review after the client disconnects mid-commit", async () => {
+    let enterSend: () => void = () => undefined;
+    let releaseSend: () => void = () => undefined;
+    const entered = new Promise<void>((resolve) => {
+      enterSend = resolve;
+    });
+    const released = new Promise<void>((resolve) => {
+      releaseSend = resolve;
+    });
+    await withSurface(
+      "<!doctype html><p>review</p>",
+      async ({ shell, closeCount }) => {
+        const body = JSON.stringify({
+          drafts: [],
+          discard_remaining: true,
+        });
+        const operation = request({
+          hostname: "127.0.0.1",
+          port: shell.port,
+          method: "POST",
+          path: "/.htmlview/api/end",
+          headers: {
+            host: `${shell.hostname}:${shell.port}`,
+            ...browserHeaders,
+            origin: shell.origin,
+            "content-type": "application/json",
+            "content-length": String(Buffer.byteLength(body)),
+          },
+        });
+        operation.once("error", () => undefined);
+        operation.end(body);
+        await entered;
+        operation.destroy();
+        await new Promise((resolve) => setTimeout(resolve, 50));
+        releaseSend();
+        for (let attempt = 0; attempt < 20 && closeCount() === 0; attempt += 1)
+          await new Promise((resolve) => setTimeout(resolve, 10));
+        assert.equal(closeCount(), 1);
+      },
+      () =>
+        Effect.promise(async () => {
+          enterSend();
+          await released;
+        }),
+    );
+  });
+
   it(
     "holds the transform permit until a slow entry response closes",
     async () =>
       withSurface(
         Buffer.alloc(8 * 1024 * 1024, 0x20),
-        async ({ content, configuration }) => {
-          const release = await holdResponse(content, "/report.html");
-          const second = send(content, "GET", "/report.html", {
+        async ({ shell, content, configuration }) => {
+          const firstNavigation = await issueNavigation(shell);
+          const secondNavigation = await issueNavigation(shell);
+          const release = await holdResponse(content, firstNavigation);
+          const second = send(content, "GET", secondNavigation, {
             headers: documentNavigationHeaders,
           });
           await new Promise((resolve) => setTimeout(resolve, 50));
@@ -299,6 +367,57 @@ describe("review origins", () => {
       assert.match(hostname, /^r-[0-9a-f]{32}\.localhost$/);
     for (const hostname of content)
       assert.match(hostname, /^c-[0-9a-f]{32}\.localhost$/);
+  });
+
+  it("binds one-use navigation capabilities to one entry and lifetime", () => {
+    const state = new ReviewSurfaceState();
+    const token = state.issueNavigation("/report.html", 1_000, () =>
+      Buffer.alloc(16, 0x11),
+    );
+    assert.equal(
+      state.authorizeNavigation(
+        `/report.html?__htmlview_navigation=${token}&__htmlview_navigation=${token}`,
+        "/report.html",
+        1_001,
+      ),
+      false,
+    );
+    assert.equal(
+      state.authorizeNavigation(
+        `/other.html?__htmlview_navigation=${token}`,
+        "/report.html",
+        1_001,
+      ),
+      false,
+    );
+    assert.equal(
+      state.authorizeNavigation(
+        `/report.html?__htmlview_navigation=${token}`,
+        "/report.html",
+        1_001,
+      ),
+      true,
+    );
+    assert.equal(
+      state.authorizeNavigation(
+        `/report.html?__htmlview_navigation=${token}`,
+        "/report.html",
+        1_001,
+      ),
+      false,
+    );
+
+    const expired = state.issueNavigation("/report.html", 2_000, () =>
+      Buffer.alloc(16, 0x22),
+    );
+    assert.equal(
+      state.authorizeNavigation(
+        `/report.html?__htmlview_navigation=${expired}`,
+        "/report.html",
+        12_001,
+      ),
+      false,
+    );
   });
 
   it("stays unavailable until configured and rejects ambiguous authority", async () => {
@@ -528,6 +647,7 @@ describe("review origins", () => {
       );
 
       for (const route of [
+        "/.htmlview/api/navigation",
         "/.htmlview/api/probe",
         "/.htmlview/api/drafts",
         "/.htmlview/api/send",
@@ -552,6 +672,7 @@ describe("review origins", () => {
       }
 
       for (const [route, body] of [
+        ["/.htmlview/api/navigation", { extra: true }],
         ["/.htmlview/api/probe", { lease: "0".repeat(32), extra: true }],
         [
           "/.htmlview/api/drafts",
@@ -636,7 +757,27 @@ describe("review origins", () => {
           nestedEntry.body.includes(Buffer.from("/.htmlview/probe/")),
           false,
         );
-        const entry = await send(content, "GET", "/report.html?theme=dark", {
+        const foreignEntry = await send(content, "GET", "/report.html", {
+          headers: documentNavigationHeaders,
+        });
+        assert.equal(foreignEntry.status, 200);
+        assert.equal(
+          foreignEntry.body.includes(Buffer.from("/.htmlview/probe/")),
+          false,
+        );
+        const navigation = await issueNavigation(shell);
+        assert.equal(
+          (
+            await send(content, "GET", navigation, {
+              headers: {
+                ...documentNavigationHeaders,
+                "sec-fetch-site": "same-origin",
+              },
+            })
+          ).status,
+          404,
+        );
+        const entry = await send(content, "GET", navigation, {
           headers: documentNavigationHeaders,
         });
         assert.equal(entry.status, 200);
@@ -662,6 +803,14 @@ describe("review origins", () => {
           /data-htmlview-revision="(sha256:[0-9a-f]{64})"/,
         )?.[1];
         assert.ok(revision !== undefined);
+        assert.equal(
+          (
+            await send(content, "GET", navigation, {
+              headers: documentNavigationHeaders,
+            })
+          ).status,
+          404,
+        );
 
         const asset = await send(content, "GET", "/asset.txt");
         assert.equal(asset.body.toString(), "asset bytes");
@@ -820,7 +969,7 @@ describe("review origins", () => {
     withSurface(
       '<!doctype html><meta http-equiv="content-security-policy" content="script-src \'none\'"><p>blocked</p>',
       async ({ shell, content }) => {
-        const entry = await send(content, "GET", "/report.html", {
+        const entry = await send(content, "GET", await issueNavigation(shell), {
           headers: documentNavigationHeaders,
         });
         assert.equal(entry.status, 422);

@@ -125,6 +125,7 @@ interface LiveSession {
 }
 
 interface LiveReview {
+  readonly sessionId: string;
   readonly scope: Scope.Closeable;
   readonly shell: ReviewOriginServer;
   readonly content: ReviewOriginServer;
@@ -715,7 +716,7 @@ class SessionRegistry {
         yield* Effect.all([verify(shell), verify(content)], {
           concurrency: "unbounded",
         });
-        return { scope, shell, content };
+        return { sessionId: session.summary.id, scope, shell, content };
       });
       return yield* activate.pipe(
         Effect.timeoutOrElse({
@@ -765,21 +766,10 @@ class SessionRegistry {
     };
   }
 
-  #readyReview(liveSession: LiveSession):
-    | {
-        readonly id: string;
-        readonly scope: Scope.Closeable;
-      }
-    | undefined {
-    const record = this.annotations.openReview({
-      root: liveSession.grant.root,
-      entry: liveSession.grant.entryUrlPath,
-    });
-    if (record?.status !== "ready") return undefined;
-    const live = this.#liveReviews.get(record.id);
-    return live === undefined
-      ? undefined
-      : { id: record.id, scope: live.scope };
+  #reviewsForSession(sessionId: string): readonly LiveReview[] {
+    return [...this.#liveReviews.values()].filter(
+      (review) => review.sessionId === sessionId,
+    );
   }
 
   feedback(
@@ -803,9 +793,11 @@ class SessionRegistry {
           live === undefined
             ? Effect.void
             : Effect.gen({ self: this }, function* () {
+                const current = this.#liveReviews.get(reviewId);
+                if (current?.scope === live.scope)
+                  this.#liveReviews.delete(reviewId);
                 const failures = yield* closeScopeFailures([live.scope]);
                 yield* failCleanup(failures);
-                this.#liveReviews.delete(reviewId);
               });
         const result = yield* this.annotations.deleteReview(
           reviewId,
@@ -834,41 +826,47 @@ class SessionRegistry {
       Effect.gen({ self: this }, function* () {
         const live = this.#sessions.get(sessionId);
         if (live === undefined) return { stopped: 0 };
-        const review = this.#readyReview(live);
-        const persistence = yield* Effect.result(
-          this.annotations.stopReady(review === undefined ? [] : [review.id]),
-        );
-        if (review !== undefined) this.#liveReviews.delete(review.id);
-        const failures = yield* closeScopeFailures(
-          review === undefined ? [] : [review.scope],
-        );
+        const reviews = this.#reviewsForSession(sessionId);
+        yield* this.annotations.stopReadyForSessions([sessionId]);
+        for (const [reviewId, review] of this.#liveReviews)
+          if (review.sessionId === sessionId)
+            this.#liveReviews.delete(reviewId);
         this.#sessions.delete(sessionId);
         this.#identity.delete(live.identityKey);
+        const failures = yield* closeScopeFailures(
+          reviews.map((review) => review.scope),
+        );
         failures.push(...(yield* closeScopeFailures([live.scope])));
         yield* failCleanup(failures);
-        if (Result.isFailure(persistence)) return yield* persistence.failure;
         return { stopped: 1 };
       }),
     );
   }
 
-  stopAll(): Effect.Effect<StopControlResult, RuntimeStateError> {
+  stopAll(
+    options: { readonly forceTeardown?: boolean } = {},
+  ): Effect.Effect<StopControlResult, RuntimeStateError> {
     this.#closing = true;
     return Effect.gen({ self: this }, function* () {
       const failures = yield* closeScopeFailures([...this.#pendingScopes]);
       return yield* this.#mutations.withPermit(
         Effect.gen({ self: this }, function* () {
           const stopped = this.#sessions.size;
-          const reviews = [...this.#sessions.values()].flatMap((live) => {
-            const review = this.#readyReview(live);
-            return review === undefined ? [] : [review];
-          });
           const persistence = yield* Effect.result(
-            this.annotations.stopReady(reviews.map((review) => review.id)),
+            this.annotations.stopReadyForSessions([...this.#sessions.keys()]),
           );
+          if (Result.isFailure(persistence) && options.forceTeardown !== true) {
+            this.#closing = false;
+            return yield* persistence.failure;
+          }
+          if (Result.isFailure(persistence)) failures.push(persistence.failure);
+          const reviews = [...this.#liveReviews.values()];
           this.#liveReviews.clear();
-          const reviewScopes = reviews.map((review) => review.scope);
-          failures.push(...(yield* closeScopeFailures(reviewScopes)));
+          failures.push(
+            ...(yield* closeScopeFailures(
+              reviews.map((review) => review.scope),
+            )),
+          );
           failures.push(
             ...(yield* closeScopeFailures(
               [...this.#sessions.values()].map((live) => live.scope),
@@ -878,7 +876,6 @@ class SessionRegistry {
           this.#identity.clear();
           failures.push(...(yield* closeScopeFailures([this.#scope])));
           yield* failCleanup(failures);
-          if (Result.isFailure(persistence)) return yield* persistence.failure;
           return { stopped };
         }),
       );
@@ -887,6 +884,10 @@ class SessionRegistry {
 
   get size(): number {
     return this.#sessions.size;
+  }
+
+  get shuttingDown(): boolean {
+    return this.#closing;
   }
 
   beginShutdown(): void {
@@ -1147,10 +1148,24 @@ async function startSupervisorPromise(
         closing = true;
         sessions.beginShutdown();
         cancelIdleShutdown();
-        response.once("finish", () => setImmediate(() => void close()));
-        const result = yield* sessions.stopAll();
+        const stopped = yield* Effect.exit(sessions.stopAll());
+        if (Exit.isFailure(stopped) && !sessions.shuttingDown) {
+          closing = false;
+          return yield* Effect.failCause(stopped.cause);
+        }
+        let closeScheduled = false;
+        const scheduleClose = (): void => {
+          if (closeScheduled) return;
+          closeScheduled = true;
+          setImmediate(() => void close());
+        };
+        response.once("finish", scheduleClose);
+        response.once("close", scheduleClose);
+        if (response.destroyed) scheduleClose();
+        if (Exit.isFailure(stopped))
+          return yield* Effect.failCause(stopped.cause);
         return yield* Effect.sync(() =>
-          json(response, 200, encodeStopControlResult(result)),
+          json(response, 200, encodeStopControlResult(stopped.value)),
         );
       }
       return yield* new ControlError({
@@ -1355,7 +1370,7 @@ async function startSupervisorPromise(
           failures.push(error);
         }
         try {
-          await runPromise(sessions.stopAll());
+          await runPromise(sessions.stopAll({ forceTeardown: true }));
         } catch (error) {
           failures.push(error);
         }

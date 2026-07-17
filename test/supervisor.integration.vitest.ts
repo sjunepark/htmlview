@@ -3,6 +3,7 @@ import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { once } from "node:events";
 import {
+  chmod,
   lstat,
   mkdir,
   mkdtemp,
@@ -508,6 +509,101 @@ describe("supervisor lifecycle", () => {
       deleted,
     );
     assert.deepEqual((await runEffect(client.listState())).reviews, []);
+  });
+
+  it("keeps a session live when its stopped review cannot be persisted", async () => {
+    const { client, root, entry, paths } = await setup();
+    const served = await runEffect(client.serve(entry, root));
+    const review = await runEffect(client.review(served.session.id));
+    await chmod(paths.annotationDirectory, 0o500);
+    try {
+      await assert.rejects(runEffect(client.stopSession(served.session.id)), {
+        code: "state.unavailable",
+      });
+    } finally {
+      await chmod(paths.annotationDirectory, 0o700);
+    }
+
+    assert.equal(
+      await fetch(served.session.url).then((response) => response.status),
+      200,
+    );
+    assert.equal(
+      await fetch(review.review.url).then((response) => response.status),
+      200,
+    );
+    const retained = await runEffect(client.listState());
+    assert.equal(retained.sessions.length, 1);
+    assert.equal(retained.reviews[0]?.status, "ready");
+
+    assert.equal(
+      (await runEffect(client.stopSession(served.session.id))).stopped,
+      1,
+    );
+    await assert.rejects(fetch(served.session.url));
+    await assert.rejects(fetch(review.review.url));
+    assert.equal(
+      (await runEffect(client.listState())).reviews[0]?.status,
+      "stopped",
+    );
+  });
+
+  it("keeps the supervisor live when stop-all cannot persist stopped reviews", async () => {
+    const { client, root, entry, paths } = await setup();
+    const served = await runEffect(client.serve(entry, root));
+    const review = await runEffect(client.review(served.session.id));
+    await chmod(paths.annotationDirectory, 0o500);
+    try {
+      await assert.rejects(runEffect(client.stopAll()), {
+        code: "state.unavailable",
+      });
+    } finally {
+      await chmod(paths.annotationDirectory, 0o700);
+    }
+
+    assert.equal(await socketExists(paths), true);
+    assert.equal(
+      await fetch(served.session.url).then((response) => response.status),
+      200,
+    );
+    assert.equal(
+      await fetch(review.review.url).then((response) => response.status),
+      200,
+    );
+    const retained = await runEffect(client.listState());
+    assert.equal(retained.sessions.length, 1);
+    assert.equal(retained.reviews[0]?.status, "ready");
+
+    assert.equal((await runEffect(client.stopAll())).stopped, 1);
+    assert.equal(await socketExists(paths), false);
+    await assert.rejects(fetch(served.session.url));
+    await assert.rejects(fetch(review.review.url));
+  });
+
+  it("forces listener teardown before releasing ownership on direct close", async () => {
+    const { client, root, entry, paths, supervisor } = await setup();
+    const served = await runEffect(client.serve(entry, root));
+    const review = await runEffect(client.review(served.session.id));
+    supervisors.splice(supervisors.indexOf(supervisor), 1);
+    await chmod(paths.annotationDirectory, 0o500);
+    const closed = assert.rejects(runEffect(supervisor.closed), {
+      _tag: "SupervisorLifecycleError",
+      phase: "shutdown",
+    });
+    try {
+      await assert.rejects(runEffect(supervisor.close), {
+        _tag: "SupervisorLifecycleError",
+        phase: "shutdown",
+      });
+      await closed;
+    } finally {
+      await chmod(paths.annotationDirectory, 0o700);
+    }
+
+    assert.equal(await socketExists(paths), false);
+    await assert.rejects(lstat(paths.supervisorLock));
+    await assert.rejects(fetch(served.session.url));
+    await assert.rejects(fetch(review.review.url));
   });
 
   it("retries unacknowledged feedback after a transport response is lost", async () => {
@@ -1589,13 +1685,51 @@ describe("supervisor lifecycle", () => {
     });
   });
 
-  it("rejects incompatible versions but lets stop-all shut them down", async () => {
+  it("rejects different versions but lets stop-all shut them down", async () => {
     const { client, paths } = await setup({ version: "9.9.9" });
     await assert.rejects(runEffect(client.list()), {
-      code: "supervisor.incompatible",
+      code: "supervisor.version_mismatch",
     });
     assert.equal((await runEffect(client.stopAll())).stopped, 0);
     assert.equal(await socketExists(paths), false);
+  });
+
+  it("rejects a different control protocol without sending shutdown", async () => {
+    const parent = await temporaryDirectory("hv-proto-");
+    const paths = statePaths({
+      HTMLVIEW_STATE_DIR: path.join(parent, "state"),
+    });
+    await Effect.runPromise(ensurePrivateStateDirectory(paths));
+    let shutdownRequests = 0;
+    const fake = createHttpServer((incoming, response) => {
+      if (incoming.url === "/shutdown") shutdownRequests += 1;
+      response.end(
+        JSON.stringify({
+          protocol: "htmlview-supervisor-v2",
+          instanceId: randomUUID(),
+          pid: process.pid,
+          version: "0.0.1",
+        }),
+      );
+    });
+    await new Promise<void>((resolve, reject) => {
+      fake.once("error", reject);
+      fake.listen(paths.controlSocket, resolve);
+    });
+    try {
+      const client = new SupervisorClient(paths);
+      await assert.rejects(runEffect(client.list()), {
+        code: "supervisor.protocol_mismatch",
+      });
+      await assert.rejects(runEffect(client.stopAll()), {
+        code: "supervisor.protocol_mismatch",
+      });
+      assert.equal(shutdownRequests, 0);
+    } finally {
+      await new Promise<void>((resolve, reject) =>
+        fake.close((error) => (error ? reject(error) : resolve())),
+      );
+    }
   });
 
   it("does not create a session when grant resolution resumes after shutdown", async () => {
@@ -1908,6 +2042,104 @@ describe("supervisor lifecycle", () => {
     });
     await assert.rejects(runEffect(supervisor.close));
     await closed;
+    assert.equal(await socketExists(paths), false);
+    await assert.rejects(lstat(paths.supervisorLock));
+    await assert.rejects(fetch(served.session.url));
+  });
+
+  it("releases supervisor ownership after a shutdown-route cleanup defect", async () => {
+    const parent = await temporaryDirectory("hv-route-defect-");
+    const paths = statePaths({
+      HTMLVIEW_STATE_DIR: path.join(parent, "state"),
+    });
+    const root = await temporaryDirectory("hv-route-entry-");
+    const entry = path.join(root, "report.html");
+    await writeFile(entry, "<!doctype html>");
+    const supervisor = await runEffect(
+      startSupervisor({
+        paths,
+        idleMilliseconds: 10_000,
+        startSessionServer: (grant) =>
+          Effect.gen(function* () {
+            const server = yield* startStaticServer(grant);
+            yield* Effect.addFinalizer(() =>
+              Effect.die(new Error("shutdown route finalizer defect")),
+            );
+            return server;
+          }),
+      }),
+    );
+    supervisors.push(supervisor);
+    const client = new SupervisorClient(paths);
+    const served = await runEffect(client.serve(entry, root));
+    supervisors.pop();
+    const closed = runEffect(supervisor.closed);
+    await assert.rejects(runEffect(client.stopAll()), {
+      code: "control.internal",
+    });
+    await closed;
+
+    assert.equal(await socketExists(paths), false);
+    await assert.rejects(lstat(paths.supervisorLock));
+    await assert.rejects(fetch(served.session.url));
+  });
+
+  it("finishes shutdown when its client disconnects during listener cleanup", async () => {
+    const parent = await temporaryDirectory("hv-shutdown-drop-");
+    const paths = statePaths({
+      HTMLVIEW_STATE_DIR: path.join(parent, "state"),
+    });
+    const root = await temporaryDirectory("hv-shutdown-drop-entry-");
+    const entry = path.join(root, "report.html");
+    await writeFile(entry, "<!doctype html>");
+    let cleanupStartedResolve!: () => void;
+    let releaseCleanup!: () => void;
+    const cleanupStarted = new Promise<void>((resolve) => {
+      cleanupStartedResolve = resolve;
+    });
+    const cleanupGate = new Promise<void>((resolve) => {
+      releaseCleanup = resolve;
+    });
+    const supervisor = await runEffect(
+      startSupervisor({
+        paths,
+        idleMilliseconds: 10_000,
+        startSessionServer: (grant) =>
+          Effect.gen(function* () {
+            const server = yield* startStaticServer(grant);
+            yield* Effect.addFinalizer(() =>
+              Effect.promise(async () => {
+                cleanupStartedResolve();
+                await cleanupGate;
+              }),
+            );
+            return server;
+          }),
+      }),
+    );
+    supervisors.push(supervisor);
+    const served = await runEffect(
+      new SupervisorClient(paths).serve(entry, root),
+    );
+    supervisors.pop();
+
+    const operation = request({
+      socketPath: paths.controlSocket,
+      method: "POST",
+      path: "/shutdown",
+      headers: {
+        host: controlHost,
+        "content-type": "application/json",
+        "content-length": "2",
+      },
+    });
+    operation.on("error", () => undefined);
+    operation.end("{}");
+    await cleanupStarted;
+    operation.destroy();
+    releaseCleanup();
+    await runEffect(supervisor.closed);
+
     assert.equal(await socketExists(paths), false);
     await assert.rejects(lstat(paths.supervisorLock));
     await assert.rejects(fetch(served.session.url));

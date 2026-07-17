@@ -288,7 +288,10 @@ type ProbeResult =
       readonly identity: SupervisorIdentity;
     }
   | { readonly status: "absent" | "stale" | "unavailable" }
-  | { readonly status: "incompatible" };
+  | {
+      readonly status: "protocol_mismatch";
+      readonly identity: SupervisorIdentity;
+    };
 
 function probeOnce(paths: StatePaths): Effect.Effect<ProbeResult> {
   return controlRequest(
@@ -309,7 +312,7 @@ function probeOnce(paths: StatePaths): Effect.Effect<ProbeResult> {
         const decoded = decodeSupervisorIdentity(response.value);
         if (Result.isFailure(decoded)) return { status: "unavailable" };
         if (decoded.success.protocol !== supervisorProtocol)
-          return { status: "incompatible" };
+          return { status: "protocol_mismatch", identity: decoded.success };
         if (decoded.success.version !== htmlviewVersion)
           return { status: "version_mismatch", identity: decoded.success };
         return { status: "healthy", identity: decoded.success };
@@ -339,12 +342,17 @@ function probeWithRetries(paths: StatePaths): Effect.Effect<ProbeResult> {
   );
 }
 
-function incompatibleError(result: ProbeResult): SupervisorError {
-  const message =
-    result.status === "version_mismatch"
-      ? `The running htmlview supervisor uses version ${result.identity.version}; stop it before using ${htmlviewVersion}`
-      : "The running htmlview supervisor uses an incompatible control protocol";
-  return new SupervisorError({ code: "supervisor.incompatible", message });
+function mismatchError(result: ProbeResult): SupervisorError {
+  return result.status === "version_mismatch"
+    ? new SupervisorError({
+        code: "supervisor.version_mismatch",
+        message: `The running htmlview supervisor uses version ${result.identity.version}; stop it before using ${htmlviewVersion}`,
+      })
+    : new SupervisorError({
+        code: "supervisor.protocol_mismatch",
+        message:
+          "The running htmlview supervisor uses an incompatible control protocol; use the htmlview installation that started it to run stop --all before retrying",
+      });
 }
 
 function currentSupervisor(
@@ -358,9 +366,9 @@ function currentSupervisor(
       return result.identity;
     if (
       result.status === "version_mismatch" ||
-      result.status === "incompatible"
+      result.status === "protocol_mismatch"
     )
-      return yield* incompatibleError(result);
+      return yield* mismatchError(result);
     if (result.status === "unavailable")
       return yield* new SupervisorError({
         code: "supervisor.unavailable",
@@ -497,9 +505,9 @@ function waitForStartup(
       if (started.status === "healthy") return started.identity;
       if (
         started.status === "version_mismatch" ||
-        started.status === "incompatible"
+        started.status === "protocol_mismatch"
       )
-        return yield* incompatibleError(started);
+        return yield* mismatchError(started);
       return yield* new StartupPending();
     });
     return yield* attempt.pipe(
@@ -540,9 +548,9 @@ function ensureSupervisor(
       if (afterLock.status === "healthy") return afterLock.identity;
       if (
         afterLock.status === "version_mismatch" ||
-        afterLock.status === "incompatible"
+        afterLock.status === "protocol_mismatch"
       )
-        return yield* incompatibleError(afterLock);
+        return yield* mismatchError(afterLock);
       if (afterLock.status === "unavailable")
         return yield* new SupervisorError({
           code: "supervisor.unavailable",
@@ -628,9 +636,9 @@ function acquireOwnershipOrObserve(
         return { kind: "identity" as const, identity: result.identity };
       if (
         result.status === "version_mismatch" ||
-        result.status === "incompatible"
+        result.status === "protocol_mismatch"
       )
-        return yield* incompatibleError(result);
+        return yield* mismatchError(result);
       if (result.status === "unavailable")
         return yield* new SupervisorError({
           code: "supervisor.unavailable",
@@ -680,9 +688,9 @@ function observeSupervisorOr<A, E>(
         return { kind: "identity" as const, identity: afterLock.identity };
       if (
         afterLock.status === "version_mismatch" ||
-        afterLock.status === "incompatible"
+        afterLock.status === "protocol_mismatch"
       )
-        return yield* incompatibleError(afterLock);
+        return yield* mismatchError(afterLock);
       if (afterLock.status === "unavailable")
         return yield* new SupervisorError({
           code: "supervisor.unavailable",

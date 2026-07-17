@@ -46,6 +46,13 @@ protocol still matches, allowing a safe upgrade. It stops content sessions,
 acknowledges the result, closes the control socket, and returns only after the
 client observes the old instance gone.
 
+There is no compatibility parser, manual fallback protocol, or downgrade path
+inside the current executable. Normal version mismatches use
+`supervisor.version_mismatch`. Protocol mismatches use
+`supervisor.protocol_mismatch` for every operation, including shutdown, because
+the current executable cannot prove that another protocol's shutdown request is
+safe. Recovery requires the installation that started the running supervisor.
+
 Socket paths longer than the conservative common macOS/Linux limit are
 rejected as `state.unavailable` rather than silently relocating authority.
 

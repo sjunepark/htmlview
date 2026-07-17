@@ -12,6 +12,12 @@ import {
 
 const strict = { onExcessProperty: "error" } as const;
 
+export const IssueNavigationRequestSchema = Schema.Record(
+  Schema.String,
+  Schema.Never,
+);
+export type IssueNavigationRequest = typeof IssueNavigationRequestSchema.Type;
+
 export const ActivateProbeRequestSchema = Schema.Struct({
   lease: Schema.String.check(Schema.isPattern(/^[0-9a-f]{32}$/)),
 });
@@ -55,6 +61,10 @@ export type EndReviewRequest = typeof EndReviewRequestSchema.Type;
 
 export const decodeQueueDraftRequest = Schema.decodeUnknownResult(
   QueueDraftRequestSchema,
+  strict,
+);
+export const decodeIssueNavigationRequest = Schema.decodeUnknownResult(
+  IssueNavigationRequestSchema,
   strict,
 );
 export const decodeActivateProbeRequest = Schema.decodeUnknownResult(

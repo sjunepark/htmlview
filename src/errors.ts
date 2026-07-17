@@ -30,7 +30,8 @@ export const controlErrorCodes = [
 
 export const supervisorErrorCodes = [
   "supervisor.unavailable",
-  "supervisor.incompatible",
+  "supervisor.version_mismatch",
+  "supervisor.protocol_mismatch",
   "supervisor.start_failed",
   "supervisor.request_failed",
 ] as const;

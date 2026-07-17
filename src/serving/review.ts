@@ -31,12 +31,17 @@ import {
 import {
   decodeActivateProbeRequest,
   decodeEndReviewRequest,
+  decodeIssueNavigationRequest,
   decodeQueueDraftRequest,
   decodeSendDraftsRequest,
   decodedOrUndefined,
 } from "./review-browser-protocol.js";
 
 export type ReviewOriginRole = "shell" | "content";
+
+const navigationCapabilityParameter = "__htmlview_navigation";
+const navigationCapabilityLifetimeMilliseconds = 10_000;
+const maximumNavigationCapabilities = 16;
 
 export interface ReviewSurfaceService {
   readonly record: () => PersistedReview | undefined;
@@ -73,6 +78,10 @@ export class ReviewSurfaceState {
     { readonly lease: string; readonly revision: string }
   >();
   readonly #issuedProbeLeases = new Map<string, string>();
+  readonly #navigationCapabilities = new Map<
+    string,
+    { readonly entry: string; readonly expiresAt: number }
+  >();
   readonly #entryTransforms = Semaphore.makeUnsafe(1);
   #limitation: ReviewEntryLimitation | undefined;
 
@@ -141,6 +150,56 @@ export class ReviewSurfaceState {
 
   limitation(): ReviewEntryLimitation | undefined {
     return this.#limitation;
+  }
+
+  issueNavigation(
+    entry: string,
+    now = Date.now(),
+    random: (size: number) => Buffer = randomBytes,
+  ): string {
+    for (const [token, capability] of this.#navigationCapabilities)
+      if (capability.expiresAt <= now)
+        this.#navigationCapabilities.delete(token);
+    while (this.#navigationCapabilities.size >= maximumNavigationCapabilities) {
+      const oldest = this.#navigationCapabilities.keys().next().value as
+        string | undefined;
+      if (oldest === undefined) break;
+      this.#navigationCapabilities.delete(oldest);
+    }
+    let token: string;
+    do token = random(16).toString("hex");
+    while (this.#navigationCapabilities.has(token));
+    this.#navigationCapabilities.set(token, {
+      entry,
+      expiresAt: now + navigationCapabilityLifetimeMilliseconds,
+    });
+    return token;
+  }
+
+  authorizeNavigation(
+    target: string,
+    entry: string,
+    now = Date.now(),
+  ): boolean {
+    let url: URL;
+    try {
+      url = new URL(target, "http://htmlview-content");
+    } catch {
+      return false;
+    }
+    const tokens = url.searchParams.getAll(navigationCapabilityParameter);
+    if (
+      url.pathname !== entry ||
+      url.searchParams.size !== 1 ||
+      tokens.length !== 1 ||
+      !/^[0-9a-f]{32}$/.test(tokens[0] ?? "")
+    )
+      return false;
+    const token = tokens[0] as string;
+    const capability = this.#navigationCapabilities.get(token);
+    if (capability === undefined) return false;
+    this.#navigationCapabilities.delete(token);
+    return capability.entry === entry && capability.expiresAt > now;
   }
 
   withEntryTransform<A, E, R>(
@@ -503,6 +562,7 @@ function shellHandler(
     if (
       request.method === "POST" &&
       [
+        "/.htmlview/api/navigation",
         "/.htmlview/api/probe",
         "/.htmlview/api/drafts",
         "/.htmlview/api/send",
@@ -536,81 +596,96 @@ function shellHandler(
         );
 
       const operation: Effect.Effect<unknown, ReviewError | RuntimeStateError> =
-        request.url === "/.htmlview/api/probe"
+        request.url === "/.htmlview/api/navigation"
           ? (() => {
               const decoded = decodedOrUndefined(
-                decodeActivateProbeRequest(body.value),
+                decodeIssueNavigationRequest(body.value),
               );
               if (decoded === undefined) return Effect.void;
-              const revision = state.activateProbe(decoded.lease);
-              return revision === undefined
-                ? Effect.fail(
-                    new ReviewError({
-                      code: "review.not_ready",
-                      message: "The review probe lease is not active",
-                    }),
-                  )
-                : Effect.succeed({ revision });
+              const token = state.issueNavigation(
+                configuration.grant.entryUrlPath,
+              );
+              return Effect.succeed({
+                navigation_url: `${configuration.contentOrigin}${configuration.grant.entryUrlPath}?${navigationCapabilityParameter}=${token}`,
+              });
             })()
-          : request.url === "/.htmlview/api/drafts"
+          : request.url === "/.htmlview/api/probe"
             ? (() => {
                 const decoded = decodedOrUndefined(
-                  decodeQueueDraftRequest(body.value),
+                  decodeActivateProbeRequest(body.value),
                 );
                 if (decoded === undefined) return Effect.void;
-                if (!state.hasRevision(decoded.revision))
-                  return Effect.fail(
-                    new ReviewError({
-                      code: "review.not_ready",
-                      message: "The rendered document revision is not active",
-                    }),
-                  );
-                const input: AnnotationDraftInput =
-                  decoded.kind === "freeform"
-                    ? {
-                        kind: "freeform",
-                        comment: decoded.comment,
-                        revision: decoded.revision,
-                        entry: configuration.grant.entryUrlPath,
-                      }
-                    : {
-                        kind: "element",
-                        comment: decoded.comment,
-                        revision: decoded.revision,
-                        entry: configuration.grant.entryUrlPath,
-                        anchor: {
-                          selector: decoded.anchor.selector,
-                          domPath: decoded.anchor.dom_path,
-                          tag: decoded.anchor.tag,
-                          ...(decoded.anchor.text === undefined
-                            ? {}
-                            : { text: decoded.anchor.text }),
-                        },
-                      };
-                return configuration.service
-                  .queue(input)
-                  .pipe(Effect.map((draft) => ({ draft: publicDraft(draft) })));
+                const revision = state.activateProbe(decoded.lease);
+                return revision === undefined
+                  ? Effect.fail(
+                      new ReviewError({
+                        code: "review.not_ready",
+                        message: "The review probe lease is not active",
+                      }),
+                    )
+                  : Effect.succeed({ revision });
               })()
-            : request.url === "/.htmlview/api/send"
+            : request.url === "/.htmlview/api/drafts"
               ? (() => {
                   const decoded = decodedOrUndefined(
-                    decodeSendDraftsRequest(body.value),
+                    decodeQueueDraftRequest(body.value),
                   );
-                  return decoded === undefined
-                    ? Effect.void
-                    : configuration.service.send(decoded.drafts);
+                  if (decoded === undefined) return Effect.void;
+                  if (!state.hasRevision(decoded.revision))
+                    return Effect.fail(
+                      new ReviewError({
+                        code: "review.not_ready",
+                        message: "The rendered document revision is not active",
+                      }),
+                    );
+                  const input: AnnotationDraftInput =
+                    decoded.kind === "freeform"
+                      ? {
+                          kind: "freeform",
+                          comment: decoded.comment,
+                          revision: decoded.revision,
+                          entry: configuration.grant.entryUrlPath,
+                        }
+                      : {
+                          kind: "element",
+                          comment: decoded.comment,
+                          revision: decoded.revision,
+                          entry: configuration.grant.entryUrlPath,
+                          anchor: {
+                            selector: decoded.anchor.selector,
+                            domPath: decoded.anchor.dom_path,
+                            tag: decoded.anchor.tag,
+                            ...(decoded.anchor.text === undefined
+                              ? {}
+                              : { text: decoded.anchor.text }),
+                          },
+                        };
+                  return configuration.service
+                    .queue(input)
+                    .pipe(
+                      Effect.map((draft) => ({ draft: publicDraft(draft) })),
+                    );
                 })()
-              : (() => {
-                  const decoded = decodedOrUndefined(
-                    decodeEndReviewRequest(body.value),
-                  );
-                  return decoded === undefined
-                    ? Effect.void
-                    : configuration.service.send(decoded.drafts, {
-                        end: true,
-                        discardRemaining: decoded.discard_remaining,
-                      });
-                })();
+              : request.url === "/.htmlview/api/send"
+                ? (() => {
+                    const decoded = decodedOrUndefined(
+                      decodeSendDraftsRequest(body.value),
+                    );
+                    return decoded === undefined
+                      ? Effect.void
+                      : configuration.service.send(decoded.drafts);
+                  })()
+                : (() => {
+                    const decoded = decodedOrUndefined(
+                      decodeEndReviewRequest(body.value),
+                    );
+                    return decoded === undefined
+                      ? Effect.void
+                      : configuration.service.send(decoded.drafts, {
+                          end: true,
+                          discardRemaining: decoded.discard_remaining,
+                        });
+                  })();
       const result = yield* Effect.result(operation);
       if (result._tag === "Failure")
         return yield* Effect.sync(() =>
@@ -643,6 +718,7 @@ function shellHandler(
             };
             response.once("finish", close);
             response.once("close", close);
+            if (response.destroyed) close();
           });
         });
       return yield* Effect.sync(() =>
@@ -725,11 +801,29 @@ function contentHandler(
         return yield* Effect.sync(() =>
           sendText(request, response, 404, "Not Found"),
         );
-      if (
+      const reservedNavigation = (() => {
+        try {
+          return new URL(
+            request.url ?? "",
+            "http://htmlview-content",
+          ).searchParams.has(navigationCapabilityParameter);
+        } catch {
+          return false;
+        }
+      })();
+      const authorizedNavigation =
         request.method === "GET" &&
         browserDocumentNavigation(request) &&
-        requestPath === configuration.grant.entryUrlPath
-      ) {
+        requestPath === configuration.grant.entryUrlPath &&
+        state.authorizeNavigation(
+          request.url ?? "",
+          configuration.grant.entryUrlPath,
+        );
+      if (reservedNavigation && !authorizedNavigation)
+        return yield* Effect.sync(() =>
+          sendText(request, response, 404, "Not Found"),
+        );
+      if (authorizedNavigation) {
         return yield* state.withEntryTransform(
           Effect.gen(function* () {
             const opened = yield* openAuthorizedFile(

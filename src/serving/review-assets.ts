@@ -147,7 +147,7 @@ function embeddedJavaScript(source: string): string {
 const shellJs = embeddedJavaScript(String.raw`(() => {
   "use strict";
   const channel = "htmlview.review";
-  const version = 1;
+  const version = 2;
   const byId = (id) => document.getElementById(id);
   const iframe = byId("content");
   const status = byId("review-status");
@@ -168,29 +168,41 @@ const shellJs = embeddedJavaScript(String.raw`(() => {
   let contentOrigin;
   let mode = "annotate";
   let revision;
+  let activeProbeLease;
   let selectedTarget;
   let editorGeneration = 0;
+  let editorDirty = false;
+  let editorSaving = false;
+  let draftSaveInFlight = false;
   let readyTimer;
   let readyInterval;
   let readyIntervalTimer;
   let navigationPending = false;
   let localLimitation;
   let loadGeneration = 0;
+  let pendingTargetMessage;
+  let targetMessageFrame;
+  let selectionTokens = 8;
+  let selectionRefillAt = performance.now();
   const activatingProbeLeases = new Set();
   const usedProbeLeases = new Set();
 
   const announce = (message) => { live.textContent = message; };
   const exactKeys = (value, keys) => {
     if (!value || typeof value !== "object" || Array.isArray(value)) return false;
-    const actual = Object.keys(value).sort();
-    return actual.length === keys.length && keys.slice().sort().every((key, index) => actual[index] === key);
+    let count = 0;
+    for (const key in value) {
+      if (!Object.hasOwn(value, key)) continue;
+      count += 1;
+      if (count > keys.length || !keys.includes(key)) return false;
+    }
+    return count === keys.length;
   };
   const bounded = (value, bytes, nonempty = true) =>
-    typeof value === "string" && (!nonempty || value.length > 0) && encoder.encode(value).length <= bytes;
+    typeof value === "string" && (!nonempty || value.length > 0) && value.length <= bytes && encoder.encode(value).length <= bytes;
   const validAnchor = (anchor) => {
     if (!anchor || typeof anchor !== "object" || Array.isArray(anchor)) return false;
-    const keys = Object.keys(anchor).sort().join(",");
-    if (keys !== "dom_path,selector,tag" && keys !== "dom_path,selector,tag,text") return false;
+    if (!exactKeys(anchor, ["dom_path", "selector", "tag"]) && !exactKeys(anchor, ["dom_path", "selector", "tag", "text"])) return false;
     return bounded(anchor.selector, 2048) && bounded(anchor.dom_path, 4096) && bounded(anchor.tag, 128) && (anchor.text === undefined || bounded(anchor.text, 512, false));
   };
   const validRect = (rect) => exactKeys(rect, ["height", "width", "x", "y"]) &&
@@ -227,15 +239,37 @@ const shellJs = embeddedJavaScript(String.raw`(() => {
     return localLimitation || state?.limitation;
   }
 
+  function clearPendingTargetMessages() {
+    pendingTargetMessage = undefined;
+    if (targetMessageFrame !== undefined) cancelAnimationFrame(targetMessageFrame);
+    targetMessageFrame = undefined;
+  }
+
+  function resetEditor() {
+    editorGeneration += 1;
+    editorDirty = false;
+    editorSaving = false;
+    selectedTarget = undefined;
+    editor.hidden = true;
+    highlight.removeAttribute("data-visible");
+  }
+
+  function cancelEditor() {
+    if (draftSaveInFlight) {
+      announce("Wait for the current draft save to finish");
+      return;
+    }
+    resetEditor();
+  }
+
   function renderAnnotationAvailability() {
     const unavailable = !revision || Boolean(limitationReason());
     annotateButton.disabled = unavailable;
-    freeformButton.disabled = unavailable;
+    freeformButton.disabled = unavailable || draftSaveInFlight;
+    byId("mode-explore").disabled = draftSaveInFlight;
     if (unavailable) {
-      editorGeneration += 1;
-      selectedTarget = undefined;
-      editor.hidden = true;
-      highlight.removeAttribute("data-visible");
+      clearPendingTargetMessages();
+      resetEditor();
     }
   }
 
@@ -259,7 +293,8 @@ const shellJs = embeddedJavaScript(String.raw`(() => {
     draftList.replaceChildren(...state.drafts.map(publicDraft));
     emptyDrafts.hidden = state.drafts.length !== 0;
     byId("send").disabled = state.drafts.length === 0;
-    byId("end").disabled = state.review.status !== "ready";
+    byId("end").disabled =
+      state.review.status !== "ready" || draftSaveInFlight;
     renderLimitation();
   }
 
@@ -269,7 +304,15 @@ const shellJs = embeddedJavaScript(String.raw`(() => {
     state = nextState;
     contentOrigin = new URL(state.content_url).origin;
     render();
-    if (!iframe.hasAttribute("src")) iframe.src = state.content_url;
+    if (!iframe.hasAttribute("src")) await navigate();
+  }
+
+  async function navigate() {
+    const navigation = await api("/.htmlview/api/navigation", {
+      method: "POST",
+      body: "{}",
+    });
+    iframe.src = navigation.navigation_url;
   }
 
   function sendMode() {
@@ -277,13 +320,16 @@ const shellJs = embeddedJavaScript(String.raw`(() => {
   }
 
   function setMode(next) {
+    if (next === "explore" && (draftSaveInFlight || (!editor.hidden && (editorDirty || editorSaving)))) {
+      announce("Save or cancel the current comment before exploring");
+      return;
+    }
     mode = next;
     byId("mode-explore").setAttribute("aria-pressed", String(next === "explore"));
     byId("mode-annotate").setAttribute("aria-pressed", String(next === "annotate"));
     if (next === "explore") {
-      selectedTarget = undefined;
-      highlight.removeAttribute("data-visible");
-      editor.hidden = true;
+      clearPendingTargetMessages();
+      resetEditor();
     }
     sendMode();
   }
@@ -296,12 +342,22 @@ const shellJs = embeddedJavaScript(String.raw`(() => {
   }
 
   function openEditor(target) {
+    if (draftSaveInFlight) return false;
+    if (!editor.hidden) {
+      if (editorDirty || editorSaving) return false;
+      selectedTarget = target;
+      targetLabel.textContent = target ? \`\${target.anchor.tag} · untrusted page context\` : "Page feedback";
+      return true;
+    }
     editorGeneration += 1;
+    editorDirty = false;
+    editorSaving = false;
     selectedTarget = target;
     targetLabel.textContent = target ? \`\${target.anchor.tag} · untrusted page context\` : "Page feedback";
     comment.value = "";
     editor.hidden = false;
     comment.focus();
+    return true;
   }
 
   async function activateProbe(data) {
@@ -314,6 +370,7 @@ const shellJs = embeddedJavaScript(String.raw`(() => {
       if (usedProbeLeases.size > 8) usedProbeLeases.delete(usedProbeLeases.values().next().value);
       if (generation !== loadGeneration || result.revision !== data.revision || !/^sha256:[0-9a-f]{64}$/.test(result.revision || "")) return;
       revision = result.revision;
+      activeProbeLease = data.lease;
       navigationPending = false;
       localLimitation = undefined;
       if (state) delete state.limitation;
@@ -329,6 +386,49 @@ const shellJs = embeddedJavaScript(String.raw`(() => {
     }
   }
 
+  function annotationActive() {
+    return mode === "annotate" && revision !== undefined && activeProbeLease !== undefined && !limitationReason();
+  }
+
+  function takeSelectionToken() {
+    const now = performance.now();
+    selectionTokens = Math.min(8, selectionTokens + (now - selectionRefillAt) / 125);
+    selectionRefillAt = now;
+    if (selectionTokens < 1) return false;
+    selectionTokens -= 1;
+    return true;
+  }
+
+  function flushTargetMessage() {
+    targetMessageFrame = undefined;
+    const pending = pendingTargetMessage;
+    pendingTargetMessage = undefined;
+    if (!pending || pending.generation !== loadGeneration || !annotationActive()) return;
+    const data = pending.data;
+    if (data.type === "target_cleared") {
+      if (exactKeys(data, ["channel", "lease", "revision", "type", "version"]) && editor.hidden) highlight.removeAttribute("data-visible");
+      return;
+    }
+    if (data.type === "target_preview") {
+      if (exactKeys(data, ["channel", "handle", "lease", "rect", "revision", "type", "version"]) && bounded(data.handle, 64) && validRect(data.rect) && editor.hidden) placeHighlight(data.rect);
+      return;
+    }
+    if (!exactKeys(data, ["anchor", "channel", "handle", "lease", "rect", "revision", "type", "version"]) || !bounded(data.handle, 64) || !validAnchor(data.anchor) || !validRect(data.rect)) return;
+    if (data.type === "target_selected") {
+      if (draftSaveInFlight || (!editor.hidden && (editorDirty || editorSaving)) || !takeSelectionToken()) return;
+      placeHighlight(data.rect);
+      openEditor({ handle: data.handle, anchor: data.anchor });
+      return;
+    }
+  }
+
+  function scheduleTargetMessage(data) {
+    if (data.type === "target_selected" || pendingTargetMessage?.data.type !== "target_selected")
+      pendingTargetMessage = { data, generation: loadGeneration };
+    if (targetMessageFrame === undefined)
+      targetMessageFrame = requestAnimationFrame(flushTargetMessage);
+  }
+
   window.addEventListener("message", (event) => {
     if (event.source !== iframe.contentWindow || event.origin !== contentOrigin) return;
     const data = event.data;
@@ -337,23 +437,23 @@ const shellJs = embeddedJavaScript(String.raw`(() => {
       activateProbe(data);
       return;
     }
-    if ((data.type === "target_preview" || data.type === "target_selected") && exactKeys(data, ["anchor", "channel", "handle", "rect", "type", "version"]) && bounded(data.handle, 64) && validAnchor(data.anchor) && validRect(data.rect)) {
-      if (mode !== "annotate") return;
-      placeHighlight(data.rect);
-      if (data.type === "target_selected") openEditor({ handle: data.handle, anchor: data.anchor });
-      return;
-    }
-    if (data.type === "target_cleared" && exactKeys(data, ["channel", "type", "version"])) highlight.removeAttribute("data-visible");
+    if (
+      (data.type === "target_preview" || data.type === "target_selected" || data.type === "target_cleared") &&
+      annotationActive() &&
+      data.lease === activeProbeLease &&
+      data.revision === revision
+    )
+      scheduleTargetMessage(data);
   });
 
   iframe.addEventListener("load", () => {
     const generation = ++loadGeneration;
     navigationPending = navigationPending || revision !== undefined;
     revision = undefined;
+    activeProbeLease = undefined;
+    clearPendingTargetMessages();
     renderAnnotationAvailability();
-    selectedTarget = undefined;
-    editor.hidden = true;
-    highlight.removeAttribute("data-visible");
+    resetEditor();
     announce("Loading annotation tools");
     clearTimeout(readyTimer);
     stopModeRetry();
@@ -371,6 +471,10 @@ const shellJs = embeddedJavaScript(String.raw`(() => {
   });
 
   async function queueDraft() {
+    if (draftSaveInFlight) {
+      announce("Draft save already in progress");
+      return;
+    }
     const value = comment.value.trim();
     if (!value || !revision) {
       announce(!revision ? "Wait for the page annotation tools to become ready" : "Enter a comment first");
@@ -378,21 +482,35 @@ const shellJs = embeddedJavaScript(String.raw`(() => {
     }
     const payload = selectedTarget ? { kind: "element", comment: value, revision, anchor: selectedTarget.anchor } : { kind: "freeform", comment: value, revision };
     const generation = editorGeneration;
+    draftSaveInFlight = true;
+    editorSaving = true;
     byId("queue-comment").disabled = true;
+    render();
     try {
       await api("/.htmlview/api/drafts", { method: "POST", body: JSON.stringify(payload) });
-      if (editorGeneration === generation) {
-        editor.hidden = true;
-        highlight.removeAttribute("data-visible");
-      }
+      if (editorGeneration === generation) resetEditor();
       await refresh();
       announce("Draft saved privately");
-    } catch (error) { announce(error.message); }
-    finally { byId("queue-comment").disabled = false; }
+    } catch (error) {
+      if (editorGeneration === generation) {
+        editorSaving = false;
+        editorDirty = comment.value.length > 0;
+      }
+      announce(error.message);
+    }
+    finally {
+      draftSaveInFlight = false;
+      byId("queue-comment").disabled = false;
+      render();
+    }
   }
 
   const selectedIds = () => [...draftList.querySelectorAll('input[type="checkbox"]:checked')].map((input) => input.dataset.id);
   async function publish(end, discardRemaining = false) {
+    if (end && (draftSaveInFlight || (!editor.hidden && (editorDirty || editorSaving)))) {
+      announce("Save or cancel the current comment before ending the review");
+      return;
+    }
     const ids = selectedIds();
     if (end && !discardRemaining && ids.length !== state.drafts.length) {
       byId("end-confirm").hidden = false;
@@ -419,16 +537,22 @@ const shellJs = embeddedJavaScript(String.raw`(() => {
     draftsPanel.dataset.open = String(open);
     byId("draft-toggle").setAttribute("aria-expanded", String(open));
   });
-  byId("freeform").addEventListener("click", () => openEditor(undefined));
-  byId("cancel-comment").addEventListener("click", () => { editorGeneration += 1; editor.hidden = true; });
+  byId("freeform").addEventListener("click", () => {
+    if (!openEditor(undefined))
+      announce(draftSaveInFlight ? "Wait for the current draft save to finish" : "Save or cancel the current comment first");
+  });
+  byId("cancel-comment").addEventListener("click", cancelEditor);
   byId("queue-comment").addEventListener("click", queueDraft);
   byId("send").addEventListener("click", () => publish(false));
   byId("end").addEventListener("click", () => publish(true));
   byId("discard-and-end").addEventListener("click", () => publish(true, true));
   byId("cancel-end").addEventListener("click", () => { byId("end-confirm").hidden = true; });
   comment.addEventListener("keydown", (event) => {
-    if (event.key === "Escape") editor.hidden = true;
+    if (event.key === "Escape") cancelEditor();
     if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) { event.preventDefault(); queueDraft(); }
+  });
+  comment.addEventListener("input", () => {
+    editorDirty = comment.value.length > 0;
   });
   window.addEventListener("resize", () => highlight.removeAttribute("data-visible"));
   refresh().catch((error) => { limitation.hidden = false; limitation.textContent = error.message; });
@@ -440,13 +564,21 @@ function probeJavaScript(lease: string): string {
   return embeddedJavaScript(String.raw`(() => {
   "use strict";
   const channel = "htmlview.review";
-  const version = 1;
+  const version = 2;
   const lease = "${lease}";
   const trustedWindow = window;
   const trustedParent = window.parent;
   const trustedAddEventListener = window.addEventListener;
   const trustedPostMessage = window.postMessage;
   const trustedApply = Reflect.apply;
+  const trustedHistory = window.history;
+  const trustedReplaceState = trustedHistory.replaceState;
+  const trustedLocation = window.location;
+  try {
+    trustedApply(trustedReplaceState, trustedHistory, [trustedHistory.state, "", trustedLocation.pathname + trustedLocation.hash]);
+  } catch {
+    return;
+  }
   const script = document.currentScript;
   const revision = script?.dataset.htmlviewRevision;
   if (!/^sha256:[0-9a-f]{64}$/.test(revision || "")) return;
@@ -455,6 +587,8 @@ function probeJavaScript(lease: string): string {
   let parentOrigin;
   let mode = "annotate";
   let sequence = 0;
+  let pendingPreviewElement;
+  let previewFrame;
   let documentLoaded = document.readyState === "complete";
   const listen = (type, listener, options) => trustedApply(trustedAddEventListener, trustedWindow, [type, listener, options]);
   const postToParent = (data, origin) => trustedApply(trustedPostMessage, trustedParent, [data, origin]);
@@ -481,10 +615,16 @@ function probeJavaScript(lease: string): string {
     let size = 0;
     let pendingSpace = false;
     let complete = true;
+    let visitedNodes = 0;
+    let inspectedCharacters = 0;
     while (complete) {
       const node = walker.nextNode();
       if (!node) break;
+      visitedNodes += 1;
+      if (visitedNodes > 4096) break;
       for (const character of node.nodeValue || "") {
+        inspectedCharacters += 1;
+        if (inspectedCharacters > 8192) { complete = false; break; }
         if (/\s/u.test(character)) {
           if (value) pendingSpace = true;
           continue;
@@ -503,19 +643,29 @@ function probeJavaScript(lease: string): string {
     }
     return value || undefined;
   };
+  const siblingPosition = (element) => {
+    let position = 1;
+    let scanned = 0;
+    for (let sibling = element.previousElementSibling; sibling; sibling = sibling.previousElementSibling) {
+      scanned += 1;
+      if (scanned > 2048) return undefined;
+      if (sibling.tagName === element.tagName) position += 1;
+    }
+    return position;
+  };
   const segment = (element) => {
     const tag = element.tagName.toLowerCase();
-    const siblings = element.parentElement ? [...element.parentElement.children].filter((candidate) => candidate.tagName === element.tagName) : [element];
-    return \`\${tag}:nth-of-type(\${siblings.indexOf(element) + 1})\`;
+    const position = siblingPosition(element);
+    return position === undefined ? tag : \`\${tag}:nth-of-type(\${position})\`;
   };
   const anchorFor = (element) => {
     const elements = [];
     for (let current = element; current && current.nodeType === Node.ELEMENT_NODE && elements.length < 12; current = current.parentElement) elements.unshift(current);
     const dom = elements.map((current) => {
-      const siblings = current.parentElement ? [...current.parentElement.children].filter((candidate) => candidate.tagName === current.tagName) : [current];
-      return \`\${current.tagName.toLowerCase()}[\${siblings.indexOf(current)}]\`;
+      const position = siblingPosition(current);
+      return \`\${current.tagName.toLowerCase()}[\${position === undefined ? "?" : position - 1}]\`;
     }).join("/");
-    const selector = element.id ? \`#\${CSS.escape(element.id)}\` : elements.map(segment).join(" > ");
+    const selector = element.id ? \`#\${CSS.escape(truncate(element.id, 2048))}\` : elements.map(segment).join(" > ");
     const text = normalizedText(element);
     return {
       selector: truncate(selector, 2048),
@@ -524,11 +674,22 @@ function probeJavaScript(lease: string): string {
       ...(text === undefined ? {} : { text }),
     };
   };
-  const send = (type, element) => {
+  const sendSelection = (element) => {
     if (!parentOrigin) return;
-    if (!element) { postToParent({ channel, version, type: "target_cleared" }, parentOrigin); return; }
     const rect = element.getBoundingClientRect();
-    postToParent({ channel, version, type, handle: \`target-\${++sequence}\`, anchor: anchorFor(element), rect: { x: rect.x, y: rect.y, width: rect.width, height: rect.height } }, parentOrigin);
+    postToParent({ channel, version, type: "target_selected", handle: \`target-\${++sequence}\`, lease, revision, anchor: anchorFor(element), rect: { x: rect.x, y: rect.y, width: rect.width, height: rect.height } }, parentOrigin);
+  };
+  const schedulePreview = (element) => {
+    pendingPreviewElement = element;
+    if (previewFrame !== undefined) return;
+    previewFrame = requestAnimationFrame(() => {
+      previewFrame = undefined;
+      const preview = pendingPreviewElement;
+      pendingPreviewElement = undefined;
+      if (!parentOrigin || !preview || mode !== "annotate") return;
+      const rect = preview.getBoundingClientRect();
+      postToParent({ channel, version, type: "target_preview", handle: \`target-\${++sequence}\`, lease, revision, rect: { x: rect.x, y: rect.y, width: rect.width, height: rect.height } }, parentOrigin);
+    });
   };
   listen("message", (event) => {
     const data = event.data;
@@ -539,15 +700,19 @@ function probeJavaScript(lease: string): string {
     postToParent({ channel, version, type: "probe_ready", lease, revision }, parentOrigin);
   });
   listen("load", () => { documentLoaded = true; }, { once: true });
-  listen("pointermove", (event) => { if (mode === "annotate" && event.target instanceof Element) send("target_preview", event.target); }, { passive: true });
-  listen("pointerleave", () => { if (mode === "annotate") send("target_cleared"); }, { passive: true });
+  listen("pointermove", (event) => { if (event.isTrusted && mode === "annotate" && event.target instanceof Element) schedulePreview(event.target); }, { passive: true });
+  listen("pointerleave", (event) => {
+    if (!event.isTrusted || mode !== "annotate" || !parentOrigin) return;
+    pendingPreviewElement = undefined;
+    postToParent({ channel, version, type: "target_cleared", lease, revision }, parentOrigin);
+  }, { passive: true });
   listen("click", (event) => {
-    if (mode !== "annotate" || !(event.target instanceof Element)) return;
-    event.preventDefault(); event.stopImmediatePropagation(); send("target_selected", event.target);
+    if (!event.isTrusted || mode !== "annotate" || !(event.target instanceof Element)) return;
+    event.preventDefault(); event.stopImmediatePropagation(); sendSelection(event.target);
   }, true);
   listen("keydown", (event) => {
-    if (mode !== "annotate" || (event.key !== "Enter" && event.key !== " ") || !(event.target instanceof Element)) return;
-    event.preventDefault(); event.stopImmediatePropagation(); send("target_selected", event.target);
+    if (!event.isTrusted || mode !== "annotate" || (event.key !== "Enter" && event.key !== " ") || !(event.target instanceof Element)) return;
+    event.preventDefault(); event.stopImmediatePropagation(); sendSelection(event.target);
   }, true);
 })();`);
 }

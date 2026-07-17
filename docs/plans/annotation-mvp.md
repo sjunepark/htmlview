@@ -180,6 +180,13 @@ channel that later needs replacing.
   service-worker interception; keep same-origin nested iframe loads raw; and
   capture the parent/messaging primitives before authored scripts so later
   navigation cannot reactivate annotation.
+- **Complete:** require a shell-minted, exact-entry, one-use capability before
+  transforming a navigation; remove its reserved query before authored code;
+  bind target messages to the active probe lease/revision; and preserve dirty
+  editor state under forged-message floods.
+- **Complete:** persist stop before listener teardown and delete through a
+  stopped lifecycle barrier, leaving every failed transition retryable as
+  ready-and-live or stopped-and-closed.
 
 ## Phase 5: automatic selected-entry refresh
 

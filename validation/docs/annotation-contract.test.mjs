@@ -53,7 +53,7 @@ test("public docs make automatic refresh review-owned and leave raw passive", as
     /^### Automatic selected-entry refresh \(accepted, pending\)$/m,
   );
   assert.match(architecture, /already-loaded raw page.*under its own control/s);
-  assert.match(adr, /make selected-entry refresh review-owned and automatic/);
+  assert.match(adr, /make selected-entry refresh\s+review-owned and automatic/);
   assert.match(
     interoperability,
     /external browser\/controller must reload any already-open raw page/,
@@ -113,7 +113,11 @@ test("architecture and threat model preserve raw fidelity and review isolation",
 
   assert.match(threatModel, /exact shell `Origin`/);
   assert.match(threatModel, /schema-validated `postMessage` boundary/);
-  assert.match(threatModel, /authored scripts can forge it/i);
+  assert.match(threatModel, /active probe lease and entry revision/i);
+  assert.match(
+    threatModel,
+    /authored code controls the\s+DOM being described/i,
+  );
   assert.match(
     threatModel,
     /one random probe URL per instrumented navigation/i,

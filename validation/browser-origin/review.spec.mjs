@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
 import { expect, test } from "@playwright/test";
-import { entryPath, fixtureRoot } from "./fixture.mjs";
+import { entryPath, fixtureRoot, listenFixture } from "./fixture.mjs";
 
 const execute = promisify(execFile);
 const cli = path.resolve("dist/cli.js");
@@ -22,6 +22,18 @@ async function command(environment, ...args) {
   });
   expect(result.stderr).toBe("");
   return JSON.parse(result.stdout);
+}
+
+async function reloadReviewFrame(page) {
+  await page.locator("#content").evaluate(async (iframe) => {
+    const response = await fetch("/.htmlview/api/navigation", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: "{}",
+    });
+    const navigation = await response.json();
+    iframe.src = navigation.navigation_url;
+  });
 }
 
 test("a human can deliver durable element and page feedback without changing raw serving", async ({
@@ -55,6 +67,15 @@ test("a human can deliver durable element and page feedback without changing raw
       "allow-scripts allow-same-origin",
     );
     await expect(content.locator("#title")).toHaveText("fixture");
+    expect(
+      await content.locator("body").evaluate(() => ({
+        pathname: window.location.pathname,
+        search: window.location.search,
+      })),
+    ).toEqual({
+      pathname: "/pages/report%20space%20%C3%BC.html",
+      search: "",
+    });
     await expect(page.locator("#review-status")).toHaveText(
       "Annotation review",
     );
@@ -62,9 +83,7 @@ test("a human can deliver durable element and page feedback without changing raw
 
     await content.locator("#title").click();
     await expect(page.locator("#editor")).toBeVisible();
-    await page.locator("#content").evaluate((iframe) => {
-      iframe.setAttribute("src", iframe.src);
-    });
+    await reloadReviewFrame(page);
     await expect(page.locator("#editor")).toBeHidden();
     await expect(content.locator("#title")).toHaveText("fixture");
     await expect(page.locator("#live")).toHaveText("Annotation tools ready");
@@ -74,9 +93,9 @@ test("a human can deliver durable element and page feedback without changing raw
     );
     await page.locator("#comment").fill("Make the fixture title clearer");
     await page.getByRole("button", { name: "Add draft" }).click();
+    await expect(page.locator(".draft")).toHaveCount(1);
     await page.getByRole("button", { name: "Page note" }).click();
     await page.locator("#comment").fill("Add a short source note");
-    await expect(page.locator(".draft")).toHaveCount(1);
     await expect(page.locator("#editor")).toBeVisible();
     await expect(page.locator("#comment")).toHaveValue(
       "Add a short source note",
@@ -85,7 +104,11 @@ test("a human can deliver durable element and page feedback without changing raw
     await page.getByRole("button", { name: "Add draft" }).click();
     await expect(page.locator(".draft")).toHaveCount(2);
 
-    await content.locator("body").dispatchEvent("click");
+    await content.locator("body").evaluate((body) => {
+      body.tabIndex = -1;
+    });
+    await content.locator("body").focus();
+    await content.locator("body").press("Enter");
     await expect(page.locator("#target-label")).toHaveText(
       "body · untrusted page context",
     );
@@ -139,10 +162,14 @@ test("a human can deliver durable element and page feedback without changing raw
         excluded,
       );
 
-    for (const comment of ["Keep this final note", "Discard this draft"]) {
+    for (const [index, comment] of [
+      "Keep this final note",
+      "Discard this draft",
+    ].entries()) {
       await page.getByRole("button", { name: "Page note" }).click();
       await page.locator("#comment").fill(comment);
       await page.getByRole("button", { name: "Add draft" }).click();
+      await expect(page.locator(".draft")).toHaveCount(index + 1);
     }
     await page.locator('.draft input[type="checkbox"]').nth(1).uncheck();
     await page.getByRole("button", { name: "Send & end" }).click();
@@ -236,6 +263,59 @@ test("an authored base URL cannot redirect the immutable review probe", async ({
   }
 });
 
+test("a foreign iframe cannot trigger review instrumentation", async ({
+  page,
+}) => {
+  const stateParent = await mkdtemp(path.join(tmpdir(), "hv-review-foreign-"));
+  const environment = {
+    ...process.env,
+    HTMLVIEW_STATE_DIR: path.join(stateParent, "state"),
+    HTMLVIEW_IDLE_MS: "10000",
+  };
+  delete environment.NO_COLOR;
+  delete environment.FORCE_COLOR;
+  const foreign = await listenFixture({
+    urlHost: "attacker-htmlview.localhost",
+    label: "attacker",
+  });
+  try {
+    const served = await command(
+      environment,
+      "serve",
+      entryPath,
+      "--root",
+      fixtureRoot,
+    );
+    const opened = await command(environment, "review", served.session.id);
+    await page.goto(opened.review.url);
+    await expect(page.locator("#live")).toHaveText("Annotation tools ready");
+    const contentUrl = await page.evaluate(() =>
+      fetch("/.htmlview/api/state").then(
+        async (response) => (await response.json()).content_url,
+      ),
+    );
+
+    await page.goto(`${foreign.origin}/state.html`);
+    const responsePromise = page.waitForResponse(
+      (response) => response.url() === contentUrl,
+    );
+    await page.evaluate((url) => {
+      const iframe = document.createElement("iframe");
+      iframe.src = url;
+      document.body.append(iframe);
+    }, contentUrl);
+    const response = await responsePromise;
+    expect(response.status()).toBe(200);
+    expect(await response.text()).not.toContain("/.htmlview/probe/");
+  } finally {
+    await execute(process.execPath, [cli, "stop", "--all", "--json"], {
+      env: environment,
+    }).catch(() => undefined);
+    await foreign.close();
+    await rm(stateParent, { recursive: true, force: true });
+  }
+});
+
 test("hostile authored content cannot read comments or execute stored context", async ({
   page,
 }) => {
@@ -265,6 +345,35 @@ test("hostile authored content cannot read comments or execute stored context", 
       window.addEventListener("message", (event) => {
         window.__reviewMessages.push(event.data);
       });
+      window.__anchorWalks = 0;
+      window.__originalCreateTreeWalker =
+        document.createTreeWalker.bind(document);
+      document.createTreeWalker = (...arguments_) => {
+        window.__anchorWalks += 1;
+        return window.__originalCreateTreeWalker(...arguments_);
+      };
+      const target = document.createElement("div");
+      target.id = "large-preview-target";
+      target.textContent = "Large preview target";
+      for (let index = 0; index < 5_000; index += 1)
+        target.append(document.createElement("span"));
+      document.body.prepend(target);
+    });
+
+    await content.locator("#large-preview-target").hover();
+    await page.waitForTimeout(50);
+    expect(
+      await content.locator("body").evaluate(() => window.__anchorWalks),
+    ).toBe(0);
+    await content.locator("#large-preview-target").click();
+    await expect(page.locator("#editor")).toBeVisible();
+    expect(
+      await content.locator("body").evaluate(() => window.__anchorWalks),
+    ).toBe(1);
+    await page.getByRole("button", { name: "Cancel" }).click();
+    await content.locator("body").evaluate(() => {
+      document.createTreeWalker = window.__originalCreateTreeWalker;
+      document.querySelector("#large-preview-target")?.remove();
     });
 
     const secret =
@@ -309,6 +418,11 @@ test("hostile authored content cannot read comments or execute stored context", 
     await expect(page.locator(".draft")).toHaveCount(0);
 
     await page.getByRole("button", { name: "Explore" }).click();
+    await expect(page.locator("#live")).toHaveText(
+      "Save or cancel the current comment before exploring",
+    );
+    await page.getByRole("button", { name: "Cancel" }).click();
+    await page.getByRole("button", { name: "Explore" }).click();
     await page.getByRole("button", { name: "Annotate" }).click();
     const messages = await content
       .locator("body")
@@ -318,13 +432,13 @@ test("hostile authored content cannot read comments or execute stored context", 
       expect.arrayContaining([
         {
           channel: "htmlview.review",
-          version: 1,
+          version: 2,
           type: "set_mode",
           mode: "explore",
         },
         {
           channel: "htmlview.review",
-          version: 1,
+          version: 2,
           type: "set_mode",
           mode: "annotate",
         },
@@ -343,8 +457,10 @@ test("hostile authored content cannot read comments or execute stored context", 
     await content.locator("body").evaluate(() => {
       const base = {
         channel: "htmlview.review",
-        version: 1,
+        version: 2,
         type: "target_selected",
+        lease: "0".repeat(32),
+        revision: `sha256:${"0".repeat(64)}`,
         handle: "invalid-target",
         anchor: {
           selector: "body",
@@ -354,7 +470,7 @@ test("hostile authored content cannot read comments or execute stored context", 
         rect: { x: 0, y: 0, width: 10, height: 10 },
       };
       for (const value of [
-        { ...base, version: 2 },
+        { ...base, version: 3 },
         { ...base, extra: "rejected" },
         { ...base, handle: "x".repeat(65) },
         { ...base, rect: { ...base.rect, width: -1 } },
@@ -363,29 +479,79 @@ test("hostile authored content cannot read comments or execute stored context", 
     });
     await expect(page.locator("#editor")).toBeHidden();
 
+    await content.locator("#title").click();
+    await expect(page.locator("#editor")).toBeVisible();
+    await expect(page.locator("#target-label")).toContainText("h1");
+    await page.locator("#comment").fill("Protected target note");
+    await expect(page.locator("#comment")).toBeFocused();
+
     await content.locator("body").evaluate(() => {
+      const lease = "f".repeat(32);
+      const revision = `sha256:${"f".repeat(64)}`;
+      const selected = {
+        channel: "htmlview.review",
+        version: 2,
+        type: "target_selected",
+        lease,
+        revision,
+        handle: "forged-target",
+        anchor: {
+          selector: '<img src=x onerror="window.__htmlviewXss=true">',
+          dom_path: "html[0]/body[0]",
+          tag: "<img>",
+          text: "<script>window.__htmlviewXss=true</script>",
+        },
+        rect: { x: 0, y: 0, width: 10, height: 10 },
+      };
+      for (let index = 0; index < 2_000; index += 1) {
+        window.parent.postMessage(selected, "*");
+        window.parent.postMessage(
+          {
+            channel: "htmlview.review",
+            version: 2,
+            type: "target_preview",
+            lease,
+            revision,
+            handle: "forged-target",
+            rect: selected.rect,
+          },
+          "*",
+        );
+        window.parent.postMessage(
+          {
+            channel: "htmlview.review",
+            version: 2,
+            type: "target_cleared",
+            lease,
+            revision,
+          },
+          "*",
+        );
+      }
       window.parent.postMessage(
         {
           channel: "htmlview.review",
-          version: 1,
+          version: 2,
           type: "target_selected",
+          lease,
+          revision,
           handle: "forged-target",
           anchor: {
-            selector: '<img src=x onerror="window.__htmlviewXss=true">',
+            selector: "x".repeat(1024 * 1024),
             dom_path: "html[0]/body[0]",
-            tag: "<img>",
-            text: "<script>window.__htmlviewXss=true</script>",
+            tag: "body",
           },
           rect: { x: 0, y: 0, width: 10, height: 10 },
         },
         "*",
       );
     });
-    await expect(page.locator("#target-label")).toContainText("<img>");
+    await expect(page.locator("#comment")).toHaveValue("Protected target note");
+    await expect(page.locator("#comment")).toBeFocused();
+    await expect(page.locator("#target-label")).toContainText("h1");
     await expect(page.locator("#target-label img")).toHaveCount(0);
     expect(await page.evaluate(() => window.__htmlviewXss)).toBeUndefined();
 
-    await page.locator("#comment").fill("Forged target note");
     await page.getByRole("button", { name: "Add draft" }).click();
     await expect(page.locator(".draft")).toHaveCount(2);
     await page.getByRole("button", { name: "Send selected" }).click();
@@ -395,23 +561,79 @@ test("hostile authored content cannot read comments or execute stored context", 
       { kind: "freeform", comment: secret },
       {
         kind: "element",
-        comment: "Forged target note",
+        comment: "Protected target note",
         anchor: {
-          selector: '<img src=x onerror="window.__htmlviewXss=true">',
-          dom_path: "html[0]/body[0]",
-          tag: "<img>",
-          text: "<script>window.__htmlviewXss=true</script>",
+          tag: "h1",
         },
       },
     ]);
     expect(await page.evaluate(() => window.__htmlviewXss)).toBeUndefined();
 
+    let draftRequests = 0;
+    let draftStartedResolve;
+    let releaseDraft;
+    const draftStarted = new Promise((resolve) => {
+      draftStartedResolve = resolve;
+    });
+    const draftGate = new Promise((resolve) => {
+      releaseDraft = resolve;
+    });
+    await page.route("**/.htmlview/api/drafts", async (route) => {
+      draftRequests += 1;
+      draftStartedResolve();
+      await draftGate;
+      await route.continue();
+    });
+    await page.getByRole("button", { name: "Page note" }).click();
+    await page.locator("#comment").fill("Single-flight shortcut note");
+    await page.locator("#comment").press("Control+Enter");
+    await draftStarted;
+    await page.locator("#comment").press("Control+Enter");
+    await page.locator("#comment").press("Escape");
+    await expect(page.locator("#editor")).toBeVisible();
+    await expect(page.locator("#comment")).toHaveValue(
+      "Single-flight shortcut note",
+    );
+    await expect(
+      page.getByRole("button", { name: "Page note" }),
+    ).toBeDisabled();
+    await expect(page.getByRole("button", { name: "Explore" })).toBeDisabled();
+    await expect(
+      page.getByRole("button", { name: "Send & end" }),
+    ).toBeDisabled();
+    await expect(page.locator("#live")).toHaveText(
+      "Wait for the current draft save to finish",
+    );
+    await expect(page.locator("#review-status")).toHaveText(
+      "Annotation review",
+    );
+    releaseDraft();
+    await expect(page.locator(".draft")).toHaveCount(1);
+    expect(draftRequests).toBe(1);
+    await page.unroute("**/.htmlview/api/drafts");
+
+    await page.getByRole("button", { name: "Page note" }).click();
+    await page.locator("#comment").fill("Unsaved end guard");
+    await page.getByRole("button", { name: "Send & end" }).click();
+    await expect(page.locator("#live")).toHaveText(
+      "Save or cancel the current comment before ending the review",
+    );
+    await expect(page.locator("#editor")).toBeVisible();
+    await page.getByRole("button", { name: "Cancel" }).click();
+
+    await content.locator("#title").evaluate((title) => {
+      title.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await expect(page.locator("#editor")).toBeHidden();
+
     await page.evaluate(() => {
       window.postMessage(
         {
           channel: "htmlview.review",
-          version: 1,
+          version: 2,
           type: "target_selected",
+          lease: "0".repeat(32),
+          revision: `sha256:${"0".repeat(64)}`,
           handle: "wrong-source",
           anchor: {
             selector: "body",
@@ -682,9 +904,7 @@ test("Annotate isolates native controls while Explore permits navigation", async
       page.getByRole("button", { name: "Page note" }),
     ).toBeDisabled();
 
-    await page.locator("#content").evaluate((iframe) => {
-      iframe.src = new URL("/pages/controls.html", iframe.src).href;
-    });
+    await reloadReviewFrame(page);
     await expect(content.locator("#controls-title")).toHaveText(
       "Review controls fixture",
     );
@@ -705,9 +925,7 @@ test("Annotate isolates native controls while Explore permits navigation", async
       "Navigated document",
     );
     await stateIntercepted;
-    await page.locator("#content").evaluate((iframe) => {
-      iframe.src = new URL("/pages/controls.html", iframe.src).href;
-    });
+    await reloadReviewFrame(page);
     await expect(content.locator("#controls-title")).toHaveText(
       "Review controls fixture",
     );
@@ -772,9 +990,7 @@ test("source reloads preserve drafts with their original revisions", async ({
       entry,
       '<!doctype html><html><body><h1 id="target">Second revision</h1></body></html>',
     );
-    await page.locator("#content").evaluate((iframe) => {
-      iframe.setAttribute("src", iframe.src);
-    });
+    await reloadReviewFrame(page);
     await expect(content.locator("#target")).toHaveText("Second revision");
     await expect(page.locator("#live")).toHaveText("Annotation tools ready");
     await page.getByRole("button", { name: "Page note" }).click();

@@ -25,7 +25,10 @@ annotation slice; packaging and final release hardening follow it, so `0.1.0`
 is not ready to publish. The existing annotation authorization,
 hostile-content, authenticated probe-readiness, and explicit
 instrumentation-limitation matrices pass and must remain intact through the
-refresh work.
+refresh work. Review navigation now requires a shell-minted one-use capability,
+target messages are bound to the active probe lease/revision, and stop/delete
+persistence barriers prevent ready-but-closed review records. Supervisor
+protocol mismatches are rejected explicitly without compatibility fallbacks.
 
 Documentation now has explicit ownership and current-versus-target status; see
 [`docs/README.md`](docs/README.md). There is no external blocker.

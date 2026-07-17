@@ -121,9 +121,16 @@ reported by authored code is authentic.
   state API authority. Never send comment text into the content frame.
 - **Forged or oversized frame messages.** Accept target messages only from the
   expected iframe window and exact content origin, validate a versioned bounded
-  schema, and send no sensitive state into authored code. Treat target context
-  as untrusted because authored scripts can forge it. Treat document readiness
-  separately: issue one random probe URL per instrumented navigation, serve it
+  schema, bind them to the active probe lease and entry revision, coalesce them
+  to animation frames, rate-limit selections, and send no sensitive state into
+  authored code. Ignore target replacement while a comment is dirty or saving.
+  Accept only trusted pointer, keyboard, and click events as probe selection
+  input. Treat target context as untrusted because authored code controls the
+  DOM being described. Treat document admission and readiness separately: mint
+  one bounded, exact-entry, one-use navigation capability in the shell; return
+  raw bytes without it and reject malformed, expired, or replayed reserved
+  requests. Remove its reserved query before authored scripts run. Then issue
+  one random probe URL per instrumented navigation, serve it
   once without caching, keep its separate lease out of HTML, DOM attributes,
   and shell-to-frame messages, run the parser-blocking probe before authored
   scripts, and have it capture the real parent and pristine messaging
@@ -293,11 +300,15 @@ not complete merely because it is described here.
   hostname-to-loopback resolution.
 - Browser execution of untrusted authored code remains dangerous by design and
   is mitigated operationally with an isolated browser environment.
-- Instrumented content can forge selection metadata or prevent its probe from
-  becoming ready. Origin separation and the one-use lease protect comments,
-  mutation authority, and readiness from false activation; they do not protect
-  the truth of an annotation anchor or guarantee that hostile content remains
-  annotatable.
+- Instrumented content can misrepresent selection metadata or prevent its probe from
+  becoming ready by controlling the DOM or interfering with its own page.
+  Origin separation and the one-use lease protect comments, mutation authority,
+  and readiness from false activation; they do not protect the truth of an
+  annotation anchor or guarantee that hostile content remains annotatable.
+- The probe removes the spent navigation-capability query from the document
+  location before authored scripts run, but browser Navigation Timing may
+  retain the original network URL. The already-consumed token grants no replay
+  authority.
 - A human comment or source-derived excerpt can contain instructions intended
   to influence the consuming agent. Structured labeling and no implicit LLM
   invocation preserve the boundary, but the agent still decides whether to act.

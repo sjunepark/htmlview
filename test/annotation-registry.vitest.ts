@@ -57,7 +57,7 @@ it.effect(
           },
         ]);
 
-        yield* registry.stopReady([firstId]);
+        yield* registry.stopReadyForSessions(["session1"]);
         yield* registry.resumeReady(firstId, "session2");
         expect(
           registry.openReview({
@@ -121,6 +121,78 @@ it.effect("keeps memory unchanged when a durable replacement fails", () =>
   ),
 );
 
+it.effect(
+  "keeps deletion retryable across both durable transition failures",
+  () =>
+    withTemporaryState((paths) =>
+      Effect.gen(function* () {
+        let attempt = 0;
+        let failAt = 1;
+        const registry = new AnnotationRegistry(
+          paths,
+          {
+            ...emptyAnnotationState(),
+            reviews: [
+              {
+                id: firstId,
+                identity: { root: "/workspace", entry: "/report.html" },
+                status: "ready",
+                session: "session1",
+                drafts: [],
+                events: [],
+                nextCursor: 1,
+                acknowledgedCursor: 0,
+                highestDeliveredCursor: 0,
+              },
+            ],
+          },
+          1,
+          () => {
+            attempt += 1;
+            return attempt === failAt
+              ? Effect.fail(
+                  new RuntimeStateError({
+                    code: "state.unavailable",
+                    message: "test persistence failure",
+                  }),
+                )
+              : Effect.void;
+          },
+        );
+        let closes = 0;
+        const close = Effect.sync(() => {
+          closes += 1;
+        });
+
+        expect(
+          (yield* registry
+            .deleteReview(firstId, false, close)
+            .pipe(Effect.flip)).code,
+        ).toBe("state.unavailable");
+        expect(registry.summaries()[0]?.status).toBe("ready");
+        expect(closes).toBe(0);
+
+        attempt = 0;
+        failAt = 2;
+        expect(
+          (yield* registry
+            .deleteReview(firstId, false, close)
+            .pipe(Effect.flip)).code,
+        ).toBe("state.unavailable");
+        expect(registry.summaries()[0]?.status).toBe("stopped");
+        expect(closes).toBe(1);
+
+        attempt = 0;
+        failAt = Number.POSITIVE_INFINITY;
+        expect(yield* registry.deleteReview(firstId, false)).toMatchObject({
+          review: firstId,
+          deleted: 1,
+        });
+        expect(registry.summaries()).toEqual([]);
+      }),
+    ),
+);
+
 it.effect("reserves lifecycle headroom at the durable annotation limit", () =>
   withTemporaryState((paths) =>
     Effect.gen(function* () {
@@ -166,7 +238,7 @@ it.effect("reserves lifecycle headroom at the durable annotation limit", () =>
       expect(limit?.code).toBe("review.annotation_limit");
       expect(sent).toBeGreaterThan(0);
       expect((yield* registry.feedback(firstId)).count).toBe(sent);
-      yield* registry.stopReady([firstId]);
+      yield* registry.stopReadyForSessions(["session1"]);
       const persisted = (yield* loadAnnotationState(paths)).reviews[0];
       expect(persisted?.status).toBe("stopped");
       expect(persisted?.highestDeliveredCursor).toBe(sent);
@@ -263,7 +335,7 @@ it.effect("enforces one cancellable waiter and wakes on stopped state", () =>
       yield* Effect.promise(
         () => new Promise<void>((resolve) => setImmediate(resolve)),
       );
-      yield* registry.stopReady([firstId]);
+      yield* registry.stopReadyForSessions(["session1"]);
       expect(yield* Fiber.join(waiting)).toMatchObject({
         review: { id: firstId, status: "stopped" },
         cursor: 0,

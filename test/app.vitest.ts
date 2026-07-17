@@ -330,6 +330,23 @@ describe("CLI application contract", () => {
     });
   }
 
+  it("advertises annotation as the next action after serve", async () => {
+    const toon = decodeOutput(
+      (await invoke(["serve", "x.html"])).stdout,
+      "toon",
+    ) as Record<string, unknown>;
+    const json = decodeOutput(
+      (await invoke(["serve", "x.html", "--json"])).stdout,
+      "json",
+    ) as Record<string, unknown>;
+    assert.deepEqual(toon.help, [
+      "Run `htmlview review <session>` for human annotation",
+    ]);
+    assert.deepEqual(json.help, [
+      "Run `htmlview review <session> --json` for human annotation",
+    ]);
+  });
+
   it("preserves JSON in contextual commands", async () => {
     const result = await invoke(["--json"]);
     const value = decodeOutput(result.stdout, "json") as Record<
@@ -402,11 +419,10 @@ describe("CLI application contract", () => {
     ]);
   });
 
-  it("suggests the compatible stop path for a supervisor mismatch", async () => {
+  it("suggests stop-all only for a same-protocol version mismatch", async () => {
     const failure = new SupervisorError({
-      code: "supervisor.incompatible",
-      message:
-        "The running htmlview supervisor uses an incompatible control protocol",
+      code: "supervisor.version_mismatch",
+      message: "The running htmlview supervisor uses a different version",
     });
     const result = await invoke(["serve", "x.html", "--json"], [], failure);
     const value = decodeOutput(result.stdout, "json") as Record<
@@ -416,6 +432,20 @@ describe("CLI application contract", () => {
     assert.deepEqual(value.help, [
       "Run `htmlview stop --all --json` before retrying this command",
     ]);
+  });
+
+  it("does not suggest an incompatible stop-all command", async () => {
+    const failure = new SupervisorError({
+      code: "supervisor.protocol_mismatch",
+      message:
+        "The running htmlview supervisor uses an incompatible control protocol; use the htmlview installation that started it to run stop --all before retrying",
+    });
+    const result = await invoke(["serve", "x.html", "--json"], [], failure);
+    const value = decodeOutput(result.stdout, "json") as Record<
+      string,
+      unknown
+    >;
+    assert.equal("help" in value, false);
   });
 
   it("sanitizes unexpected defects at the outer boundary", async () => {

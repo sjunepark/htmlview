@@ -2,8 +2,9 @@
 
 - Status: Accepted
 - Date: 2026-07-16
-- Amended: 2026-07-17 to authenticate document readiness with one-use probe
-  leases and make selected-entry refresh review-owned and automatic
+- Amended: 2026-07-17 to authenticate document navigation/readiness and target
+  messages, harden lifecycle persistence, and make selected-entry refresh
+  review-owned and automatic
 - Extends: [ADR 0001](0001-separate-serving-from-browser-control.md)
 - Related: [ADR 0009](0009-adopt-effect-cli-and-logging.md) defines the CLI and
   diagnostic boundary
@@ -42,12 +43,18 @@ explicit review attached to a live raw session:
   transforms only the selected entry to load a bounded selection probe.
 - The content iframe retains its own origin for authored same-origin assets and
   scripts but cannot access the shell DOM or state API. The probe reports target
-  context through a strictly validated message boundary. Authored scripts may
-  still forge target messages; `0.1.0` does not claim annotation authenticity
-  against malicious rendered code.
+  context through a strictly validated message boundary. Target messages carry
+  the active one-use probe lease and entry revision, so authored calls to
+  `postMessage` cannot clear, replace, or submit shell editor state. Anchor
+  meaning remains untrusted because the probe observes an authored DOM that a
+  malicious page controls.
 - Only the shell's cross-site iframe-navigation requests for the selected entry
-  receive instrumentation; same-origin nested iframe loads remain raw. Each
-  transformed response references a one-use random probe URL. That URL serves
+  receive instrumentation; same-origin nested iframe loads remain raw. The
+  shell first mints a bounded, one-use navigation capability tied to the exact
+  entry. Requests without it receive raw bytes, and malformed, expired, or
+  replayed capability requests fail closed. The parser-blocking probe removes
+  the reserved query from the document URL before authored scripts run. Each
+  transformed response then references a one-use random probe URL. That URL serves
   one uncached script containing a separate random lease which is absent from
   the HTML; the shell must redeem the lease through its protected mutation API
   before the entry revision becomes active. Replays, ordinary authored fetches,
@@ -57,7 +64,8 @@ explicit review attached to a live raw session:
   even if authored code later shadows browser globals.
   Service-worker script requests are unavailable on the fresh content origin
   so authored code cannot intercept the one-use response. This authenticates
-  document readiness, not the target metadata that the document later reports.
+  document readiness and binds later target messages to that document, not the
+  semantic truth of target metadata derived from authored DOM.
 - Review mutations require the exact shell authority and origin. Browser routes
   never expose raw-session creation or stop, root selection, listing, or other
   supervisor control, which remains on the user-private Unix socket.
@@ -137,6 +145,16 @@ review does not silently reopen.
 If the raw session remains live, a later `review <session>` starts a new review
 with a new identifier and origins. Successful deletion closes any live review
 origins before committing the deletion result; it never stops the raw session.
+The transition is a durable saga: persist `ready` to `stopped`, release the
+store mutation permit while closing live origins, then commit the deletion
+tombstone. Stop operations likewise persist every review attached to the
+session before closing listeners. Failures therefore converge on either
+ready-and-live or stopped-and-closed state, and retries remain safe.
+This retry guarantee applies to interactive control operations. A forced
+supervisor close always tears down disclosure listeners before releasing the
+control socket and ownership lock, even when private-state persistence is
+unavailable; the existing startup recovery then normalizes any orphaned
+`ready` record to `stopped`.
 The no-argument home result lists bounded non-tombstone review summaries with
 IDs, statuses, and pending counts so retained data remains discoverable and
 cleanable after listener or supervisor stop.
@@ -160,6 +178,9 @@ the human can inspect the fix and send another batch.
   sandboxed, instrumented, and unable to install a content-origin service
   worker. Those differences are explicit product output and release-test
   subjects.
+- The probe removes the navigation-capability query from `location` before
+  authored scripts run, but browser Navigation Timing may retain the original
+  network URL. The capability is already consumed and cannot be replayed.
 - Durable drafts and cursor acknowledgement add bounded private state and
   lifecycle transitions that the supervisor must serialize and recover.
 - Automatic refresh adds a scoped entry observer and trusted-shell notification

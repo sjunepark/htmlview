@@ -184,9 +184,16 @@ or typed comments. A schema-validated `postMessage` boundary carries bounded
 target context and current geometry. The shell checks the source window and
 exact origin.
 
-Authored code can forge target messages from its own frame, so element metadata
-is explicitly untrusted. It cannot assert that annotation instrumentation is
-ready: each document navigation receives a one-use random probe URL, that URL
+Authored code cannot manufacture an accepted target message: messages must
+carry the active probe lease and entry revision, and trusted pointer, keyboard,
+or click events are the only probe inputs that select targets. Element metadata
+is still explicitly untrusted because the authored page controls the DOM the
+probe describes. The shell also mints a bounded one-use capability for the
+exact selected-entry navigation. A clean cross-origin iframe request receives
+raw bytes; malformed, expired, and replayed capability requests fail closed.
+The parser-blocking probe removes the reserved query from the visible document
+URL before authored scripts run. Each admitted navigation receives a one-use
+random probe URL, and that URL
 serves one uncached script containing a separate random lease, and the shell
 must redeem the lease through its protected mutation API before a revision is
 admitted. The parser-blocking probe is the document's first executable code and
@@ -234,11 +241,20 @@ acknowledged cursor. Cancellation or response loss may cause duplicate delivery
 but cannot acknowledge an unseen event. Browser End commits the final batch and
 leaves it unacknowledged for the agent.
 
-Listener stop never deletes drafts or unacknowledged events. Explicit deletion
-rejects pending data unless discard is requested. Ended, fully acknowledged
-state retains only a bounded retry tombstone. Stopped, unended reviews may resume
+Listener stop never deletes drafts or unacknowledged events. Session stop first
+persists every associated ready review as stopped, then closes all in-memory
+review and raw scopes. Explicit deletion rejects pending data unless discard is
+requested. Ended, fully acknowledged state retains only a bounded retry
+tombstone. Live deletion persists a stopped barrier, closes its scope outside
+the store mutation permit, then persists the tombstone; a failed phase is
+retryable without a ready-but-closed state. Stopped, unended reviews may resume
 for the same document identity with stable records and fresh browser origins;
 ended reviews do not resume.
+
+Interactive shutdown aborts before listener teardown when its stopped-state
+write fails. Forced process shutdown instead closes every listener before
+releasing control and ownership, then reports the persistence failure; startup
+recovery converts any resulting orphaned `ready` record to `stopped`.
 
 ### Automatic selected-entry refresh (accepted, pending)
 

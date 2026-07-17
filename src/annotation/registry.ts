@@ -76,6 +76,10 @@ type PreparedFeedback =
   | { readonly kind: "result"; readonly result: FeedbackReadResult }
   | { readonly kind: "wait"; readonly waiter: ReviewWaiter };
 
+type PreparedDelete =
+  | { readonly kind: "result"; readonly result: DeleteReviewResult }
+  | { readonly kind: "prepared" };
+
 const tombstoneRetentionMilliseconds = 24 * 60 * 60 * 1000;
 
 export function generateDraftId(
@@ -213,20 +217,23 @@ export class AnnotationRegistry {
     );
   }
 
-  stopReady(ids: readonly string[]): Effect.Effect<void, RuntimeStateError> {
+  stopReadyForSessions(
+    sessionIds: readonly string[],
+  ): Effect.Effect<void, RuntimeStateError> {
     return this.#mutations.withPermit(
       Effect.gen({ self: this }, function* () {
-        const selected = new Set(ids);
+        const selected = new Set(sessionIds);
         let changed = false;
         const reviews = this.#state.reviews.map((review) => {
-          if (!selected.has(review.id) || review.status !== "ready")
+          if (!selected.has(review.session) || review.status !== "ready")
             return review;
           changed = true;
           return { ...review, status: "stopped" as const };
         });
         if (changed) {
           yield* this.#replace({ ...this.#state, reviews });
-          for (const id of selected) this.#wake(id);
+          for (const review of reviews)
+            if (selected.has(review.session)) this.#wake(review.id);
         }
       }),
     );
@@ -389,72 +396,134 @@ export class AnnotationRegistry {
   deleteReview(
     reviewId: string,
     discardFeedback: boolean,
-    beforeCommit: Effect.Effect<void> = Effect.void,
+    closeLiveReview: Effect.Effect<void> = Effect.void,
   ): Effect.Effect<DeleteReviewResult, ReviewError | RuntimeStateError> {
-    return this.#mutations.withPermit(
+    return Effect.uninterruptible(
       Effect.gen({ self: this }, function* () {
-        const now = yield* Clock.currentTimeMillis;
-        yield* this.#expireTombstones(now);
-        const existingTombstone = this.#state.tombstones.find(
-          (tombstone) => tombstone.id === reviewId,
+        const prepared = yield* this.#mutations.withPermit(
+          this.#prepareDelete(reviewId, discardFeedback),
         );
-        if (existingTombstone?.kind === "deleted")
-          return {
+        if (prepared.kind === "result") return prepared.result;
+        yield* closeLiveReview;
+        return yield* this.#mutations.withPermit(
+          this.#commitDelete(reviewId, discardFeedback),
+        );
+      }),
+    );
+  }
+
+  #prepareDelete(
+    reviewId: string,
+    discardFeedback: boolean,
+  ): Effect.Effect<PreparedDelete, ReviewError | RuntimeStateError> {
+    return Effect.gen({ self: this }, function* () {
+      const now = yield* Clock.currentTimeMillis;
+      yield* this.#expireTombstones(now);
+      const existingTombstone = this.#state.tombstones.find(
+        (tombstone) => tombstone.id === reviewId,
+      );
+      if (existingTombstone?.kind === "deleted")
+        return {
+          kind: "result" as const,
+          result: {
             review: reviewId,
-            deleted: 1 as const,
+            deleted: 1,
             discardedDrafts: existingTombstone.discardedDrafts,
             discardedFeedback: existingTombstone.discardedFeedback,
-          };
-        const index = this.#reviewIndex(reviewId);
-        const review = this.#state.reviews[index];
-        if (review === undefined && existingTombstone === undefined)
-          return yield* this.#reviewNotFound(reviewId);
-        const drafts = review?.drafts.length ?? 0;
-        const feedback = review?.events.length ?? 0;
-        if (!discardFeedback && (drafts > 0 || feedback > 0))
-          return yield* new ReviewError({
-            code: "review.pending_feedback",
-            message: "The review still contains pending feedback",
-            details: { drafts, unacknowledged: feedback },
-          });
-        const reviews =
-          review === undefined
-            ? this.#state.reviews
-            : this.#state.reviews.filter((_, position) => position !== index);
-        const retained = this.#retainedTombstones(now).filter(
-          (tombstone) => tombstone.id !== reviewId,
-        );
-        if (retained.length >= maximumTombstones)
-          return yield* new ReviewError({
-            code: "review.limit",
-            message: `Retry tombstone limit of ${maximumTombstones} reached`,
-          });
-        yield* beforeCommit;
-        yield* this.#replace({
-          ...this.#state,
-          reviews,
-          tombstones: [
-            ...retained,
-            {
-              id: reviewId,
-              kind: "deleted",
-              expiresAt: new Date(
-                now + tombstoneRetentionMilliseconds,
-              ).toISOString(),
-              discardedDrafts: drafts,
-              discardedFeedback: feedback,
-            },
-          ],
+          },
+        };
+      const index = this.#reviewIndex(reviewId);
+      const review = this.#state.reviews[index];
+      if (review === undefined && existingTombstone === undefined)
+        return yield* this.#reviewNotFound(reviewId);
+      const drafts = review?.drafts.length ?? 0;
+      const feedback = review?.events.length ?? 0;
+      if (!discardFeedback && (drafts > 0 || feedback > 0))
+        return yield* new ReviewError({
+          code: "review.pending_feedback",
+          message: "The review still contains pending feedback",
+          details: { drafts, unacknowledged: feedback },
         });
+      const retained = this.#retainedTombstones(now).filter(
+        (tombstone) => tombstone.id !== reviewId,
+      );
+      if (retained.length >= maximumTombstones)
+        return yield* new ReviewError({
+          code: "review.limit",
+          message: `Retry tombstone limit of ${maximumTombstones} reached`,
+        });
+      if (review?.status === "ready") {
+        const reviews = [...this.#state.reviews];
+        reviews[index] = { ...review, status: "stopped" };
+        yield* this.#replace({ ...this.#state, reviews });
         this.#wake(reviewId);
+      }
+      return { kind: "prepared" as const };
+    });
+  }
+
+  #commitDelete(
+    reviewId: string,
+    discardFeedback: boolean,
+  ): Effect.Effect<DeleteReviewResult, ReviewError | RuntimeStateError> {
+    return Effect.gen({ self: this }, function* () {
+      const now = yield* Clock.currentTimeMillis;
+      yield* this.#expireTombstones(now);
+      const existingTombstone = this.#state.tombstones.find(
+        (tombstone) => tombstone.id === reviewId,
+      );
+      if (existingTombstone?.kind === "deleted")
         return {
           review: reviewId,
           deleted: 1,
-          discardedDrafts: drafts,
-          discardedFeedback: feedback,
+          discardedDrafts: existingTombstone.discardedDrafts,
+          discardedFeedback: existingTombstone.discardedFeedback,
         };
-      }),
-    );
+      const review = this.#state.reviews[this.#reviewIndex(reviewId)];
+      if (review === undefined && existingTombstone === undefined)
+        return yield* this.#reviewNotFound(reviewId);
+      const drafts = review?.drafts.length ?? 0;
+      const feedback = review?.events.length ?? 0;
+      if (!discardFeedback && (drafts > 0 || feedback > 0))
+        return yield* new ReviewError({
+          code: "review.pending_feedback",
+          message: "The review still contains pending feedback",
+          details: { drafts, unacknowledged: feedback },
+        });
+      const retained = this.#retainedTombstones(now).filter(
+        (tombstone) => tombstone.id !== reviewId,
+      );
+      if (retained.length >= maximumTombstones)
+        return yield* new ReviewError({
+          code: "review.limit",
+          message: `Retry tombstone limit of ${maximumTombstones} reached`,
+        });
+      yield* this.#replace({
+        ...this.#state,
+        reviews: this.#state.reviews.filter(
+          (candidate) => candidate.id !== reviewId,
+        ),
+        tombstones: [
+          ...retained,
+          {
+            id: reviewId,
+            kind: "deleted",
+            expiresAt: new Date(
+              now + tombstoneRetentionMilliseconds,
+            ).toISOString(),
+            discardedDrafts: drafts,
+            discardedFeedback: feedback,
+          },
+        ],
+      });
+      this.#wake(reviewId);
+      return {
+        review: reviewId,
+        deleted: 1,
+        discardedDrafts: drafts,
+        discardedFeedback: feedback,
+      };
+    });
   }
 
   #prepareFeedback(

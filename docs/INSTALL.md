@@ -50,6 +50,13 @@ to close. It preserves annotation drafts and unacknowledged feedback. An
 upgrade does not read or modify served projects; the next command validates
 private state and creates a fresh version-compatible control socket.
 
+There is intentionally no cross-protocol compatibility layer. If an upgrade was
+installed without stopping a supervisor and the new CLI reports
+`supervisor.protocol_mismatch`, reinstall the exact prior htmlview release, run
+its `htmlview stop --all`, and then install the desired release again. When only
+the package version differs and the control protocol still matches, the new
+CLI can perform `stop --all` directly.
+
 ## Remove
 
 Stop sessions and the supervisor, then uninstall the package:

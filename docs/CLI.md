@@ -200,7 +200,7 @@ The equivalent JSON is available without changing the operation:
     "root": "/workspace",
     "access": "read_all_regular_files_beneath_root"
   },
-  "help": ["Run `htmlview review <session>` for human annotation"]
+  "help": ["Run `htmlview review <session> --json` for human annotation"]
 }
 ```
 
@@ -338,6 +338,11 @@ reports draft and unacknowledged counts, and suggests the feedback or explicit
 discard command. `--discard-feedback` explicitly deletes drafts and
 unacknowledged events. A successful deletion closes any live shell/content
 origins before committing the deletion result and leaves the raw session live.
+Deletion first durably changes a ready review to `stopped`, closes the live
+origins without holding the annotation-store mutation permit, and then commits
+the deletion tombstone. If the first write fails, the review remains ready and
+live. If closure or the final write fails, it remains stopped and the command is
+safe to retry.
 
 ```toon
 delete:
@@ -363,6 +368,10 @@ control socket are closed. Stopping a session closes its live raw and review
 listeners but preserves review drafts and unacknowledged feedback in the
 private state directory. A later `feedback` or `review delete` command may
 restart the supervisor to operate on that retained state.
+Every ready review associated with the session is durably stopped before any
+live listener is closed. A private-state write failure therefore leaves the
+session live and returns `state.unavailable`; retrying `stop` does not encounter
+a persisted `ready` record whose resources have already disappeared.
 
 ```toon
 stop:
@@ -392,6 +401,13 @@ inputs use Effect CLI's native text help and diagnostic rather than a
 `usage.*` domain schema. They exit `1`; `--json` does not rewrite them. This
 keeps one parser and makes generated help, validation, completion, and
 dispatch agree.
+
+Supervisor compatibility has no fallback parser or protocol shim. A matching
+control protocol with a different package version returns
+`supervisor.version_mismatch` for normal commands; `stop --all` alone may use
+that same protocol to shut the older package down. A different protocol returns
+`supervisor.protocol_mismatch` for every command, including `stop --all`; the
+caller must use the htmlview installation that started that supervisor.
 
 ## Scope of AXI features
 
