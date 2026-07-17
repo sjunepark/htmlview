@@ -21,8 +21,10 @@ first-release feature. Its public contracts are accepted. The Effect CLI,
 native output boundary, symmetric state/grant exclusion, foreground/private
 diagnostic sinks, durable annotation delivery, and the trusted browser review
 surface are implemented. Automatic selected-entry refresh and the source-checkout
-`example:review` workflow are now implemented. Packaging and final release
-hardening remain, so `0.1.0` is not ready to publish. The annotation authorization,
+`example:review` workflow, installed-package review guidance, and the macOS and
+Node 22 Linux installed review/observer lifecycle checks are now implemented.
+The complete release-command matrix passes, so `0.1.0` is demonstrably
+release-ready and remains unpublished. The annotation authorization,
 hostile-content, authenticated probe-readiness, and explicit
 instrumentation-limitation matrices pass and must remain intact through the
 refresh work. Review navigation now requires a shell-minted one-use capability,
@@ -41,16 +43,16 @@ Documentation now has explicit ownership and current-versus-target status; see
 The organized surface, contract tests, link/fragment checks, and packaged-link
 closure pass the complete current-platform `pnpm run check` gate.
 
-| Slice                             | Status      | Detail                                                                |
-| --------------------------------- | ----------- | --------------------------------------------------------------------- |
-| Raw serving and supervisor        | Complete    | Fidelity, confinement, private control, lifecycle, packaging          |
-| Effect execution model            | Complete    | Typed failures, schemas, cancellation, scopes, release measurements   |
-| Annotation and CLI contracts      | Complete    | Product, CLI, architecture, threat model, ADRs 0008–0009              |
-| Documentation organization        | Complete    | Canonical map, ADR index, contract cleanup, validation hardening      |
-| Effect CLI and diagnostic logging | Complete    | Native CLI, private logs, measurements, and complete release evidence |
-| Annotation runtime                | Complete    | Durable feedback, trusted review UI, and automatic entry refresh      |
-| Packaging and release hardening   | In progress | Review example complete; full release-command matrix remains          |
-| Publication                       | Pending     | Complete release matrix and explicit publish action                   |
+| Slice                             | Status   | Detail                                                                |
+| --------------------------------- | -------- | --------------------------------------------------------------------- |
+| Raw serving and supervisor        | Complete | Fidelity, confinement, private control, lifecycle, packaging          |
+| Effect execution model            | Complete | Typed failures, schemas, cancellation, scopes, release measurements   |
+| Annotation and CLI contracts      | Complete | Product, CLI, architecture, threat model, ADRs 0008–0009              |
+| Documentation organization        | Complete | Canonical map, ADR index, contract cleanup, validation hardening      |
+| Effect CLI and diagnostic logging | Complete | Native CLI, private logs, measurements, and complete release evidence |
+| Annotation runtime                | Complete | Durable feedback, trusted review UI, and automatic entry refresh      |
+| Packaging and release hardening   | Complete | Installed checks, measurements, release matrix, and review pass       |
+| Publication                       | Pending  | Requires a later explicit production-promotion action                 |
 
 ## Release invariants
 
@@ -117,10 +119,9 @@ and a size comparison justifies changing it.
 
 ## Next action
 
-Finish Phase 6 in [`docs/plans/annotation-mvp.md`](docs/plans/annotation-mvp.md):
-complete installed-package guidance and the release-command matrix, rerun the
-recorded resource measurements with the bounded entry observer, and resolve any
-release-only gaps. Do not publish automatically.
+Keep the release-ready `0.1.0` candidate unpublished. Production promotion is
+outside this plan and requires a later explicit action; never publish
+automatically.
 
 ## Progress log
 
@@ -139,5 +140,21 @@ release-only gaps. Do not publish automatically.
   hidden documents as well as page-history transitions.
 - Validation: `pnpm run check` passes 198 Vitest tests, black-box CLI/example
   workflows, 19 browser-origin tests, interoperability, build validation, and
-  package install/reinstall/uninstall smoke. The external browser-use, Linux,
-  audit, and final resource-measurement release checks remain.
+  package install/reinstall/uninstall smoke.
+- Added one package-excluded installed-artifact workflow shared by the
+  current-platform and Node 22 Linux checks. It proves raw fidelity, review
+  shell startup, feedback-state reads, observer-detected entry revisions, and
+  complete supervisor cleanup through the installed executable.
+- Added installed review guidance and validated the reproducible
+  install/review/observer/reinstall/uninstall lifecycle on macOS and Node 22
+  Bookworm.
+- Recorded the clean installed artifact and process measurements against the
+  Phase 10 baseline. One ready review and its bounded observer add a median
+  704 KiB over the current empty supervisor.
+- Resolved a release-only flaky shutdown test by pausing its sparse client
+  before flowing, resuming only after scope closure, and requiring an incomplete
+  destroyed response. The focused contract passes 100 macOS runs and 50 clean
+  Node 22 Bookworm runs.
+- Final release matrix: `pnpm run check`, `pnpm run validate:browser-use`,
+  `pnpm run validate:package:linux`, `pnpm audit`, `pnpm run validate:docs`, and
+  `git diff --check` pass. The package remains unpublished.

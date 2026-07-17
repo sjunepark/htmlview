@@ -15,10 +15,10 @@ install, launch, or automate a browser.
 Raw serving, the Effect CLI grammar, native output boundary, and foreground
 and private diagnostic seams, durable feedback, and the trusted review surface
 are implemented. Ready reviews now refresh automatically after confirmed entry
-HTML changes. Packaging and the final release matrix remain, and the package
+HTML changes. The complete release matrix passes; `0.1.0` is release-ready but
 has not been published.
 
-The public docs describe the accepted `0.1.0` target. See the repository
+The public docs describe the implemented `0.1.0` release candidate. See the repository
 [`PLAN.md`](https://github.com/sjunepark/htmlview/blob/main/PLAN.md) for
 implementation truth.
 

@@ -44,4 +44,5 @@ docker run --rm \
   --env "EXPECTED_VERSION=$version" \
   --volume "$artifacts:/artifacts:ro" \
   --volume "$repo_root/validation/package/linux-smoke.sh:/linux-smoke.sh:ro" \
+  --volume "$repo_root/validation/package/installed-workflow.mjs:/installed-workflow.mjs:ro" \
   node:22-bookworm bash /linux-smoke.sh

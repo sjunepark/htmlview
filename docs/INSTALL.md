@@ -2,8 +2,8 @@
 
 > **Status:** The package is not published. These instructions describe the
 > accepted `0.1.0` interface. Annotation commands and the review runtime are
-> implemented, including automatic selected-entry refresh; release hardening
-> remains.
+> implemented, including automatic selected-entry refresh, and the complete
+> release validation matrix passes.
 
 `htmlview` is distributed as an npm package containing compiled JavaScript. It
 supports macOS and glibc-based Linux environments supported by Node.js 22,
@@ -34,6 +34,37 @@ npx --yes @sejunpark/htmlview serve ./report.html
 
 The npm package does not include a browser. Supply a browser controller
 separately when the returned URL needs interactive inspection.
+
+## Review an installed page
+
+Until the package is published, create and install the candidate tarball from a
+source checkout first:
+
+```sh
+candidate_dir="$(mktemp -d)"
+tarball="$(pnpm pack --json --pack-destination "$candidate_dir" | node -e 'const v=JSON.parse(require("fs").readFileSync(0,"utf8")); process.stdout.write(v.filename)')"
+npm install --global "$candidate_dir/$tarball"
+htmlview --version
+```
+
+Create the raw session first, then attach its separate review surface:
+
+```sh
+served="$(htmlview serve ./report.html --json)"
+session="$(printf '%s' "$served" | node -e 'const v=JSON.parse(require("fs").readFileSync(0,"utf8")); process.stdout.write(v.session.id)')"
+reviewed="$(htmlview review "$session" --json)"
+review_url="$(printf '%s' "$reviewed" | node -e 'const v=JSON.parse(require("fs").readFileSync(0,"utf8")); process.stdout.write(v.review.url)')"
+review_id="$(printf '%s' "$reviewed" | node -e 'const v=JSON.parse(require("fs").readFileSync(0,"utf8")); process.stdout.write(v.review.id)')"
+printf 'Open this URL in an external browser: %s\n' "$review_url"
+htmlview feedback --wait --json "$review_id"
+```
+
+Use **Send selected** in the review to keep iterating. Editing the original
+entry automatically refreshes only the instrumented review iframe; the raw URL
+remains byte-faithful and passive. A later feedback wait acknowledges the prior
+batch by passing its returned cursor with `--after <cursor>`. See
+[Browser-controller interoperability](INTEROPERABILITY.md#human-review-workflow-010-target)
+for the complete cursor loop and cleanup commands.
 
 ## Upgrade
 
@@ -92,7 +123,9 @@ socket, while annotation records and diagnostic logs remain available.
 ## Release validation
 
 `pnpm run validate:package` packs the current tree, installs it into a clean
-temporary prefix, serves a fixture, repeats the same-artifact install, checks
-the native text version against `package.json`, and uninstalls it. The same
-tarball workflow runs in `node:22-bookworm` with
+temporary prefix, serves a fixture, starts its review shell, proves feedback
+state can be read and observer-driven entry changes are detected through the
+installed executable, repeats the same-artifact install, checks the native text
+version against `package.json`, and uninstalls it. The same tarball workflow
+runs in `node:22-bookworm` with
 `pnpm run validate:package:linux`.

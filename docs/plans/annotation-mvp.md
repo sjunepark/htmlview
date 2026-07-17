@@ -1,6 +1,6 @@
 # Annotation MVP plan
 
-- Status: Phases 0–5 complete; Phase 6 release hardening in progress
+- Status: Phases 0–6 complete; release-ready and unpublished
 - Updated: 2026-07-17
 - Parent: [`PLAN.md`](../../PLAN.md)
 - Decision: [ADR 0008](../decisions/0008-separate-raw-serving-from-instrumented-review.md)
@@ -92,16 +92,16 @@ counts discoverable.
 
 ## Phase status
 
-| Phase                                     | Status      | Outcome                                           |
-| ----------------------------------------- | ----------- | ------------------------------------------------- |
-| 0. Contracts and decisions                | Complete    | Public specs, ADRs, domain language, doc tests    |
-| Prerequisite: Effect CLI/logging          | Complete    | One final command model and diagnostic boundary   |
-| 1. Authorized reads and review lifecycle  | Complete    | Review identity, origins, scopes, protocol        |
-| 2. Durable feedback and agent delivery    | Complete    | Store, transitions, CLI/control operations        |
-| 3. Instrumented content and trusted shell | Complete    | Entry probe, shell UI, browser boundaries         |
-| 4. Security and fidelity hardening        | Complete    | Adversarial matrix and authenticated readiness    |
-| 5. Automatic selected-entry refresh       | Complete    | Observe, notify, reload, preserve review state    |
-| 6. Packaging and release matrix           | In progress | Review example complete; release evidence remains |
+| Phase                                     | Status   | Outcome                                         |
+| ----------------------------------------- | -------- | ----------------------------------------------- |
+| 0. Contracts and decisions                | Complete | Public specs, ADRs, domain language, doc tests  |
+| Prerequisite: Effect CLI/logging          | Complete | One final command model and diagnostic boundary |
+| 1. Authorized reads and review lifecycle  | Complete | Review identity, origins, scopes, protocol      |
+| 2. Durable feedback and agent delivery    | Complete | Store, transitions, CLI/control operations      |
+| 3. Instrumented content and trusted shell | Complete | Entry probe, shell UI, browser boundaries       |
+| 4. Security and fidelity hardening        | Complete | Adversarial matrix and authenticated readiness  |
+| 5. Automatic selected-entry refresh       | Complete | Observe, notify, reload, preserve review state  |
+| 6. Packaging and release matrix           | Complete | Measurements, release commands, and review pass |
 
 ## Prerequisite: Effect CLI and logging
 
@@ -205,12 +205,47 @@ raw fidelity.
 
 ## Phase 6: packaging and release matrix
 
-- **In progress:** the `example:review` workflow and source-checkout guidance
-  are implemented and tested. Finish installed-package guidance, build/package
-  checks, and macOS/Node 22 Linux lifecycle evidence; keep browser controllers
-  external.
-- Run the complete release gate and final implementation/diet review after the
-  automatic-refresh resource and performance bounds are recorded.
+- **Complete:** the `example:review` workflow, source-checkout and
+  installed-package guidance, build/package checks, and macOS/Node 22 Linux
+  installed review/observer lifecycle evidence are implemented and tested;
+  browser controllers remain external.
+- **Complete:** rerun the automatic-refresh resource and performance
+  measurements against the recorded Phase 10 baseline, including one ready
+  review with its bounded observer.
+- **Complete:** the full release-command matrix and final implementation/diet
+  review pass after the automatic-refresh resource and performance bounds were
+  recorded.
+
+### Release measurement evidence
+
+Commit `a006c375b35c93c61c2404938a66653cdba87150` was measured on macOS
+26.5.1 arm64 with Node 24.15.0 and pnpm 11.13.0. These are local medians, not
+benchmarks. Package and install figures use one clean packed artifact; process
+samples use the installed executable. An empty query uses a fresh state root
+and does not launch a supervisor. Empty-supervisor RSS is sampled after its only
+raw session stops; ready-review RSS is sampled after the review observer reports
+the selected entry revision.
+
+| Measure                                 | Phase 10 baseline | Annotation artifact | Change              |
+| --------------------------------------- | ----------------- | ------------------- | ------------------- |
+| Tarball                                 | 1,058,473 bytes   | 1,122,730 bytes     | +6.1%               |
+| Packed files                            | 29                | 29                  | none                |
+| Installed size including dependencies   | 3,908 KiB         | 4,976 KiB           | +27.3%              |
+| Installed files                         | 47                | 137                 | +90                 |
+| Version command median, 11 spawns       | 98.07 ms          | 90.87 ms            | -7.3%               |
+| Empty query median, 7 fresh state roots | 132.88 ms         | 109.82 ms           | -17.4%              |
+| Fresh `serve` readiness median, 7       | 236.43 ms         | 232.75 ms           | -1.6%               |
+| Empty-supervisor RSS median, 7          | 75,968 KiB        | 85,264 KiB          | +12.2%              |
+| Fresh `review` readiness median, 7      | —                 | 122.32 ms           | annotation baseline |
+| Ready-review observer RSS median, 7     | —                 | 85,968 KiB          | +704 KiB vs empty   |
+
+The package keeps the same packed file count. Installed size and file count
+increase primarily because the token-aware transform adds external `parse5`
+8.0.1 and `entities` 8.0.0 runtime trees rather than duplicating them into the
+standalone bundles. Cold version, empty-query, and serving readiness show no
+regression in this sample. The complete annotation service raises empty-daemon
+RSS by 9,296 KiB from Phase 10; activating one bounded selected-entry observer
+adds 704 KiB (0.8%) over that current empty supervisor.
 
 ## Deliberately deferred
 
@@ -226,9 +261,8 @@ raw fidelity.
 
 ## Next action
 
-Finish Phase 6: validate the installed review workflow on macOS and Node 22
-Linux, rerun package and resource measurements with the bounded observer, and
-complete the release-command matrix without publishing automatically.
+Keep the release-ready candidate unpublished. Production promotion is outside
+this plan and requires a later explicit action.
 
 ## Completion gate
 
@@ -238,3 +272,5 @@ an agent edit to the original entry refreshes the ready review automatically,
 raw serving remains byte-faithful and independent, review limitations are
 explicit, private state stays outside every grant, and the complete release
 matrix passes. Do not publish automatically.
+
+This gate is satisfied for the unpublished `0.1.0` release candidate.
