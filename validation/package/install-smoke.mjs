@@ -313,7 +313,7 @@ try {
   await assert.rejects(access(binary));
   await assert.rejects(access(installedPackage));
   process.stdout.write(
-    `${JSON.stringify({ platform: process.platform, version: packageMetadata.version, reproducible: "passed", install: "passed", review: "passed", observer: "passed", feedback_read: "passed", reinstall: "passed", uninstall: "passed" })}\n`,
+    `${JSON.stringify({ platform: process.platform, version: packageMetadata.version, reproducible: "passed", install: "passed", review: "passed", observer: "passed", feedback_read: "passed", cleanup: "passed", reinstall: "passed", uninstall: "passed" })}\n`,
   );
 } finally {
   await installed(["stop", "--all", "--json"]).catch(() => undefined);

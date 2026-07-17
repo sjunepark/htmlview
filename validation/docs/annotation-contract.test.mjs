@@ -32,6 +32,8 @@ test("public docs make annotation a required 0.1.0 feature", async () => {
   assert.match(install, /including automatic selected-entry refresh/);
   assert.match(install, /complete.*release validation matrix passes/s);
   assert.match(install, /^## Review an installed page$/m);
+  assert.match(install, /pnpm pack --json --pack-destination/);
+  assert.match(install, /npm install --global "\$candidate_dir\/\$tarball"/);
   assert.match(install, /htmlview review "\$session" --json/);
   assert.match(install, /htmlview feedback --wait --json "\$review_id"/);
   assert.match(install, /external browser/);

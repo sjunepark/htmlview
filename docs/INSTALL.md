@@ -37,6 +37,16 @@ separately when the returned URL needs interactive inspection.
 
 ## Review an installed page
 
+Until the package is published, create and install the candidate tarball from a
+source checkout first:
+
+```sh
+candidate_dir="$(mktemp -d)"
+tarball="$(pnpm pack --json --pack-destination "$candidate_dir" | node -e 'const v=JSON.parse(require("fs").readFileSync(0,"utf8")); process.stdout.write(v.filename)')"
+npm install --global "$candidate_dir/$tarball"
+htmlview --version
+```
+
 Create the raw session first, then attach its separate review surface:
 
 ```sh

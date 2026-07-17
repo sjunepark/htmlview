@@ -26,4 +26,4 @@ if command -v htmlview >/dev/null; then
   echo "htmlview remained installed" >&2
   exit 1
 fi
-printf '{"platform":"linux","version":"%s","install":"passed","review":"passed","observer":"passed","feedback_read":"passed","reinstall":"passed","uninstall":"passed"}\n' "$EXPECTED_VERSION"
+printf '{"platform":"linux","version":"%s","install":"passed","review":"passed","observer":"passed","feedback_read":"passed","cleanup":"passed","reinstall":"passed","uninstall":"passed"}\n' "$EXPECTED_VERSION"
