@@ -81,6 +81,38 @@ test("a human can deliver durable element and page feedback without changing raw
     );
     await expect(page.locator("#live")).toHaveText("Annotation tools ready");
 
+    await page.setViewportSize({ width: 700, height: 800 });
+    await expect(page.locator("#drafts")).toHaveAttribute("data-open", "true");
+    await expect(page.locator("#draft-toggle")).toHaveAttribute(
+      "aria-expanded",
+      "true",
+    );
+    await page.locator("#draft-toggle").click();
+    await expect(page.locator("#drafts")).toHaveAttribute("data-open", "false");
+    await expect(page.locator("#draft-toggle")).toHaveAttribute(
+      "aria-expanded",
+      "false",
+    );
+    await expect
+      .poll(() =>
+        page.locator("#drafts").evaluate((panel) => {
+          const transform = new DOMMatrix(getComputedStyle(panel).transform);
+          return transform.m42;
+        }),
+      )
+      .toBeGreaterThan(0);
+    await page.locator("#draft-toggle").click();
+    await expect(page.locator("#drafts")).toHaveAttribute("data-open", "true");
+    await expect
+      .poll(() =>
+        page.locator("#drafts").evaluate((panel) => {
+          const transform = new DOMMatrix(getComputedStyle(panel).transform);
+          return transform.m42;
+        }),
+      )
+      .toBe(0);
+    await page.setViewportSize({ width: 1280, height: 720 });
+
     await content.locator("#title").click();
     await expect(page.locator("#editor")).toBeVisible();
     await reloadReviewFrame(page);
@@ -103,6 +135,7 @@ test("a human can deliver durable element and page feedback without changing raw
     await expect(page.getByRole("button", { name: "Add draft" })).toBeEnabled();
     await page.getByRole("button", { name: "Add draft" }).click();
     await expect(page.locator(".draft")).toHaveCount(2);
+    await page.locator('.draft input[type="checkbox"]').first().uncheck();
 
     await content.locator("body").evaluate((body) => {
       body.tabIndex = -1;
@@ -115,23 +148,30 @@ test("a human can deliver durable element and page feedback without changing raw
     await page.locator("#comment").fill("Review the whole page");
     await page.getByRole("button", { name: "Add draft" }).click();
     await expect(page.locator(".draft")).toHaveCount(3);
+    await expect(
+      page.locator('.draft input[type="checkbox"]').first(),
+    ).not.toBeChecked();
+    await expect(
+      page.locator('.draft input[type="checkbox"]').nth(2),
+    ).toBeChecked();
     await expect(content.locator("body")).not.toContainText(
       "Make the fixture title clearer",
     );
 
     await page.getByRole("button", { name: "Send selected" }).click();
-    await expect(page.locator("#live")).toHaveText("3 drafts sent");
+    await expect(page.locator("#live")).toHaveText("2 drafts sent");
+    await expect(page.locator(".draft")).toHaveCount(1);
+    await expect(page.locator(".draft p")).toHaveText(
+      "Make the fixture title clearer",
+    );
+    await page.locator('.draft input[type="checkbox"]').check();
+    await page.getByRole("button", { name: "Send selected" }).click();
+    await expect(page.locator("#live")).toHaveText("1 draft sent");
     await expect(page.locator(".draft")).toHaveCount(0);
 
     const delivered = await command(environment, "feedback", opened.review.id);
     expect(delivered.count).toBe(3);
     expect(delivered.feedback).toMatchObject([
-      {
-        kind: "element",
-        comment: "Make the fixture title clearer",
-        entry: "/pages/report%20space%20%C3%BC.html",
-        anchor: { selector: "#title", tag: "h1", text: "fixture" },
-      },
       {
         kind: "freeform",
         comment: "Add a short source note",
@@ -142,11 +182,17 @@ test("a human can deliver durable element and page feedback without changing raw
         comment: "Review the whole page",
         entry: "/pages/report%20space%20%C3%BC.html",
       },
+      {
+        kind: "element",
+        comment: "Make the fixture title clearer",
+        entry: "/pages/report%20space%20%C3%BC.html",
+        anchor: { selector: "#title", tag: "h1", text: "fixture" },
+      },
     ]);
-    expect(delivered.feedback[2].anchor.text).not.toContain(
+    expect(delivered.feedback[1].anchor.text).not.toContain(
       "INLINE_SCRIPT_CANARY_MUST_NOT_PERSIST",
     );
-    expect(delivered.feedback[2].anchor.text).toContain(
+    expect(delivered.feedback[1].anchor.text).toContain(
       "BUTTON_VISIBLE_CANARY",
     );
     for (const excluded of [
@@ -158,7 +204,7 @@ test("a human can deliver durable element and page feedback without changing raw
       "CREDENTIAL_URL_CANARY",
       "DATA_ATTRIBUTE_CANARY_MUST_NOT_PERSIST",
     ])
-      expect(JSON.stringify(delivered.feedback[2].anchor)).not.toContain(
+      expect(JSON.stringify(delivered.feedback[1].anchor)).not.toContain(
         excluded,
       );
 
@@ -612,6 +658,27 @@ test("hostile authored content cannot read comments or execute stored context", 
     expect(draftRequests).toBe(1);
     await page.unroute("**/.htmlview/api/drafts");
 
+    await page.route("**/.htmlview/api/state", (route) => route.abort());
+    await page.getByRole("button", { name: "Page note" }).click();
+    await page.locator("#comment").fill("Committed before refresh failure");
+    await page.getByRole("button", { name: "Add draft" }).click();
+    await expect(page.locator("#editor")).toBeHidden();
+    await expect(page.locator("#live")).toHaveText(
+      "Draft saved privately; the draft list could not be refreshed",
+    );
+    await expect(page.locator(".draft")).toHaveCount(2);
+    await page.unroute("**/.htmlview/api/state");
+    const committedDrafts = await page.evaluate(() =>
+      fetch("/.htmlview/api/state")
+        .then((response) => response.json())
+        .then((state) => state.drafts),
+    );
+    expect(
+      committedDrafts.filter(
+        (draft) => draft.comment === "Committed before refresh failure",
+      ),
+    ).toHaveLength(1);
+
     await page.getByRole("button", { name: "Page note" }).click();
     await page.locator("#comment").fill("Unsaved end guard");
     await page.getByRole("button", { name: "Send & end" }).click();
@@ -702,6 +769,21 @@ test("explicit instrumentation limitations preserve the raw page", async ({
       );
       expect(Buffer.compare(rawBefore, rawAfter)).toBe(0);
     }
+
+    const compatible = path.join(fixtureRoot, "pages", "csp-upgrade.html");
+    const served = await command(
+      environment,
+      "serve",
+      compatible,
+      "--root",
+      fixtureRoot,
+    );
+    const opened = await command(environment, "review", served.session.id);
+    await page.goto(opened.review.url);
+    await expect(page.locator("#live")).toHaveText("Annotation tools ready");
+    await expect(
+      page.frameLocator("#content").locator("#csp-upgrade-title"),
+    ).toHaveText("Potentially trustworthy localhost probe");
   } finally {
     await execute(process.execPath, [cli, "stop", "--all", "--json"], {
       env: environment,
@@ -857,13 +939,22 @@ test("Annotate isolates native controls while Explore permits navigation", async
     await expect(checkbox).not.toBeChecked();
     await page.getByRole("button", { name: "Cancel" }).click();
 
+    const field = content.locator("#field");
+    await field.focus();
+    await field.press("x");
+    await expect(field).toHaveValue("private form value");
+    expect(await field.evaluate(() => window.__fieldKeyEvents)).toEqual({
+      keydown: 0,
+      keyup: 0,
+    });
+
     await page.getByRole("button", { name: "Explore" }).click();
     await counter.click();
     await expect(content.locator("#counter-value")).toHaveText("1");
     await checkbox.click();
     await expect(checkbox).toBeChecked();
-    await content.locator("#field").fill("changed in Explore");
-    await expect(content.locator("#field")).toHaveValue("changed in Explore");
+    await field.fill("changed in Explore");
+    await expect(field).toHaveValue("changed in Explore");
 
     await content.locator("#navigate").click();
     await expect(content.locator("#navigated-title")).toHaveText(

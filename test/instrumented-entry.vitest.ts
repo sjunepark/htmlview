@@ -173,6 +173,7 @@ describe("instrumented review entry transform", () => {
       "script-src-elem http:",
       "img-src 'none'",
       "sandbox",
+      "upgrade-insecure-requests",
     ]) {
       const source = `<!doctype html><head><meta http-equiv="Content-Security-Policy" content="${policy}"></head><body></body>`;
       const result = instrumented(source);

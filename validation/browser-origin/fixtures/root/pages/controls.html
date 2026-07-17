@@ -61,6 +61,13 @@
       document.querySelector("#counter").addEventListener("click", () => {
         document.querySelector("#counter-value").textContent = String(++count);
       });
+      window.__fieldKeyEvents = { keydown: 0, keyup: 0 };
+      document.querySelector("#field").addEventListener("keydown", () => {
+        window.__fieldKeyEvents.keydown += 1;
+      });
+      document.querySelector("#field").addEventListener("keyup", () => {
+        window.__fieldKeyEvents.keyup += 1;
+      });
       try {
         top.location = "/pages/navigated.html";
         document.querySelector("#frame-bust").textContent = "unexpected";

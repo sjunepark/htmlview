@@ -31,7 +31,7 @@ const shellHtml = `<!doctype html>
         </div>
       </section>
     </section>
-    <aside id="drafts" aria-label="Annotation drafts">
+    <aside id="drafts" data-open="true" aria-label="Annotation drafts">
       <div class="draft-heading">
         <div><h1>Review notes</h1><p>Saved privately until you send them.</p></div>
         <button id="freeform" class="quiet" type="button" disabled>Page note</button>
@@ -218,12 +218,12 @@ const shellJs = embeddedJavaScript(String.raw`(() => {
     return value;
   }
 
-  function publicDraft(draft) {
+  function publicDraft(draft, selected) {
     const row = document.createElement("label");
     row.className = "draft";
     const checkbox = document.createElement("input");
     checkbox.type = "checkbox";
-    checkbox.checked = true;
+    checkbox.checked = selected ?? true;
     checkbox.dataset.id = draft.id;
     const body = document.createElement("span");
     const text = document.createElement("p");
@@ -288,9 +288,12 @@ const shellJs = embeddedJavaScript(String.raw`(() => {
   }
 
   function render() {
+    const selectedDrafts = new Map(
+      [...draftList.querySelectorAll('input[type="checkbox"]')].map((input) => [input.dataset.id, input.checked]),
+    );
     status.textContent = state.review.status === "ready" ? "Annotation review" : \`Review \${state.review.status}\`;
     draftCount.textContent = String(state.drafts.length);
-    draftList.replaceChildren(...state.drafts.map(publicDraft));
+    draftList.replaceChildren(...state.drafts.map((draft) => publicDraft(draft, selectedDrafts.get(draft.id))));
     emptyDrafts.hidden = state.drafts.length !== 0;
     byId("send").disabled = state.drafts.length === 0;
     byId("end").disabled =
@@ -487,10 +490,16 @@ const shellJs = embeddedJavaScript(String.raw`(() => {
     byId("queue-comment").disabled = true;
     render();
     try {
-      await api("/.htmlview/api/drafts", { method: "POST", body: JSON.stringify(payload) });
+      const committed = await api("/.htmlview/api/drafts", { method: "POST", body: JSON.stringify(payload) });
       if (editorGeneration === generation) resetEditor();
-      await refresh();
-      announce("Draft saved privately");
+      try {
+        await refresh();
+        announce("Draft saved privately");
+      } catch {
+        if (!state.drafts.some((draft) => draft.id === committed.draft.id))
+          state = { ...state, drafts: [...state.drafts, committed.draft] };
+        announce("Draft saved privately; the draft list could not be refreshed");
+      }
     } catch (error) {
       if (editorGeneration === generation) {
         editorSaving = false;
@@ -524,8 +533,14 @@ const shellJs = embeddedJavaScript(String.raw`(() => {
         draftsPanel.replaceChildren();
         announce("Feedback sent and review ended");
       } else {
-        await refresh();
-        announce(\`\${result.sent} draft\${result.sent === 1 ? "" : "s"} sent\`);
+        state = { ...state, drafts: state.drafts.filter((draft) => !ids.includes(draft.id)) };
+        try {
+          await refresh();
+          announce(\`\${result.sent} draft\${result.sent === 1 ? "" : "s"} sent\`);
+        } catch {
+          render();
+          announce(\`\${result.sent} draft\${result.sent === 1 ? "" : "s"} sent; the draft list could not be refreshed\`);
+        }
       }
     } catch (error) { announce(error.message); }
   }
@@ -710,9 +725,20 @@ function probeJavaScript(lease: string): string {
     if (!event.isTrusted || mode !== "annotate" || !(event.target instanceof Element)) return;
     event.preventDefault(); event.stopImmediatePropagation(); sendSelection(event.target);
   }, true);
-  listen("keydown", (event) => {
-    if (!event.isTrusted || mode !== "annotate" || (event.key !== "Enter" && event.key !== " ") || !(event.target instanceof Element)) return;
-    event.preventDefault(); event.stopImmediatePropagation(); sendSelection(event.target);
+  const blockAuthoredKeyInput = (event) => {
+    if (!event.isTrusted || mode !== "annotate") return;
+    event.stopImmediatePropagation();
+    if (event.type === "keydown" && (event.key === "Enter" || event.key === " ") && event.target instanceof Element) {
+      event.preventDefault(); sendSelection(event.target); return;
+    }
+    if (event.type !== "keydown" || event.key !== "Tab") event.preventDefault();
+  };
+  listen("keydown", blockAuthoredKeyInput, true);
+  listen("keypress", blockAuthoredKeyInput, true);
+  listen("keyup", blockAuthoredKeyInput, true);
+  listen("beforeinput", (event) => {
+    if (!event.isTrusted || mode !== "annotate") return;
+    event.preventDefault(); event.stopImmediatePropagation();
   }, true);
 })();`);
 }
