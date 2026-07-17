@@ -37,14 +37,12 @@ async function build() {
 }
 
 async function assertPublishedCliRuns() {
-  const result = await execute(process.execPath, [cli, "--version", "--json"], {
+  const result = await execute(process.execPath, [cli, "--version"], {
     cwd: repository,
     encoding: "utf8",
   });
   assert.equal(result.stderr, "");
-  const value = JSON.parse(result.stdout);
-  assert.equal(value.command, "htmlview");
-  assert.equal(value.version, packageVersion);
+  assert.equal(result.stdout, `htmlview v${packageVersion}\n`);
 }
 
 async function assertActiveGenerationIsComplete() {

@@ -1,177 +1,197 @@
-# Product Requirements
+# Product requirements
+
+> **Status:** This is the accepted `0.1.0` target. Raw serving, Effect CLI,
+> foreground/private diagnostics, and the annotation runtime are implemented;
+> automatic selected-entry refresh and release hardening remain. See
+> [the repository plan](https://github.com/sjunepark/htmlview/blob/main/PLAN.md)
+> for implementation status.
 
 ## Problem
 
-Agents frequently receive a path to an HTML artifact but browser controllers
-handle local files inconsistently. Some reject `file://`; others require
-browser-specific flags or preserve file-origin behavior that breaks
-root-relative assets, modules, or fetches. Ad hoc local servers provide HTTP,
-but every agent must rediscover how to choose and disclose a root, retain the
-process, find the port, verify readiness, and clean up afterward.
+Agents often receive a local HTML path, but browser controllers handle
+`file://` inconsistently. Even an ad hoc HTTP server leaves every agent to
+choose and disclose a root, manage a background process, discover its port,
+verify readiness, and clean it up.
 
-`htmlview` makes that translation a reusable, predictable agent operation.
+`htmlview` makes that operation predictable and browser-neutral. When human
+review is needed, it adds a separate instrumented surface without weakening the
+raw representation.
 
-## Primary job
+## Jobs and actors
 
-Given a local HTML entry file and directory root that the caller authorizes for
-read disclosure, return a confined loopback HTTP URL that is already ready for
-any separately supplied browser tool to inspect and interact with.
+The primary caller is an agent executing shell commands. Given an HTML entry
+and an explicitly authorized directory, it needs a confined loopback HTTP URL
+that is already ready for a separately supplied browser tool.
 
-The product is browser-neutral. Documentation uses
-[Browser Use](https://github.com/browser-use/browser-harness) as one
-interoperability example, not as a runtime dependency or the reason the product
-exists. Callers should use direct `file://` navigation when it already provides
-the behavior and safety they need.
+A human reviewer needs a different URL where they can select an element or
+leave page-level feedback. The agent receives that work as durable structured
+feedback. After the agent edits the original selected entry HTML, the review
+updates automatically so the human can inspect the fix and continue the loop.
+The human does not need the CLI, and the product never invokes an LLM or edits
+source automatically.
 
-The primary caller is an agent executing shell commands. A human may also use
-the CLI, but interactive prompts and human-only output are not part of the
-contract.
+Direct `file://` navigation remains preferable when its behavior and safety are
+already sufficient.
 
 ## Core scenarios
 
-1. **Single HTML artifact.** Serve `report.html` with CSS, JavaScript, images,
-   fonts, and other relative assets next to it.
-2. **Project-root assets.** Serve an entry below a larger explicit root so
-   references such as `/assets/app.css` resolve as authored.
-3. **Repeated inspection.** Return the same live session when an agent invokes
-   the same public entry route/root pair again after editing files.
-4. **Parallel projects.** Serve independent entries from multiple working
-   directories without port selection or process-management work by the agent.
-5. **Cleanup.** Let the agent identify and stop one or all sessions; also clean
-   up abandoned runtime state automatically.
+1. Serve one HTML artifact with sibling CSS, JavaScript, images, fonts, and
+   other relative assets.
+2. Explicitly grant a broader root when authored root-relative assets require
+   it.
+3. Reuse the same live raw session after source files change.
+4. Serve independent projects concurrently without caller-selected ports.
+5. List and stop one or all sessions, with automatic abandoned-state cleanup.
+6. Let a human submit element-targeted and freeform comments from a separate
+   review surface without modifying the project.
+7. Let one agent consumer wait for, retry, and explicitly acknowledge sent
+   feedback without using logs as transport.
+8. After that agent edits the original selected entry HTML, automatically
+   refresh the ready review so the human can send another feedback batch.
 
-## Version-one requirements
+## `0.1.0` requirements
 
-### Serving
+### Raw serving
 
-- Accept one existing regular `.html` or `.htm` entry file.
-- Treat the serving root as the complete read-disclosure grant for the raw
-  origin.
-- Define `serve <entry>` as an explicit grant of the entry's parent directory.
-- Derive that parent before resolving the entry itself; reject an entry symlink
-  whose target escapes it instead of broadening the default grant.
-- Accept `--root <directory>` only as an explicit alternative grant containing
-  the entry; never infer a broader project root.
-- Reject a root equal to or broader than the user's home directory and reject a
-  root containing htmlview's runtime state directory.
-- Return the resolved root and grant meaning in a successful `serve` result.
-- Return an HTTP URL using a unique special-use `.localhost` name after the
-  numeric-loopback listener is ready.
-- Give each session a fresh, high-entropy automatically allocated origin and
-  do not intentionally reuse it after the session stops. Retain the entry's
-  path relative to the chosen root in the returned URL.
-- Serve the entry and permitted subresources without body transformation.
-- Select correct content types, including JavaScript modules, CSS, JSON, SVG,
-  images, media, and fonts.
-- Reflect source-file changes on subsequent requests without restarting the
-  session.
-- Support simultaneous sessions without requiring caller-selected ports.
+- Accept one existing regular `.html` or `.htm` entry.
+- Treat the canonical serving root as the complete read-disclosure grant.
+- Derive the default grant from the supplied entry path's parent before
+  resolving the entry; reject an entry symlink that escapes it.
+- Accept only an explicit `--root` as an alternative grant, and return the
+  exact resolved root and grant meaning.
+- Reject the user home, its ancestors, and any root canonically overlapping
+  htmlview private state in either direction.
+- Return a fresh high-entropy `.localhost` URL only after its numeric-loopback
+  listener is ready.
+- Preserve the entry route relative to the root, serve regular files without
+  body transformation, use correct content types, and reflect later source
+  changes without restarting.
+- Support simultaneous sessions without caller-selected ports.
 
 ### Agent experience
 
-- Follow the applicable [AXI](https://axi.md/) interface conventions detailed
-  in the [CLI contract](CLI.md).
-- Produce compact TOON on stdout by default and accept `--json` on every command
-  for the same logical value as JSON.
-- Keep default schemas minimal, include definitive collection counts and empty
-  states, and provide contextual next commands only when they avoid discovery
-  work.
-- Send progress and diagnostics only to stderr.
-- Never prompt; every action must be expressible with arguments and flags.
-- Reject unknown commands, arguments, and flags.
-- Treat repeated serve and stop requests as successful idempotent operations.
-- With no arguments, identify the executable, describe the tool, show the total
-  and current sessions, and include a few relevant next commands.
-- Provide concise, complete `--help` for every command.
+- Follow the [CLI contract](CLI.md) as the authoritative command, result,
+  channel, error, and exit specification.
+- Use pinned Effect CLI as the only parser, help generator, completion source,
+  and dispatcher.
+- Emit compact TOON for domain results by default and logically equivalent JSON
+  with `--json`; keep native text meta and syntax output separate.
+- Keep schemas minimal, empty states definitive, unknown input rejected, and
+  repeated serve/stop operations idempotent.
+- Keep ordinary commands short-lived. The no-argument home view exposes
+  actionable raw-session and retained-review state.
+- Route foreground diagnostics to stderr and keep detached diagnostics bounded,
+  private, and separate from feedback.
 
-### Lifecycle
+### Review and feedback
 
-- Keep URLs alive after the initiating CLI process exits.
-- Expose current sessions and their status.
-- Coordinate one per-user supervisor through a private Unix-domain control
-  socket and normally recover automatically when a crashed process leaves it
-  stale; fail safely if operating-system PID reuse makes ownership ambiguous.
-- Treat transient control unavailability as an error without discarding the
-  live supervisor's ownership.
-- Make `stop --all` close every session and the supervisor before succeeding.
-- Shut down after a bounded idle period when no sessions remain.
-- Store runtime metadata outside served repositories.
+- Lazily create, reuse, or resume one open review for a live raw session without
+  opening a browser. A stopped, unended review for the same document retains
+  its ID and drafts but receives fresh browser origins; an ended review does
+  not resume.
+- Return the review URL, associated raw URL, grant, and explicit
+  `instrumented_review` fidelity label.
+- Use separate trusted-shell and instrumented-content origins. Neither adds a
+  route to or changes the raw origin.
+- Start in annotation mode and offer an Explore/Annotate switch so authored
+  controls remain usable.
+- Support bounded element-targeted and freeform comments. Capture a bounded
+  element anchor and entry-byte revision without form values, inline
+  script/style, credential-bearing URLs, or arbitrary `data-*` values.
+- Persist drafts before reporting browser success. Sending atomically converts
+  selected drafts into ordered immutable feedback events.
+- Deliver events through the foreground `feedback` operation. One agent
+  consumer uses stable event IDs and explicit cursor acknowledgement; retry may
+  duplicate delivery but must not lose an unacknowledged event.
+- Keep the workflow one-way: no persistent pins, discussion threads, or agent
+  replies in the review page.
+- While a review is ready, observe confirmed byte changes to its original
+  selected entry and automatically reload only the instrumented review iframe.
+  Coalesce rapid writes, preserve durable drafts with their capture revisions,
+  clear selection state tied to the replaced DOM, and require the replacement
+  document to complete authenticated probe readiness before annotation resumes.
+- Keep change observation review-owned and bounded. It does not watch the whole
+  serving grant, switch to a different output file, inject a client into raw
+  HTML, or claim to refresh an already-loaded raw browser or other consumer.
+- If the original entry pathname is temporarily missing, forbidden, or
+  unreadable, keep the last rendered review visible, show that the entry is
+  unavailable, and disable new annotation until authorized readable bytes
+  return. Do not replace the review with an HTTP error page.
+- Let a human send and end a final batch. End commits the batch and closes both
+  review origins while leaving it unacknowledged for the agent; discarding
+  unsent drafts requires explicit confirmation.
+
+### Lifecycle and state
+
+- Keep returned URLs alive after the initiating CLI exits.
+- Coordinate one per-user supervisor through a private Unix-domain socket;
+  preserve live ownership through transient control failure and recover stale
+  state conservatively.
+- Make `stop --all` close every live raw/review listener and the supervisor
+  before succeeding. Stop never silently discards durable review data.
+- Shut down the supervisor after a bounded idle period when no live sessions
+  remain.
+- Keep review IDs, status, and pending counts discoverable until their state no
+  longer requires action.
+- Persist annotations and bounded diagnostics in user-only private state,
+  outside every serving grant and served repository.
+- Require explicit discard before deleting drafts or sent, unacknowledged
+  feedback. Retain only bounded retry tombstones after acknowledged deletion or
+  completion.
 
 ### Safety
 
-- Bind only to loopback.
-- Authorize every file against a canonical session root.
-- Make clear that same-origin page code can read every permitted file beneath
-  the selected root, including hidden files.
-- Authorize control through a user-private local socket that browsers and other
-  operating-system users cannot open.
-- Limit one supervisor to 32 concurrent sessions while allowing idempotent
-  reuse at the limit.
-- Do not mutate, upload, or publish served content.
-- Make the trust implications of rendering untrusted HTML explicit.
+- Bind browser-facing listeners only to loopback and validate every exact Host.
+- Resolve and authorize every file against the canonical serving grant,
+  including symlink targets.
+- Make clear that authored code can read every permitted in-root file and that
+  rendering untrusted HTML remains dangerous.
+- Keep supervisor control on the user-private socket. Browser review routes may
+  mutate only their addressed review.
+- Keep comment editing and mutation authority outside the authored content
+  origin. Treat content-reported anchors as untrusted rather than authentic.
+- Treat source-derived context, comments, persisted records, protocol values,
+  and CLI values as untrusted at every boundary.
+- Never mutate, upload, or publish served content.
+
+The [Threat Model](THREAT_MODEL.md) owns required controls and residual risks;
+[Security validation](SECURITY_VALIDATION.md) owns their evidence.
 
 ## Non-goals
 
-- Browser download, launch, profile management, CDP, WebDriver, or automation
-- Visual assertions, DOM summaries, screenshots, accessibility audits, or page
-  interpretation
-- Building or bundling source applications
-- Proxying an existing application server that already has an HTTP URL
-- Emulating server-side routes, APIs, or SPA history fallback by default
+- Browser download, launch, profiles, CDP, WebDriver, or automation
+- Visual assertions, screenshots, accessibility audits, or page interpretation
+- Building source applications or proxying an existing application server
+- Server-side routes, APIs, or SPA history fallback
 - Reproducing `file://` origin behavior
-- Replacing direct `file://` navigation when its semantics are already
-  sufficient
-- Remote sharing, LAN serving, tunneling, or collaboration
+- Remote sharing, LAN serving, tunneling, accounts, or collaboration
 - HTML sanitization
-- Annotation in version one
-
-## CLI behavior
-
-The complete interface contract is in the [CLI contract](CLI.md). The command
-surface is:
-
-```sh
-htmlview serve ./report.html
-htmlview serve ./public/report.html --root .
-htmlview serve ./report.html --json
-htmlview
-htmlview stop <session>
-htmlview stop --all
-```
-
-A successful serve result includes the selected root because it is a security
-grant:
-
-```toon
-session:
-  id: 7sp4k2
-  status: ready
-  url: "http://h-k7w4m2.localhost:49152/public/report.html"
-grant:
-  root: /workspace
-  access: read_all_regular_files_beneath_root
-```
-
-The identifier and path shown above are illustrative. The session identifier
-is for CLI operations; it is not embedded into content paths or treated as an
-authorization credential.
+- Persistent pins, threads, reviewer identity, or source-control integration
+- Text-range selection or quote anchoring in `0.1.0`
+- Agent replies, chat, automatic source edits, selector-to-source mapping, or
+  built-in LLM calls
+- Annotation across navigation to additional HTML documents
 
 ## Success criteria
 
-- A caller can navigate the returned URL with Browser Use. Compatibility
-  with at least one other independently installed browser controller is a
-  required release check.
-- The browser receives the authored HTML and assets without injected markup or
-  runtime code.
-- The agent never has to choose a port, manage a background process, or infer
-  whether the server is ready.
-- Serving cannot expose resolved targets outside the chosen root, and the
-  caller can see the full in-root disclosure grant in the result.
-- Repeated use across projects leaves no project-local state or orphaned
-  long-lived processes.
+- A CLI-returned raw URL works with Browser Use and at least one independently
+  supplied browser controller.
+- Raw HTML and assets arrive without injected markup or runtime code.
+- Review creation leaves the raw URL, bytes, headers, paths, origin, security,
+  and lifecycle unchanged.
+- Editing the original selected entry automatically refreshes a ready review
+  without a manual browser reload; the raw URL serves the new bytes on its next
+  request without gaining a push or injected reload mechanism.
+- A human can send element-targeted and freeform feedback, and an agent can
+  receive it after browser closure or supervisor restart without reading logs.
+- The agent never chooses a port, manages a background process, or guesses
+  readiness.
+- Files outside the chosen grant cannot be served, and the grant is explicit in
+  the result.
+- Repeated use leaves no project-local state or orphaned long-lived process.
 
-## Deferred product decisions
+## Deferred decisions
 
-- Supported operating-system versions beyond initial macOS and Linux targets
-- Whether optional annotations eventually live here or in a companion project
-- Whether usage evidence justifies an opt-in ambient agent-session integration
+- Supported operating-system versions beyond the initial macOS/Linux targets
+- Opt-in ambient agent-session integration if usage evidence justifies it
+- Remote multi-user review or durable discussion workflows

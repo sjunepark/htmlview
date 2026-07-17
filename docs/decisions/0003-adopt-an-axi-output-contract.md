@@ -1,7 +1,16 @@
 # ADR 0003: Adopt an AXI output contract
 
-- Status: Accepted
+- Status: Accepted; partially superseded by
+  [ADR 0009](0009-adopt-effect-cli-and-logging.md)
 - Date: 2026-07-15
+
+## Current applicability
+
+ADR 0009 replaces the original structured help/usage output, three-way exit
+distinction, and custom-parser implications with native Effect CLI behavior.
+The TOON/JSON domain-result model, minimal schemas, definitive state,
+idempotent no-ops, and content-first home view remain active. “Unstructured
+human output” below refers to domain results, not native CLI meta/usage text.
 
 ## Context
 

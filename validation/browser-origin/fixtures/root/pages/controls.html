@@ -1,0 +1,79 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>Review controls fixture</title>
+  </head>
+  <body>
+    <h1 id="controls-title">Review controls fixture</h1>
+    <button id="counter" type="button">Save changes</button>
+    <output id="counter-value">0</output>
+    <label><input id="enabled" type="checkbox" /> Enabled</label>
+    <label>Title <input id="field" value="private form value" /></label>
+    <a id="navigate" href="/pages/navigated.html">Open another document</a>
+    <output id="frame-bust">pending</output>
+    <script>
+      window.__nestedProbe = location.search.includes("nested=1")
+        ? Promise.resolve(false)
+        : new Promise((resolve) => {
+            const nested = document.createElement("iframe");
+            nested.hidden = true;
+            nested.src = `${location.pathname}?nested=1`;
+            nested.addEventListener(
+              "load",
+              () =>
+                resolve(
+                  Boolean(
+                    nested.contentDocument.querySelector(
+                      'script[src*="/.htmlview/probe/"]',
+                    ),
+                  ),
+                ),
+              { once: true },
+            );
+            document.body.append(nested);
+          });
+      try {
+        parent.postMessage = () => {
+          window.__probeLease = "intercepted";
+        };
+        window.__parentPostMessagePatch = "changed";
+      } catch (error) {
+        window.__parentPostMessagePatch = error.name;
+      }
+      window.__probeRace = new Promise((resolve) => {
+        const observer = new MutationObserver(() => {
+          const probe = document.querySelector(
+            'script[src*="/.htmlview/probe/"]',
+          );
+          if (!probe) return;
+          observer.disconnect();
+          fetch(probe.src).then(async (response) =>
+            resolve({ status: response.status, body: await response.text() }),
+          );
+        });
+        observer.observe(document.documentElement, {
+          childList: true,
+          subtree: true,
+        });
+      });
+      let count = 0;
+      document.querySelector("#counter").addEventListener("click", () => {
+        document.querySelector("#counter-value").textContent = String(++count);
+      });
+      window.__fieldKeyEvents = { keydown: 0, keyup: 0 };
+      document.querySelector("#field").addEventListener("keydown", () => {
+        window.__fieldKeyEvents.keydown += 1;
+      });
+      document.querySelector("#field").addEventListener("keyup", () => {
+        window.__fieldKeyEvents.keyup += 1;
+      });
+      try {
+        top.location = "/pages/navigated.html";
+        document.querySelector("#frame-bust").textContent = "unexpected";
+      } catch (error) {
+        document.querySelector("#frame-bust").textContent = error.name;
+      }
+    </script>
+  </body>
+</html>

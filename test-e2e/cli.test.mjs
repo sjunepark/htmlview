@@ -15,20 +15,24 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { after, before, test } from "node:test";
 
+const packageVersion = JSON.parse(
+  await readFile(new URL("../package.json", import.meta.url), "utf8"),
+).version;
+
 let base;
 let stateDirectory;
 let firstRoot;
 let secondRoot;
 let environment;
 
-function cli(args, cwd = firstRoot) {
+function cli(args, cwd = firstRoot, childEnvironment = environment) {
   return new Promise((resolve, reject) => {
     const child = spawn(
       process.execPath,
       [path.resolve("dist/cli.js"), ...args],
       {
         cwd,
-        env: environment,
+        env: childEnvironment,
         stdio: ["ignore", "pipe", "pipe"],
       },
     );
@@ -161,6 +165,78 @@ after(async () => {
   await rm(base, { recursive: true, force: true });
 });
 
+test("native CLI metadata, syntax, and logging keep their channels", async () => {
+  const metadataState = path.join(base, "m");
+  const metadataEnvironment = {
+    ...environment,
+    HTMLVIEW_STATE_DIR: metadataState,
+  };
+  for (const args of [["--version"], ["-v"], ["--version", "--json"]]) {
+    const result = await cli(args, firstRoot, metadataEnvironment);
+    assert.deepEqual(result, {
+      code: 0,
+      signal: null,
+      stdout: `htmlview v${packageVersion}\n`,
+      stderr: "",
+    });
+  }
+  for (const flag of ["--help", "-h"]) {
+    const result = await cli([flag], firstRoot, metadataEnvironment);
+    assert.equal(result.code, 0);
+    assert.match(result.stdout, /USAGE/);
+    assert.match(result.stdout, /SUBCOMMANDS/);
+    assert.equal(result.stderr, "");
+  }
+  for (const shell of ["bash", "sh", "zsh", "fish"]) {
+    const result = await cli(
+      ["--completions", shell],
+      firstRoot,
+      metadataEnvironment,
+    );
+    assert.equal(result.code, 0);
+    assert.match(result.stdout, /htmlview/);
+    assert.equal(result.stderr, "");
+  }
+  await assert.rejects(lstat(metadataState));
+
+  const invalid = await cli(["serve"], firstRoot, metadataEnvironment);
+  const invalidJson = await cli(
+    ["serve", "--json"],
+    firstRoot,
+    metadataEnvironment,
+  );
+  assert.equal(invalid.code, 1);
+  assert.match(invalid.stdout, /USAGE/);
+  assert.match(invalid.stderr, /Missing required argument/);
+  assert.equal(invalidJson.stdout, invalid.stdout);
+  assert.equal(invalidJson.stderr, invalid.stderr);
+
+  for (const level of [
+    "all",
+    "trace",
+    "debug",
+    "info",
+    "warn",
+    "warning",
+    "error",
+    "fatal",
+    "none",
+  ]) {
+    const result = await cli(
+      ["--json", "--log-level", level],
+      firstRoot,
+      metadataEnvironment,
+    );
+    assert.equal(result.code, 0, `${level}: ${JSON.stringify(result)}`);
+    assert.equal(JSON.parse(result.stdout).count, 0);
+    if (["all", "trace", "debug"].includes(level)) {
+      const event = JSON.parse(result.stderr);
+      assert.equal(event.level, "debug");
+      assert.equal(event.operation, "cli.home");
+    } else assert.equal(result.stderr, "", level);
+  }
+});
+
 test("detached CLI lifecycle converges, recovers, and remains project-clean", async () => {
   const empty = await jsonCli([]);
   assert.equal(empty.code, 0);
@@ -183,8 +259,8 @@ test("detached CLI lifecycle converges, recovers, and remains project-clean", as
   ]);
 
   const [firstCall, secondCall] = await Promise.all([
-    jsonCli(["serve", "report.html"]),
-    jsonCli(["serve", "report.html"]),
+    jsonCli(["serve", "report.html", "--log-level", "none"]),
+    jsonCli(["serve", "report.html", "--log-level", "none"]),
   ]);
   assert.equal(firstCall.code, 0);
   assert.equal(secondCall.code, 0);
@@ -194,9 +270,65 @@ test("detached CLI lifecycle converges, recovers, and remains project-clean", as
     [firstCall.value.session.reused, secondCall.value.session.reused].sort(),
     [false, true],
   );
+  const logDirectory = path.join(stateDirectory, "logs");
+  const logFile = path.join(logDirectory, "supervisor.jsonl");
+  assert.equal((await stat(logDirectory)).mode & 0o777, 0o700);
+  assert.equal((await stat(logFile)).mode & 0o777, 0o600);
+  const supervisorEvents = (await readFile(logFile, "utf8"))
+    .trim()
+    .split("\n")
+    .map((line) => JSON.parse(line));
+  assert.equal(
+    supervisorEvents.some(
+      (event) =>
+        event.level === "info" && event.operation === "supervisor.start",
+    ),
+    true,
+  );
+  assert.equal(JSON.stringify(supervisorEvents).includes(firstRoot), false);
+  assert.equal(
+    JSON.stringify(supervisorEvents).includes(stateDirectory),
+    false,
+  );
   const toonReuse = await toonCli(["serve", "report.html"]);
   const jsonReuse = await jsonCli(["serve", "report.html"]);
   assert.deepEqual(withoutHelp(toonReuse.value), withoutHelp(jsonReuse.value));
+  assert.equal(
+    await fetch(firstCall.value.session.url).then((response) =>
+      response.text(),
+    ),
+    "<!doctype html><p>first</p>",
+  );
+
+  for (const [args, code] of [
+    [["review", "bad"], "review.session_not_found"],
+    [["feedback", "bad"], "review.not_found"],
+    [["review", "delete", "bad"], "review.not_found"],
+  ]) {
+    const missing = await jsonCli(args);
+    assert.equal(missing.code, 1);
+    assert.equal(missing.value.error.code, code);
+    assert.notEqual(missing.value.error.code, "runtime.internal");
+  }
+
+  const toonReview = await toonCli(["review", firstCall.value.session.id]);
+  const jsonReview = await jsonCli(["review", firstCall.value.session.id]);
+  assert.equal(toonReview.value.review.id, jsonReview.value.review.id);
+  assert.equal(toonReview.value.review.url, jsonReview.value.review.url);
+  assert.equal(jsonReview.value.review.reused, true);
+  const reviewId = jsonReview.value.review.id;
+  const toonFeedback = await toonCli(["feedback", reviewId]);
+  const jsonFeedback = await jsonCli(["feedback", reviewId]);
+  assert.deepEqual(
+    withoutHelp(toonFeedback.value),
+    withoutHelp(jsonFeedback.value),
+  );
+  assert.deepEqual(jsonFeedback.value.feedback, []);
+  assert.equal((await jsonCli([])).value.review_count, 1);
+  const deleted = await jsonCli(["review", "delete", reviewId]);
+  const deletedAgain = await toonCli(["review", "delete", reviewId]);
+  assert.deepEqual(deleted.value, deletedAgain.value);
+  assert.equal(deleted.value.delete.status, "deleted");
   assert.equal(
     await fetch(firstCall.value.session.url).then((response) =>
       response.text(),

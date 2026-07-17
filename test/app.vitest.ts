@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import * as NodeServices from "@effect/platform-node/NodeServices";
 import { describe, it } from "vitest";
 import { Effect, Exit, Fiber, Layer } from "effect";
 import { runApp } from "../src/app.js";
@@ -14,6 +15,7 @@ import {
 import { CommandService } from "../src/service.js";
 import type {
   OptionalSessionField,
+  ReviewSummary,
   SessionSummary,
 } from "../src/supervisor/protocol.js";
 
@@ -21,16 +23,18 @@ async function invoke(
   args: string[],
   sessions: SessionSummary[] = [],
   serveFailure?: unknown,
+  reviews: ReviewSummary[] = [],
 ) {
   let stdout = "";
   let stderr = "";
   let listedFields: readonly OptionalSessionField[] | undefined;
   const stopCalls: string[] = [];
+  const annotationCalls: string[] = [];
   const service = Layer.succeed(CommandService, {
-    listSessions: (fields) =>
+    listState: (fields) =>
       Effect.sync(() => {
         listedFields = fields;
-        return sessions;
+        return { sessions, reviews };
       }),
     serve: () => {
       if (serveFailure !== undefined)
@@ -50,6 +54,51 @@ async function invoke(
         },
       });
     },
+    review: (session) =>
+      Effect.sync(() => {
+        annotationCalls.push(`review:${session}`);
+        return {
+          review: {
+            id: "rv_example",
+            status: "ready",
+            url: "http://r-example.localhost:4001/",
+            reused: false,
+          },
+          session: {
+            id: session,
+            url: "http://h-example.localhost:4000/report.html",
+          },
+          grant: {
+            root: "/tmp",
+            access: "read_all_regular_files_beneath_root",
+          },
+          fidelity: "instrumented_review",
+        };
+      }),
+    feedback: (review, options) =>
+      Effect.sync(() => {
+        annotationCalls.push(
+          `feedback:${review}:${String(options?.wait ?? false)}:${String(options?.after ?? "")}`,
+        );
+        return {
+          review: { id: review, status: "ready" },
+          cursor: 2,
+          count: 0,
+          feedback: [],
+        };
+      }),
+    deleteReview: (review, discard) =>
+      Effect.sync(() => {
+        annotationCalls.push(`delete:${review}:${String(discard)}`);
+        return {
+          delete: {
+            review,
+            deleted: 1,
+            status: "deleted",
+            discarded: { drafts: 0, feedback: 0 },
+          },
+        };
+      }),
     stopSession: (session) =>
       Effect.sync(() => {
         stopCalls.push(`session:${session}`);
@@ -83,9 +132,16 @@ async function invoke(
       stderr: (value) => {
         stderr += value;
       },
-    }).pipe(Effect.provide(service)),
+    }).pipe(Effect.provide(Layer.merge(service, NodeServices.layer))),
   );
-  return { exitCode, stdout, stderr, listedFields, stopCalls };
+  return {
+    exitCode,
+    stdout,
+    stderr,
+    listedFields,
+    stopCalls,
+    annotationCalls,
+  };
 }
 
 function normalizeContextualHelp(
@@ -113,6 +169,8 @@ describe("CLI application contract", () => {
       description: "Serve local HTML through confined loopback HTTP",
       count: 0,
       sessions: [],
+      review_count: 0,
+      reviews: [],
       help: ["Run `htmlview serve <entry.html>`"],
     });
   });
@@ -149,6 +207,27 @@ describe("CLI application contract", () => {
     );
   });
 
+  it("keeps retained pending feedback discoverable without a raw session", async () => {
+    const reviews: ReviewSummary[] = [
+      {
+        id: `rv_${"r".repeat(22)}`,
+        status: "stopped",
+        session: "session1",
+        drafts: 1,
+        unacknowledged: 2,
+      },
+    ];
+    const result = decodeOutput(
+      (await invoke([], [], undefined, reviews)).stdout,
+      "toon",
+    ) as Record<string, unknown>;
+    assert.equal(result.review_count, 1);
+    assert.deepEqual(result.reviews, reviews);
+    assert.deepEqual(result.help, [
+      "Run `htmlview feedback <review>` to read pending feedback",
+    ]);
+  });
+
   it("reveals path fields when multiple minimal session rows need disambiguation", async () => {
     const sessions: SessionSummary[] = [
       {
@@ -175,10 +254,12 @@ describe("CLI application contract", () => {
       "toon",
     ) as Record<string, unknown>;
     assert.deepEqual(minimal.help, [
+      "Run `htmlview review <session>` for human annotation",
       "Run `htmlview stop <session>` to stop a session",
       "Run `htmlview --fields entry,root` to show session paths",
     ]);
     assert.deepEqual(expanded.help, [
+      "Run `htmlview review <session>` for human annotation",
       "Run `htmlview stop <session>` to stop a session",
     ]);
   });
@@ -190,17 +271,44 @@ describe("CLI application contract", () => {
     assert.deepEqual(all.stopCalls, ["all"]);
   });
 
-  for (const args of [
-    [],
-    ["--help"],
-    ["--version"],
-    ["serve", "--help"],
-    ["stop", "--help"],
-    ["serve", "x.html"],
-    ["stop", "missing"],
-    ["serve"],
-    ["serve", "x.html", "--bad"],
-  ]) {
+  it("dispatches review, feedback, and nested deletion as domain commands", async () => {
+    const review = await invoke(["review", "session1", "--json"]);
+    assert.deepEqual(review.annotationCalls, ["review:session1"]);
+    assert.equal(
+      (decodeOutput(review.stdout, "json") as { review: { id: string } }).review
+        .id,
+      "rv_example",
+    );
+
+    const feedback = await invoke([
+      "feedback",
+      "--wait",
+      "--after",
+      "2",
+      "rv_example",
+      "--json",
+    ]);
+    assert.deepEqual(feedback.annotationCalls, ["feedback:rv_example:true:2"]);
+
+    const deleted = await invoke([
+      "review",
+      "delete",
+      "--discard-feedback",
+      "rv_example",
+      "--json",
+    ]);
+    assert.deepEqual(deleted.annotationCalls, ["delete:rv_example:true"]);
+    assert.equal(
+      (
+        decodeOutput(deleted.stdout, "json") as {
+          delete: { status: string };
+        }
+      ).delete.status,
+      "deleted",
+    );
+  });
+
+  for (const args of [[], ["serve", "x.html"], ["stop", "missing"]]) {
     it(`emits equivalent TOON and JSON for ${args.join(" ") || "home"}`, async () => {
       const toon = await invoke(args);
       const json = await invoke([...args, "--json"]);
@@ -222,6 +330,23 @@ describe("CLI application contract", () => {
     });
   }
 
+  it("advertises annotation as the next action after serve", async () => {
+    const toon = decodeOutput(
+      (await invoke(["serve", "x.html"])).stdout,
+      "toon",
+    ) as Record<string, unknown>;
+    const json = decodeOutput(
+      (await invoke(["serve", "x.html", "--json"])).stdout,
+      "json",
+    ) as Record<string, unknown>;
+    assert.deepEqual(toon.help, [
+      "Run `htmlview review <session>` for human annotation",
+    ]);
+    assert.deepEqual(json.help, [
+      "Run `htmlview review <session> --json` for human annotation",
+    ]);
+  });
+
   it("preserves JSON in contextual commands", async () => {
     const result = await invoke(["--json"]);
     const value = decodeOutput(result.stdout, "json") as Record<
@@ -229,17 +354,6 @@ describe("CLI application contract", () => {
       unknown
     >;
     assert.deepEqual(value.help, ["Run `htmlview serve <entry.html> --json`"]);
-  });
-
-  it("preserves JSON in usage-error corrective commands", async () => {
-    const result = await invoke(["serve", "x.html", "--bad", "--json"]);
-    const value = decodeOutput(result.stdout, "json") as Record<
-      string,
-      unknown
-    >;
-    assert.deepEqual(value.help, [
-      "Run `htmlview serve --help --json` for complete examples",
-    ]);
   });
 
   it("emits equivalent structured runtime errors", async () => {
@@ -305,11 +419,10 @@ describe("CLI application contract", () => {
     ]);
   });
 
-  it("suggests the compatible stop path for a supervisor mismatch", async () => {
+  it("suggests stop-all only for a same-protocol version mismatch", async () => {
     const failure = new SupervisorError({
-      code: "supervisor.incompatible",
-      message:
-        "The running htmlview supervisor uses an incompatible control protocol",
+      code: "supervisor.version_mismatch",
+      message: "The running htmlview supervisor uses a different version",
     });
     const result = await invoke(["serve", "x.html", "--json"], [], failure);
     const value = decodeOutput(result.stdout, "json") as Record<
@@ -321,6 +434,20 @@ describe("CLI application contract", () => {
     ]);
   });
 
+  it("does not suggest an incompatible stop-all command", async () => {
+    const failure = new SupervisorError({
+      code: "supervisor.protocol_mismatch",
+      message:
+        "The running htmlview supervisor uses an incompatible control protocol; use the htmlview installation that started it to run stop --all before retrying",
+    });
+    const result = await invoke(["serve", "x.html", "--json"], [], failure);
+    const value = decodeOutput(result.stdout, "json") as Record<
+      string,
+      unknown
+    >;
+    assert.equal("help" in value, false);
+  });
+
   it("sanitizes unexpected defects at the outer boundary", async () => {
     const result = await invoke(
       ["serve", "x.html", "--json"],
@@ -328,7 +455,14 @@ describe("CLI application contract", () => {
       new Error("private internal detail"),
     );
     assert.equal(result.exitCode, 1);
-    assert.match(result.stderr, /private internal detail/);
+    assert.equal(result.stderr.includes("private internal detail"), false);
+    assert.deepEqual(Object.keys(JSON.parse(result.stderr)).sort(), [
+      "code",
+      "internal_id",
+      "level",
+      "operation",
+      "timestamp",
+    ]);
     assert.deepEqual(decodeOutput(result.stdout, "json"), {
       error: {
         code: "runtime.internal",
@@ -338,12 +472,31 @@ describe("CLI application contract", () => {
     assert.equal(result.stdout.includes("private internal detail"), false);
   });
 
+  it("honors --log-level none for sanitized defects", async () => {
+    const result = await invoke(
+      ["serve", "x.html", "--json", "--log-level", "none"],
+      [],
+      new Error("private internal detail"),
+    );
+    assert.equal(result.exitCode, 1);
+    assert.equal(result.stderr, "");
+    assert.deepEqual(decodeOutput(result.stdout, "json"), {
+      error: {
+        code: "runtime.internal",
+        message: "htmlview could not complete the request",
+      },
+    });
+  });
+
   it("preserves interruption without rendering an internal error", async () => {
     let stdout = "";
     let stderr = "";
     const pending = Layer.succeed(CommandService, {
-      listSessions: () => Effect.never,
+      listState: () => Effect.never,
       serve: () => Effect.never,
+      review: () => Effect.never,
+      feedback: () => Effect.never,
+      deleteReview: () => Effect.never,
       stopSession: () => Effect.never,
       stopAll: () => Effect.never,
     });
@@ -358,7 +511,7 @@ describe("CLI application contract", () => {
             stderr: (value) => {
               stderr += value;
             },
-          }).pipe(Effect.provide(pending)),
+          }).pipe(Effect.provide(Layer.merge(pending, NodeServices.layer))),
         );
         yield* Effect.yieldNow;
         yield* Fiber.interrupt(fiber);

@@ -9,7 +9,7 @@ supplied HTTP client or browser controller fits their workflow.
 Request JSON when a shell needs to extract the URL without a TOON decoder:
 
 ```sh
-result="$(htmlview serve ./report.html --json)"
+result="$(htmlview serve --json ./report.html)"
 url="$(printf '%s' "$result" | node -e 'const v=JSON.parse(require("fs").readFileSync(0,"utf8")); process.stdout.write(v.session.url)')"
 ```
 
@@ -47,26 +47,59 @@ When inspection is complete, use the `session.id` from the original result:
 
 ```sh
 session="$(printf '%s' "$result" | node -e 'const v=JSON.parse(require("fs").readFileSync(0,"utf8")); process.stdout.write(v.session.id)')"
-htmlview stop "$session" --json
+htmlview stop --json "$session"
 ```
+
+## Human review workflow (`0.1.0` target)
+
+Annotation uses a separate instrumented URL and never changes `$url`:
+
+```sh
+review_result="$(htmlview review --json "$session")"
+review_url="$(printf '%s' "$review_result" | node -e 'const v=JSON.parse(require("fs").readFileSync(0,"utf8")); process.stdout.write(v.review.url)')"
+review_id="$(printf '%s' "$review_result" | node -e 'const v=JSON.parse(require("fs").readFileSync(0,"utf8")); process.stdout.write(v.review.id)')"
+htmlview feedback --wait --json "$review_id"
+```
+
+Open `$review_url` with any external browser or controller. A human can queue
+and send element-targeted or freeform comments; the foreground `feedback`
+command completes with one durable structured batch. It is the agent wake-up
+boundary. Supervisor logs are diagnostics only and cannot replace the feedback
+queue.
+
+For an iterative review, the human uses Send rather than Send & End. The agent
+applies the batch to the original selected entry, acknowledges the returned
+cursor, and waits again:
+
+```sh
+htmlview feedback --after <cursor> --wait --json "$review_id"
+```
+
+A ready review automatically refreshes its instrumented iframe after a
+confirmed byte change to that entry, so the human sees the edit without a
+manual reload and can send another batch. Use the original raw `$url` for
+fidelity checks and application E2E. It serves the latest bytes on the next
+request; an external browser/controller must reload any already-open raw page
+when it wants to observe them.
 
 ## Validated controllers
 
-Release validation passes a CLI-returned URL through two independently
-installed controllers:
+The implemented raw-serving validation passes a CLI-returned URL through two
+independently installed controllers:
 
 - `pnpm run validate:interoperability` uses Playwright Chromium.
 - `pnpm run validate:browser-use` uses the separately installed `browser-use`
   executable and its default connection to a running Chrome instance.
 
 Neither controller is imported by the runtime or included in the published
-package.
+package. Before `0.1.0`, the same independence requirement also covers the
+complete review/send/feedback browser flow.
 
 ## Agent Skill evaluation
 
-Version one does not ship an Agent Skill. The home view and command-specific
-help already expose the complete four-operation workflow, while a generated
-skill would duplicate that static guidance and would need installation-aware
-invocation rules. Revisit a generated skill only if observed workflows need
-more guidance than `htmlview`, `htmlview serve --help`, and `htmlview stop
---help` provide. Ambient session hooks remain out of scope.
+Version one does not ship an Agent Skill. The structured home view and native
+Effect CLI command help expose the workflow, while a generated skill would
+duplicate that static guidance and would need installation-aware invocation
+rules. Revisit a generated skill only if observed workflows need more guidance
+than `htmlview`, `htmlview serve --help`, `htmlview review --help`, and
+`htmlview feedback --help` provide. Ambient session hooks remain out of scope.

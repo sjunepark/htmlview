@@ -1,24 +1,13 @@
 import { randomBytes } from "node:crypto";
-import { constants as fsConstants, type BigIntStats } from "node:fs";
-import { open, realpath, stat } from "node:fs/promises";
-import {
-  createServer,
-  type IncomingMessage,
-  type Server,
-  type ServerResponse,
-} from "node:http";
+import { type IncomingMessage, type ServerResponse } from "node:http";
 import path from "node:path";
-import { Data, Effect, FiberSet, type Scope } from "effect";
+import type { Readable } from "node:stream";
+import { Effect, type Scope } from "effect";
 import { contentType } from "mime-types";
 import { ContentListenerError } from "../errors.js";
-import { isWithinRoot, type ServingGrant } from "./grant.js";
-
-const loopbackAddress = "127.0.0.1";
-const defaultResponseDeadlineMilliseconds = 5 * 60_000;
-const responseDeadlines = new WeakMap<
-  IncomingMessage["socket"],
-  NodeJS.Timeout
->();
+import { openAuthorizedFile } from "./authorized-file.js";
+import type { ServingGrant } from "./grant.js";
+import { hasExactAuthority, startLoopbackHttpListener } from "./listener.js";
 
 export interface StaticSessionServer {
   readonly bindAddress: "127.0.0.1";
@@ -30,7 +19,6 @@ export interface StaticSessionServer {
 
 export interface StaticHandlerOptions {
   readonly hostname: string;
-  readonly responseDeadlineMilliseconds: number;
 }
 
 function send(
@@ -48,14 +36,6 @@ function send(
     ...extraHeaders,
   });
   response.end(body);
-}
-
-function isExpectedAuthority(
-  request: IncomingMessage,
-  hostname: string,
-): boolean {
-  const port = request.socket.localPort;
-  return port !== undefined && request.headers.host === `${hostname}:${port}`;
 }
 
 function decodeRequestPath(
@@ -118,126 +98,20 @@ function isNotModified(
   );
 }
 
-type FileHandle = Awaited<ReturnType<typeof open>>;
-
-interface OwnedFileHandle {
-  readonly handle: FileHandle;
-  transferredToStream: boolean;
-}
-
-class FileAccessError extends Data.TaggedError("FileAccessError")<{
-  readonly cause: unknown;
-}> {}
-
-type AuthorizedFile =
-  | { readonly outcome: "missing" }
-  | { readonly outcome: "forbidden" }
-  | { readonly outcome: "changed" }
-  | {
-      readonly outcome: "file";
-      readonly owned: OwnedFileHandle;
-      readonly metadata: BigIntStats;
-    };
-
-function reportCleanupFailure(operation: string): Effect.Effect<void> {
-  return Effect.sync(() => {
-    try {
-      process.stderr.write(`htmlview: ${operation} cleanup failed\n`);
-    } catch {
-      // The request's primary outcome remains authoritative.
-    }
-  });
-}
-
-function closeOwnedFile(owned: OwnedFileHandle): Effect.Effect<void> {
-  if (owned.transferredToStream) return Effect.void;
-  return Effect.tryPromise({
-    try: () => owned.handle.close(),
-    catch: (cause) => new FileAccessError({ cause }),
-  }).pipe(
-    Effect.catch(() => reportCleanupFailure("authorized file")),
-    Effect.asVoid,
-  );
-}
-
-function optionalFilePromise<A>(
-  operation: () => Promise<A>,
-): Effect.Effect<A | undefined> {
-  return Effect.tryPromise({
-    try: operation,
-    catch: (cause) => new FileAccessError({ cause }),
-  }).pipe(Effect.catch(() => Effect.sync((): undefined => undefined)));
-}
-
-function openAuthorizedFile(
-  root: string,
-  target: string,
-): Effect.Effect<AuthorizedFile, never, Scope.Scope> {
-  return Effect.gen(function* () {
-    const resolved = yield* optionalFilePromise(() => realpath(target));
-    if (resolved === undefined || resolved === root)
-      return { outcome: "missing" };
-    if (!isWithinRoot(root, resolved)) return { outcome: "forbidden" };
-
-    const owned = yield* Effect.acquireRelease(
-      optionalFilePromise(() =>
-        open(resolved, fsConstants.O_RDONLY | fsConstants.O_NONBLOCK),
-      ).pipe(
-        Effect.flatMap((handle) =>
-          handle === undefined
-            ? Effect.fail(undefined)
-            : Effect.succeed({ handle, transferredToStream: false }),
-        ),
-      ),
-      closeOwnedFile,
-    ).pipe(Effect.catch(() => Effect.void));
-    if (owned === undefined) return { outcome: "missing" };
-
-    const openedMetadata = yield* optionalFilePromise(() =>
-      owned.handle.stat({ bigint: true }),
-    );
-    if (openedMetadata === undefined || !openedMetadata.isFile())
-      return { outcome: "missing" };
-
-    const resolvedAfterOpen = yield* optionalFilePromise(() =>
-      realpath(resolved),
-    );
-    if (resolvedAfterOpen === undefined) return { outcome: "missing" };
-    if (!isWithinRoot(root, resolvedAfterOpen)) return { outcome: "forbidden" };
-
-    const currentMetadata = yield* optionalFilePromise(() =>
-      stat(resolvedAfterOpen, { bigint: true }),
-    );
-    if (currentMetadata === undefined) return { outcome: "missing" };
-    if (
-      currentMetadata.dev !== openedMetadata.dev ||
-      currentMetadata.ino !== openedMetadata.ino
-    )
-      return { outcome: "changed" };
-    return { outcome: "file", owned, metadata: openedMetadata };
-  });
-}
-
 function streamAuthorizedFile(
-  opened: Extract<AuthorizedFile, { readonly outcome: "file" }>,
+  stream: Readable,
   response: ServerResponse,
 ): Effect.Effect<void> {
   return Effect.callback<void>((resume, signal) => {
-    let stream: ReturnType<FileHandle["createReadStream"]> | undefined;
     const destroy = (): void => {
-      if (stream !== undefined && !stream.destroyed) stream.destroy();
+      if (!stream.destroyed) stream.destroy();
       if (!response.destroyed) response.destroy();
     };
     try {
-      stream = opened.owned.handle.createReadStream({
-        autoClose: true,
-        end: Number(opened.metadata.size - 1n),
-      });
-      opened.owned.transferredToStream = true;
       stream.once("error", () => response.destroy());
       stream.once("close", () => resume(Effect.void));
       response.once("close", () => {
-        if (stream !== undefined && !stream.destroyed) stream.destroy();
+        if (!stream.destroyed) stream.destroy();
       });
       if (signal.aborted) destroy();
       else stream.pipe(response);
@@ -259,21 +133,7 @@ export function createStaticHandler(
   ): Effect.Effect<void> =>
     Effect.scoped(
       Effect.gen(function* () {
-        yield* Effect.sync(() => {
-          if (responseDeadlines.has(request.socket)) return;
-          const responseDeadline = setTimeout(
-            () => request.socket.destroy(),
-            options.responseDeadlineMilliseconds,
-          );
-          responseDeadline.unref();
-          responseDeadlines.set(request.socket, responseDeadline);
-          request.socket.once("close", () => {
-            clearTimeout(responseDeadline);
-            responseDeadlines.delete(request.socket);
-          });
-        });
-
-        if (!isExpectedAuthority(request, options.hostname))
+        if (!hasExactAuthority(request, options.hostname))
           return yield* Effect.sync(() =>
             send(response, 421, "Misdirected Request"),
           );
@@ -302,11 +162,13 @@ export function createStaticHandler(
             send(response, 413, "File exceeds the supported size"),
           );
 
-        const modified = new Date(Number(opened.metadata.mtimeNs / 1_000_000n));
+        const modified = new Date(
+          Number(opened.metadata.modifiedNanoseconds / 1_000_000n),
+        );
         const tag = etag(
           opened.metadata.size,
-          opened.metadata.mtimeNs,
-          opened.metadata.ino,
+          opened.metadata.modifiedNanoseconds,
+          opened.metadata.inode,
         );
         const headers = {
           "content-type":
@@ -333,7 +195,8 @@ export function createStaticHandler(
         yield* Effect.sync(() => response.writeHead(200, headers));
         if (request.method === "HEAD" || opened.metadata.size === 0n)
           return yield* Effect.sync(() => response.end());
-        return yield* streamAuthorizedFile(opened, response);
+        const stream = yield* opened.openReadStream;
+        return yield* streamAuthorizedFile(stream, response);
       }),
     );
 }
@@ -343,48 +206,6 @@ function contentStartFailure(cause: unknown): ContentListenerError {
     code: "http.start_failed",
     message: "The loopback content listener could not start",
     cause,
-  });
-}
-
-function closeServer(server: Server): Effect.Effect<void> {
-  return Effect.callback<void>((resume) => {
-    try {
-      server.close((error) =>
-        resume(
-          error === undefined
-            ? Effect.void
-            : reportCleanupFailure("content listener"),
-        ),
-      );
-      server.closeAllConnections();
-    } catch {
-      resume(Effect.void);
-    }
-  });
-}
-
-function listen(server: Server): Effect.Effect<void, ContentListenerError> {
-  return Effect.callback<void, ContentListenerError>((resume) => {
-    const onError = (cause: Error): void =>
-      resume(Effect.fail(contentStartFailure(cause)));
-    server.once("error", onError);
-    try {
-      server.listen({ host: loopbackAddress, port: 0 }, () => {
-        server.off("error", onError);
-        resume(Effect.void);
-      });
-    } catch (cause) {
-      server.off("error", onError);
-      resume(Effect.fail(contentStartFailure(cause)));
-    }
-    return Effect.sync(() => {
-      server.off("error", onError);
-      try {
-        server.close();
-      } catch {
-        // The scoped server finalizer remains authoritative.
-      }
-    });
   });
 }
 
@@ -404,56 +225,21 @@ export function startStaticServer(
       try: () => options.hostname ?? generateSessionHostname(),
       catch: contentStartFailure,
     });
-    const responseDeadlineMilliseconds =
-      options.responseDeadlineMilliseconds !== undefined &&
-      Number.isFinite(options.responseDeadlineMilliseconds) &&
-      options.responseDeadlineMilliseconds > 0
-        ? options.responseDeadlineMilliseconds
-        : defaultResponseDeadlineMilliseconds;
-    const requests = yield* FiberSet.make<void, never>();
-    const runRequest = yield* FiberSet.runtime(requests)<never>();
     const handler = createStaticHandler(grant, {
       hostname,
-      responseDeadlineMilliseconds,
     });
-    const server = yield* Effect.acquireRelease(
-      Effect.try({
-        try: () =>
-          createServer((request, response) => {
-            runRequest(
-              handler(request, response).pipe(
-                Effect.catchCause(() =>
-                  Effect.sync(() => {
-                    if (!response.destroyed) response.destroy();
-                  }),
-                ),
-              ),
-            );
+    const listener = yield* startLoopbackHttpListener(handler, {
+      ...(options.responseDeadlineMilliseconds === undefined
+        ? {}
+        : {
+            responseDeadlineMilliseconds: options.responseDeadlineMilliseconds,
           }),
-        catch: contentStartFailure,
-      }),
-      closeServer,
-    );
-    yield* Effect.sync(() => {
-      server.maxConnections = 100;
-      server.maxHeadersCount = 100;
-      server.headersTimeout = 5_000;
-      server.requestTimeout = 30_000;
-      server.keepAliveTimeout = 5_000;
-      server.maxRequestsPerSocket = 100;
-      server.setTimeout(30_000, (socket) => socket.destroy());
     });
-    yield* listen(server);
-    const address = server.address();
-    if (address === null || typeof address === "string")
-      return yield* contentStartFailure(
-        new Error("Static server did not receive a TCP address"),
-      );
-    const origin = `http://${hostname}:${address.port}`;
+    const origin = `http://${hostname}:${listener.port}`;
     return {
-      bindAddress: loopbackAddress,
+      bindAddress: listener.bindAddress,
       hostname,
-      port: address.port,
+      port: listener.port,
       origin,
       url: `${origin}${grant.entryUrlPath}`,
     };

@@ -1,8 +1,16 @@
 # ADR 0007: Adopt Effect v4 as the execution model
 
-- Status: Accepted and implemented
+- Status: Accepted; partially superseded by
+  [ADR 0009](0009-adopt-effect-cli-and-logging.md)
 - Date: 2026-07-15
-- Supersedes: ADR 0005's TypeScript test runner and emitted-package details
+- Partially supersedes: [ADR 0005](0005-use-node-typescript-pnpm-and-the-npm-registry.md)
+  test-runner and emitted-package details
+
+## Current applicability
+
+ADR 0009 replaces this decision's custom-parser/no-Effect-CLI choice and adds
+Effect logging. The execution model, native security-sensitive leaves, exact
+pins, packaging policy, and test-runtime decisions remain active.
 
 ## Context
 
@@ -36,7 +44,8 @@ service exactly as well. Do not allow an Effect package range to advance this
 toolchain silently.
 
 Retain the custom command parser and TOON/JSON renderer because their ordering,
-help, error, and output contracts are already public. Retain native Node HTTP,
+help, error, and output contracts were already accepted for this migration.
+Retain native Node HTTP,
 filesystem, socket, stream, and process adapters at narrow leaves because the
 raw byte-serving and confinement behavior is security-sensitive. Use only
 `@effect/platform-node/NodeRuntime` from the Node platform package; do not adopt
@@ -97,7 +106,7 @@ installation.
   validation must exercise source-level seams or the built CLI rather than
   importing undocumented files from `dist`.
 
-## Rejected alternatives
+## Rejected alternatives at the time
 
 - **Delay Effect until after publication.** This would publish the Promise
   lifecycle as the first supported architecture and make the later migration a
@@ -105,9 +114,11 @@ installation.
 - **Ship Effect as an unbundled runtime dependency.** Phase 0 measurements
   showed that two bundles preserve the detached entry and avoid installing the
   full Effect package surface for this CLI.
-- **Adopt Effect CLI or HTTP abstractions.** Their contracts differ from the
-  accepted AXI syntax and native raw-server behavior, expanding migration risk
-  without solving the ownership problem.
+- **Adopt Effect CLI in this migration.** Its contract differed from the then
+  accepted AXI syntax. ADR 0009 later adopts it before publication.
+- **Adopt an Effect HTTP data plane.** Replacing the security-sensitive native
+  raw server expands risk without solving the ownership problem; this rejection
+  remains active.
 - **Wrap every Node or pure helper in a service.** This would enlarge the
   dependency graph without creating meaningful ownership or test seams.
 - **Patch TypeScript in `prepare` or `postinstall`.** A published CLI must not

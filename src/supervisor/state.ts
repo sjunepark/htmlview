@@ -21,6 +21,7 @@ import {
 import { homedir } from "node:os";
 import path from "node:path";
 import { Clock, Data, Effect, Schedule, type Scope } from "effect";
+import { logDiagnostic } from "../diagnostics.js";
 import { RuntimeStateError } from "../errors.js";
 
 const maximumStateFileBytes = 16 * 1024;
@@ -30,8 +31,12 @@ const lockObservationMilliseconds = 50;
 
 export interface StatePaths {
   readonly directory: string;
+  readonly annotationDirectory: string;
+  readonly annotationFile: string;
   readonly controlSocket: string;
   readonly supervisorLock: string;
+  readonly diagnosticLogDirectory: string;
+  readonly diagnosticLogFile: string;
   readonly configurationError?: string;
 }
 
@@ -67,8 +72,12 @@ export function statePaths(
   }
   return {
     directory,
+    annotationDirectory: path.join(directory, "annotations"),
+    annotationFile: path.join(directory, "annotations", "state.json"),
     controlSocket: path.join(directory, "control.sock"),
     supervisorLock: path.join(directory, "supervisor.lock"),
+    diagnosticLogDirectory: path.join(directory, "logs"),
+    diagnosticLogFile: path.join(directory, "logs", "supervisor.jsonl"),
     ...(configurationError === undefined ? {} : { configurationError }),
   };
 }
@@ -103,13 +112,11 @@ function tryStatePromise<A>(
   });
 }
 
-function reportCleanupFailure(operation: string): Effect.Effect<void> {
-  return Effect.sync(() => {
-    try {
-      process.stderr.write(`htmlview: ${operation} cleanup failed\n`);
-    } catch {
-      // The operation's primary failure remains authoritative.
-    }
+function reportCleanupFailure(): Effect.Effect<void> {
+  return logDiagnostic("Error", {
+    operation: "state.cleanup",
+    code: "state.unavailable",
+    failureCount: 1,
   });
 }
 
@@ -155,7 +162,7 @@ function removeTemporaryFile(file: string): Effect.Effect<void> {
     Effect.catch((failure) =>
       (failure.cause as NodeJS.ErrnoException).code === "ENOENT"
         ? Effect.void
-        : reportCleanupFailure("temporary state file"),
+        : reportCleanupFailure(),
     ),
   );
 }
@@ -191,7 +198,18 @@ export function writePrivateJson(
           (descriptor) =>
             Effect.try({
               try: () => {
-                writeSync(descriptor, body);
+                let offset = 0;
+                while (offset < body.length) {
+                  const written = writeSync(
+                    descriptor,
+                    body,
+                    offset,
+                    body.length - offset,
+                  );
+                  if (written === 0)
+                    throw new Error("State record write made no progress");
+                  offset += written;
+                }
                 fsyncSync(descriptor);
               },
               catch: (cause) => stateFailure(cause),
@@ -200,9 +218,7 @@ export function writePrivateJson(
             Effect.try({
               try: () => closeSync(descriptor),
               catch: (cause) => new IgnoredStateFailure({ cause }),
-            }).pipe(
-              Effect.catch(() => reportCleanupFailure("state descriptor")),
-            ),
+            }).pipe(Effect.catch(() => reportCleanupFailure())),
         );
         yield* tryStatePromise(() => rename(temporary, file));
         yield* tryStatePromise(() => chmod(file, 0o600));
@@ -260,7 +276,7 @@ function closeDescriptor(descriptor: number): Effect.Effect<void> {
   return Effect.try({
     try: () => closeSync(descriptor),
     catch: (cause) => new IgnoredStateFailure({ cause }),
-  }).pipe(Effect.catch(() => reportCleanupFailure("state descriptor")));
+  }).pipe(Effect.catch(() => reportCleanupFailure()));
 }
 
 function readBoundedRegularFile(file: string): Effect.Effect<string | void> {
@@ -375,7 +391,7 @@ function removeClaim(pathname: string): Effect.Effect<void> {
   return Effect.tryPromise({
     try: () => rm(pathname, { recursive: true, force: true }),
     catch: (cause) => new IgnoredStateFailure({ cause }),
-  }).pipe(Effect.catch(() => reportCleanupFailure("ownership claim")));
+  }).pipe(Effect.catch(() => reportCleanupFailure()));
 }
 
 function reclaimStaleLock(
@@ -429,7 +445,7 @@ function removeLockAfterFailedClaim(paths: StatePaths): Effect.Effect<void> {
   return Effect.tryPromise({
     try: () => rm(paths.supervisorLock, { recursive: true, force: true }),
     catch: (cause) => new IgnoredStateFailure({ cause }),
-  }).pipe(Effect.catch(() => reportCleanupFailure("ownership lock")));
+  }).pipe(Effect.catch(() => reportCleanupFailure()));
 }
 
 function claimSupervisorLock(
@@ -492,7 +508,7 @@ function releaseSupervisorLock(
     yield* Effect.tryPromise({
       try: () => rm(paths.supervisorLock, { recursive: true, force: true }),
       catch: (cause) => new IgnoredStateFailure({ cause }),
-    }).pipe(Effect.catch(() => reportCleanupFailure("ownership lock")));
+    }).pipe(Effect.catch(() => reportCleanupFailure()));
   });
 }
 

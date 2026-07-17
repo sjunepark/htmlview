@@ -1,388 +1,433 @@
 # Architecture
 
-## Purpose and boundary
+## Status and boundary
 
-`htmlview` converts a local HTML entry and an explicitly granted directory root
-into a byte-faithful loopback HTTP URL. An agent passes that URL to any
-separately supplied browser controller. Documentation may use
-[Browser Use](https://github.com/browser-use/browser-harness) as an example,
-but no controller is privileged by the architecture.
+The raw-serving core, per-user supervisor, Effect execution model, Effect CLI,
+foreground/private diagnostic sinks, review lifecycle, trusted browser review
+surface, and its authenticated probe-readiness boundary are implemented.
+Automatic selected-entry refresh is the next accepted slice; packaging and the
+final release matrix follow it. The repository
+[implementation plan](https://github.com/sjunepark/htmlview/blob/main/PLAN.md)
+owns their sequencing.
 
-The core owns local path validation, static HTTP serving, session lifecycle,
-and an agent-facing CLI. It does not own browser installation, browser
-automation, visual interpretation, or page modification.
+`htmlview` converts a local HTML entry and an explicitly granted directory into
+a ready loopback HTTP URL. The core owns grant validation, byte-faithful static
+serving, lifecycle, private state, and an agent-facing CLI. Browser installation,
+automation, visual interpretation, and source modification stay outside it.
 
-“Byte-faithful” means the raw route serves selected files without rewriting or
-injected runtime code. HTTP necessarily gives the content a web origin, so the
-product intentionally does not reproduce `file://` origin semantics.
+The serving root is also the read-disclosure grant. Every permitted regular file
+beneath it is available to same-origin authored code; filename denylisting does
+not narrow that grant.
 
-The selected root is both the HTTP origin root and the read-disclosure grant.
-Every permitted file beneath it is available to same-origin page code; only
-resolved targets outside it are forbidden.
+Review is a consumer of the same authorized-file boundary, not a mode of the raw
+handler. It may instrument its own representation, but it cannot change the raw
+URL, origin, path, response bytes, headers, or lifecycle. A review-owned entry
+observer may ask its trusted shell to reload the instrumented iframe; it never
+injects a reload client into raw content or controls arbitrary raw consumers.
 
-## System shape
-
-```text
-agent
-  |
-  | CLI: home / serve / stop
-  v
-htmlview client
-  |  \
-  |   +-- result encoder --> stdout: TOON (default) / JSON
-  |
-  +-- private Unix control socket -----+
-                                        |
-                               per-user supervisor
-                                        |
-                             +----------+----------+
-                             |                     |
-                      session registry   per-session raw listeners
-                                                   |
-                                                   v
-                                         loopback raw origins
-                                                   |
-                                                   v
-                                    external browser controller
-
-optional annotation surface (later) ---- consumes raw URL and emits feedback
-```
-
-The annotation surface is deliberately outside the core request path. No
-plugin framework is planned; a concrete annotation workflow must first prove
-that an additional interface is necessary.
-
-## Components
-
-### CLI client
-
-Strictly validates command syntax, talks to the local supervisor, and creates a
-minimal JSON-compatible result value. It encodes that value as TOON by default
-or JSON with `--json`, then exits after the requested state is confirmed. It
-does not need to remain attached to keep content available.
-
-Command orchestration is one Effect program over a single command-service
-Layer. Strict parsing remains synchronous, expected tagged failures become
-stable structured results, and unexpected defects are sanitized on stdout
-while diagnostics stay on stderr. The executable supplies the only Node
-runtime boundary and the only output newline.
-
-The command surface is intentionally small:
-
-- `htmlview` lists active sessions.
-- `htmlview serve <entry.html> [--root <directory>]` creates or reuses a
-  session and returns its raw URL.
-- `htmlview stop <session>` stops one session.
-- `htmlview stop --all` stops all sessions and the supervisor.
-
-With no command, the client renders a content-first home view containing its
-executable identity, a definitive session count, minimal live session rows,
-and contextual next commands. Structured errors use the selected data format;
-progress and internal diagnostics use stderr. [`docs/CLI.md`](docs/CLI.md)
-owns the complete public contract.
-
-### Per-user supervisor
-
-Owns one operating-system-user-private Unix-domain control socket and multiple
-independent content sessions. Each content session gets an automatically allocated
-loopback port and a fresh random name beneath `.localhost`, so its serving root
-is also its HTTP origin root. This preserves authored root-relative URLs
-without adding a session prefix to document paths.
-
-The CLI discovers or starts the supervisor at a deterministic socket path and
-waits until the requested content listener is ready before returning. Bounded
-health retries preserve ownership when a live supervisor is temporarily
-unavailable. Control requests use cancellable Effect adapters around the native
-Unix-socket HTTP client; response bytes and JSON are bounded before shared
-protocol schemas see a value. Discovery, startup, ownership observation, and
-shutdown confirmation use named Clock-driven schedules. The bootstrap lock is
-scoped across discovery and readiness, while detached process setup is scoped
-only until a successful unref handoff.
-
-The listener binds only to `127.0.0.1`; the fresh, high-entropy hostname
-isolates cookies, storage, caches, and service workers. The supervisor does not
-intentionally reuse a hostname after its session stops.
-The supervisor owns concurrency, idle shutdown, stale-socket recovery, and
-graceful termination. It must not require a project-local process manager.
-The supervisor executable also has one Node runtime boundary. Its scoped root
-program awaits an explicit server-closed signal, so idle and control-request
-shutdowns end the program while SIGINT or SIGTERM interrupt that same root and
-run the idempotent shutdown finalizer before exit.
-
-### Session registry
-
-Maps a session identifier to:
-
-- the public entry route;
-- the canonical serving root;
-- the dedicated content-listener address;
-- lifecycle state; and
-- timestamps needed for cleanup and diagnostics.
-
-Runtime state belongs in the user's platform-appropriate state directory, not
-in a served project. The control socket and lifetime ownership lock are private
-to the user. A session identifier is not an authorization mechanism for control operations.
-The canonical root in each record is the session's complete disclosure grant.
-
-### Static HTTP service
-
-Each session listener maps URL paths directly to files under that session's
-root. The returned entry URL uses the entry's encoded path relative to the
-root. For example, `/workspace/public/report.html` under root `/workspace`
-becomes `http://h-<random>.localhost:<port>/public/report.html`. This lets `./app.css`
-resolve beside the entry and `/assets/logo.svg` resolve from the chosen root.
-
-The service handles HTTP method validation, URL decoding, containment checks,
-MIME types, conditional requests, and ordinary byte streaming.
-
-The listener and its request-fiber set share one Effect scope. Each authorized
-file handle belongs to its request scope until a successful `GET` transfers it
-exactly once to the native auto-closing stream. Closing the listener scope
-closes connections, interrupts remaining request work, and releases any handle
-that was not transferred.
-
-The service has no filename or dotfile denylist. Confinement prevents resolved
-targets outside the root; it does not hide one in-root file from another page
-on the same origin.
-
-The raw service does not parse HTML in order to modify it. File changes become
-visible on a later request or reload without requiring a new session.
-
-## Effect execution and ownership
-
-The service graph has two executable roots and one production service seam:
+## System map
 
 ```text
-cli NodeRuntime
-  runApp
-    CommandService Layer
-      resolveServingGrant
-      SupervisorClient
-        state / ownership
-        Unix control transport
-
-supervisor NodeRuntime
-  scoped runSupervisor
-    ownership + control + registry
-      startStaticServer per session
+short-lived agent CLI
+  |
+  +-- command/domain result --> stdout: TOON or JSON
+  +-- Effect diagnostic events --> stderr
+  |
+  +-- private Unix-domain control socket
+        |
+        v
+  per-user supervisor --------> private state
+        |                         ownership + annotation snapshot/logs
+        |
+        +-- raw-session registry --> raw listener --> raw browser origin
+        |
+        +-- review lifecycle
+                +-- trusted shell origin
+                +-- instrumented-content origin --> granted files
+                +-- selected-entry observer (next) --> shell iframe reload
+                +-- durable feedback queue --> foreground agent wait
 ```
 
-Pure parsing, containment calculations, output assembly, and HTTP header logic
-remain ordinary functions. Effect owns fallible asynchronous execution,
-cancellation, typed operational failures, schedules, and resource lifetime.
-Native Node filesystem, HTTP, socket, stream, and process APIs remain narrow
-leaf adapters because their exact security and byte-stream behavior matters.
+The annotation snapshot is the durable authority for review lifecycle records;
+the supervisor retains only live scopes in memory. Browser tools consume
+returned URLs and never become runtime dependencies.
 
-The logical ownership tree is closed from the leaves upward:
+## Implemented core
+
+### CLI and domain boundary
+
+`src/cli.ts` is the process-I/O and Node runtime boundary. `src/app.ts` defines
+one pinned `effect/unstable/cli` command tree and dispatches typed handlers
+through one `CommandService` Layer. Effect CLI owns native help, version,
+completions, log-level selection, syntax diagnostics, and dispatch. Domain
+handlers create ordinary JSON-compatible values, and `src/output.ts` alone
+encodes TOON or JSON.
+
+The CLI exits after an operation is confirmed. It does not stay attached to keep
+a content URL alive. The no-argument path returns a state-oriented home value;
+`serve` and `stop` are idempotent domain operations.
+
+Native meta and syntax text stay outside the domain encoder. Foreground
+diagnostics pass through the closed event seam in `src/diagnostics.ts`; its
+logger accepts exactly one validated event and writes allowlisted JSON only to
+stderr. Expected filesystem, control, supervisor, and listener failures use tagged
+Effect error channels. `src/errors.ts` exhaustively maps them to stable public
+codes. Unknown defects are sanitized at the executable boundary. The private
+protocol validates requests and responses before domain code consumes them.
+
+### Serving grant and static HTTP
+
+`src/serving/grant.ts` canonicalizes the requested entry and root. Without
+`--root`, it derives the grant from the supplied entry path's parent before
+resolving the entry, so a symlink cannot silently broaden authority. The grant
+must contain the resolved entry and be narrower than the user home. The runtime
+rejects canonical trees that overlap private state in either direction.
+
+Each raw session owns one listener bound to `127.0.0.1` and a fresh random
+`h-<random>.localhost` authority. The entry URL retains its encoded path relative
+to the root, preserving document-relative and root-relative resolution without a
+session path prefix.
+
+`src/serving/http.ts` validates the exact Host and method, decodes the URL path
+once, and owns raw HTTP status, metadata, cache, MIME, and stream piping.
+`src/serving/authorized-file.ts` canonicalizes and authorizes the final target,
+rejects directories, fences the opened descriptor against path replacement
+with device/inode checks, and exposes one scope-bound, size-limited stream. The
+raw handler sends that stream without body transformation. Query strings do not
+select files; URL fragments never reach the server.
+
+`src/serving/listener.ts` owns the shared numeric-loopback listener resource,
+request fibers, deadlines, and connection limits without owning route or
+authority policy. Review creation uses it for separate fresh
+`r-<random>.localhost` shell and `c-<random>.localhost` content authorities.
+The shared surface is configured only after both listeners exist; readiness
+stays unavailable until the grant, origins, and durable transition service are
+installed.
+
+The raw service has no filename or dotfile denylist and never opens a served
+file for writing. Later file changes appear on reload without creating a new
+session.
+
+### Supervisor, control, and private state
+
+`src/supervisor/server.ts` owns live session mutation, listener scopes, idle
+shutdown, and graceful cleanup. `src/supervisor/client.ts` discovers or starts
+that process, verifies its identity, and waits for requested readiness. One
+operating-system user has at most one healthy supervisor.
+
+Control uses HTTP framing over a deterministic Unix-domain socket beneath the
+user-private state directory. Its containing directory is `0700`, the socket is
+`0600`, and no bearer credential is persisted. A full-lifetime owner-fenced lock
+serializes startup and stale-socket recovery. Transient health failure does not
+authorize a replacement supervisor.
+
+Every live raw session records its public entry route, canonical grant, listener
+authority, lifecycle state, and bounded lifecycle metadata. A session ID is a
+CLI locator, not a control credential. Runtime records never sit beneath a
+served project.
+
+### Effect execution and ownership
+
+Effect owns fallible asynchronous execution, typed operational failures,
+cancellation, schedules, and resource lifetime. Pure containment, header, and
+result transformations remain ordinary TypeScript. Native Node filesystem,
+HTTP, socket, stream, and process APIs remain narrow leaf adapters because their
+exact security and byte behavior matters.
+
+The implemented ownership shape is:
 
 ```text
 supervisor root scope
   lifetime ownership lock
-  control-listener scope
-    control request fibers
-  idle-shutdown fiber scope
-  session-registry scope
+  control listener + admitted request fibers
+  idle-shutdown fiber
+  session registry
     session child scope
-      content listener + request-fiber set
+      content listener + request fibers
         request scope
-          authorized file handle -> native auto-closing stream
+          authorized file handle -> auto-closing stream
+    stable review records and open-document index
+      ready review child scope
+        shell listener + request fibers
+        instrumented-content listener + request fibers
 ```
 
-Session creation commits to the registry only after listener readiness. Failed
-or interrupted acquisition closes the pending child scope. Stop, idle expiry,
-signals, and control shutdown converge on the same idempotent cleanup path;
-cleanup attempts every owned branch even when one finalizer fails.
+Session creation commits only after listener readiness. Failed acquisition
+closes its pending child scope. Stop, idle expiry, signals, and control shutdown
+converge on one idempotent cleanup path that attempts every owned branch even if
+one finalizer fails.
 
-## Error flow and test seams
+## Accepted `0.1.0` additions
 
-Expected filesystem, state, content-listener, control, and supervisor failures
-use tagged Effect error channels. The private protocol schemas validate both
-requests and responses, and the supervisor sends only stable wire codes and
-safe messages. `runApp` exhaustively projects expected failures to structured
-stdout with exit code 1. Syntax failures use exit code 2. Unknown defects are
-sanitized as `runtime.internal` on stdout while diagnostic detail stays on
-stderr. Interruption is not converted into an operational error.
+### Detached diagnostic logging
 
-The `CommandService` Layer is the CLI orchestration seam. Supervisor tests use
-the client constructor's process/lock adapters and `SupervisorOptions` for
-native failure injection; raw-server tests acquire listeners directly in a
-scope. Vitest and `@effect/vitest` cover typed programs, scoped finalization,
-and deterministic `TestClock` policies. Real Unix sockets and processes remain
-in integration and black-box E2E tests, while Playwright, Browser Use, and
-clean installed-package workflows validate only the public artifact.
+The foreground CLI routes validated Effect diagnostic events only to stderr.
+The detached supervisor writes the same allowlisted shape to at most three
+64-KiB JSONL files beneath a private `0700` log directory; files are `0600` and
+the threshold is fixed at info. Logs are neither feedback nor an audit/event
+store. Both executable roots project causes before the Node runtime can print a
+raw unhandled cause.
+
+### Review service (implemented)
+
+One open review attaches to a raw session's canonical-root/public-entry identity
+and owns a stable review ID plus two fresh loopback origins:
+
+- the trusted shell origin serves immutable product UI, owns the comment editor
+  and browser mutations, and displays review content; and
+- the instrumented-content origin reuses the serving grant, transforms only the
+  selected entry, and serves ordinary granted assets unchanged.
+
+The shell embeds review content in a cross-origin sandboxed iframe. Authored code
+keeps an origin for its own assets, modules, and fetches but cannot read shell DOM
+or typed comments. A schema-validated `postMessage` boundary carries bounded
+target context and current geometry. The shell checks the source window and
+exact origin.
+
+Authored code cannot manufacture an accepted target message: messages must
+carry the active probe lease and entry revision, and trusted pointer, keyboard,
+or click events are the only probe inputs that select targets. Element metadata
+is still explicitly untrusted because the authored page controls the DOM the
+probe describes. The shell also mints a bounded one-use capability for the
+exact selected-entry navigation. A clean cross-origin iframe request receives
+raw bytes; malformed, expired, and replayed capability requests fail closed.
+The parser-blocking probe removes the reserved query from the visible document
+URL before authored scripts run. Each admitted navigation receives a one-use
+random probe URL, and that URL
+serves one uncached script containing a separate random lease, and the shell
+must redeem the lease through its protected mutation API before a revision is
+admitted. The parser-blocking probe is the document's first executable code and
+captures the real parent window plus pristine message primitives before
+authored code runs. Its readiness listener accepts only a trusted browser event
+from that captured parent. The lease appears in neither HTML, DOM attributes,
+nor shell-to-frame messages; stale/replayed leases fail closed, and
+content-origin service-worker script requests are rejected so authored code
+cannot intercept the probe response. Exact Host, Origin, method, content type,
+and fetch-metadata checks protect browser mutations. Browser routes operate
+only on their addressed review; raw-session creation, stop, listing, root
+selection, and supervisor health remain private-socket operations.
+
+The review entry transform inserts one external probe reference at the first
+parser-created head position without parsing and reserializing the document.
+Only the shell's cross-site iframe-navigation request for the selected entry
+receives that transform; authored fetches and same-origin nested iframe loads
+receive ordinary granted bytes and cannot disclose a probe lease. It never
+weakens authored CSP.
+Unsupported encoding, policy, framing, or markup produces an explicit review
+limitation; the raw URL remains usable and annotation-only actions are disabled.
+The shell tracks iframe document replacement: a shell-initiated selected-entry
+reload recovers only after redeeming its new probe lease, while later
+HTML-document navigation cannot replay an earlier lease and is reported as an explicit
+unsupported-navigation limitation. Instrumentation covers the selected entry
+and its live SPA DOM, not the navigated document.
+
+### Annotation store and feedback delivery (implemented)
+
+`src/annotation/model.ts` owns the strict versioned shape and whole-state
+relationships. `src/annotation/store.ts` owns bounded no-follow reads, private
+metadata checks, recovery of orphaned ready records, and durable atomic
+replacement beneath the fixed private-state child. The store never derives a
+write path from a grant and never opens a served file for writing.
+
+Queueing creates a durable draft. Sending atomically converts selected drafts
+into ordered immutable feedback events with stable IDs, bounded element context,
+and the capture-time entry revision. Freeform events omit an anchor. Form values,
+credential-bearing URLs, arbitrary data attributes, inline script/style, and
+geometry are not durable feedback fields.
+
+One agent consumer reads events non-destructively. A returned feedback cursor is
+a delivered stream position; `--after` explicitly advances the separate
+acknowledged cursor. Cancellation or response loss may cause duplicate delivery
+but cannot acknowledge an unseen event. Browser End commits the final batch and
+leaves it unacknowledged for the agent.
+
+Listener stop never deletes drafts or unacknowledged events. Session stop first
+persists every associated ready review as stopped, then closes all in-memory
+review and raw scopes. Explicit deletion rejects pending data unless discard is
+requested. Ended, fully acknowledged state retains only a bounded retry
+tombstone. Live deletion persists a stopped barrier, closes its scope outside
+the store mutation permit, then persists the tombstone; a failed phase is
+retryable without a ready-but-closed state. Stopped, unended reviews may resume
+for the same document identity with stable records and fresh browser origins;
+ended reviews do not resume.
+
+Interactive shutdown aborts before listener teardown when its stopped-state
+write fails. Forced process shutdown instead closes every listener before
+releasing control and ownership, then reports the persistence failure; startup
+recovery converts any resulting orphaned `ready` record to `stopped`.
+
+### Automatic selected-entry refresh (accepted, pending)
+
+A ready review will own one scoped observer for the fixed pathname represented
+by its public entry route, not the complete serving grant or its initial
+canonical target. Filesystem or metadata notifications are hints: the observer
+reauthorizes the path's current regular-file target before publishing browser
+state. An availability notification may report that no authorized readable
+entry exists; a content-change notification requires a confirmed different byte
+revision. Bursts are coalesced so ordinary editor writes and atomic path
+replacement produce one stable transition rather than a reload storm.
+
+The trusted shell receives a bounded same-origin change notification and
+reloads only its instrumented-content iframe. Durable drafts retain their
+capture revisions; transient selection, highlight, and unsaved element context
+from the replaced DOM are cleared. The new document cannot accept annotations
+until it completes the existing one-use probe and lease handshake.
+
+If the fixed pathname is temporarily missing, forbidden, or unreadable, the
+shell keeps the last successfully rendered iframe visible, shows an unavailable
+state, and disables annotation. It does not navigate to an error response. An
+authorized return to the same bytes re-enables annotation without reload; a new
+revision reloads normally. Readable but unsupported bytes use the existing
+explicit review-limitation flow.
+
+The observer and notification resources belong to the ready review scope.
+Failed acquisition, stop, End, deletion, shutdown, and interruption close them
+without keeping retained review state or an otherwise empty supervisor alive.
+Raw serving remains passive: its next request reads current bytes, while an
+already-loaded raw page or other consumer refreshes only under its own control.
 
 ## Runtime flows
 
-### Serve an entry file
+### Serve and request (implemented)
 
-1. The CLI validates that the entry exists and is a regular HTML file.
-2. For `serve <entry>`, it derives the candidate root from the supplied path's
-   parent before resolving the entry. An exact `--root` is the only alternative
-   grant.
-3. It canonicalizes the candidate root and entry independently. An entry
-   symlink whose target falls outside the canonical root is rejected before
-   contacting the supervisor. Roots equal to or broader than the user home are
-   rejected.
-4. It discovers a healthy supervisor or starts one and waits for readiness.
-5. The supervisor rejects a root containing its runtime state, then atomically
-   creates or reuses the session for the public entry route/canonical-root pair.
-6. The CLI returns the session state, raw URL, resolved root, and grant meaning
-   as TOON or JSON, then exits.
+1. Resolve and authorize the entry/root grant locally.
+2. Discover or start the supervisor through the private ownership boundary.
+3. Reject a broad grant or any canonical overlap with private state, then reuse
+   or acquire a ready raw listener.
+4. Return the session URL and exact grant as one domain result.
+5. For each browser request, validate authority and method, authorize the opened
+   target against the grant, and stream its original bytes.
 
-Repeating the same request is a successful no-op that returns the existing
-session. A different root is a different session because it changes
-root-relative resource resolution and the authorized file set. Different
-authorized routes to one symlink target are also distinct because they change
-document-relative resolution.
+### Review lifecycle (implemented)
 
-### Serve a browser request
+1. The private v4 protocol snapshots an existing raw identity and lazily
+   acquires or resumes its review listeners; it never accepts a root or entry.
+   Both isolated origins pass readiness before an in-memory record commits.
+   Live reuse retains origins; stopped resume retains the review ID and receives
+   fresh origins. The public `review` command returns only after both are ready.
+2. The shell displays instrumented review content. Element selection reports
+   bounded untrusted context; the shell owns the editor and durable draft call.
+3. Send commits ordered feedback events. Send & End also closes the review
+   origins after committing the final response, without acknowledging delivery.
+4. `feedback <review>` reads immediately or waits for new events. An optional
+   `--after` first acknowledges a previously returned cursor.
+5. The CLI emits one bounded result. Cancelling a waiter changes neither cursor
+   nor stored event state.
 
-1. The session listener validates the `Host` and method.
-2. It decodes the requested relative path exactly once.
-3. It resolves the final filesystem target and verifies that it remains under
-   the canonical session root, including through symlinks.
-4. It rejects directory requests rather than inventing index or fallback
-   behavior.
-5. It fences the opened descriptor against path replacement by comparing
-   device and inode metadata after open.
-6. It streams the file with the correct content type and without body
-   transformation. The request fiber remains alive until the native stream
-   closes.
+### Edit-review loop (accepted next slice)
 
-Query strings do not participate in filesystem lookup. URL fragments never
-reach the server and remain available to the page.
+1. A ready review observes its original selected entry outside the raw request
+   path.
+2. After an authorized read confirms a new byte revision, the trusted shell is
+   notified and reloads its content iframe.
+3. The replacement entry is transformed and completes authenticated probe
+   readiness. The shell then re-enables annotation with durable old-revision
+   drafts intact and stale DOM selection state cleared.
+4. The human sends another batch; the agent acknowledges the prior cursor,
+   applies the next edit, and waits again. The raw URL and its consumers are not
+   pushed or reloaded by this flow.
 
-### Stop and recover
+### Stop and recovery
 
-Stopping a missing or already stopped session succeeds as an idempotent no-op.
-`stop --all` first closes every content listener, acknowledges the result, then
-closes the supervisor; the client confirms that the old socket owner is gone.
-An empty supervisor otherwise closes after a bounded idle period. A refused
-stale socket is recovered only after acquiring the lifetime ownership lock.
-That lock remains held until the old listener has fully closed, so transient
-failures and graceful shutdown cannot trigger an overlapping replacement.
+Stopping a raw session closes its live review listeners before the raw listener
+but preserves durable review records. `stop --all` closes every live listener,
+then the private control socket; it does not discard annotation data. A later
+feedback/delete operation may start a supervisor to load retained state. A
+refused stale socket is reclaimed only under the lifetime ownership lock.
 
-## Invariants
+## Release invariants
 
-1. **Raw file bodies are unmodified.** A successful `200 GET` body is
-   byte-for-byte the source file selected after safe path resolution. `HEAD`
-   and conditional responses follow HTTP semantics without transforming it.
-2. **Browser independence.** No core package depends on or assumes a particular
-   browser controller, profile, or debugging protocol.
-3. **Loopback only.** Version one has no LAN or public bind mode.
-4. **The root is the grant.** A session may read permitted files beneath its
-   canonical root and cannot read a resolved target outside it. No broader root
-   is inferred; roots containing the home or runtime state are rejected.
-5. **No source mutation.** Serving, listing, stopping, and future annotations
-   never alter the served project.
-6. **Ready before output.** A successful `serve` result means its URL already
-   accepts requests.
-7. **Structured agent contract.** Domain results are format-neutral. Stdout is
-   TOON by default or logically equivalent JSON with `--json`; progress and
-   internal diagnostics stay on stderr.
-8. **Explicit lifecycle.** Sessions are observable and stoppable, and abandoned
-   supervisors clean themselves up.
-9. **Authoritative control ownership.** One lifetime lock fences the supervisor
-   that owns the private socket. Transient control failure cannot erase or
-   replace that owner.
-10. **Optional layers cannot weaken the core.** A later review or annotation
-    route may transform its own representation but cannot alter raw-route
-    behavior or security checks.
+1. **Raw file bodies are unmodified.** Successful raw GET bodies are the bytes
+   of the safely opened source file; HEAD and conditional responses do not
+   transform them.
+2. **Browser tools stay external.** The runtime assumes no controller, profile,
+   or debugging protocol.
+3. **Browser-facing listeners are loopback-only.** `0.1.0` has no public-bind
+   escape hatch.
+4. **The root is the grant.** Every target stays beneath it; home/ancestor roots
+   and any private-state overlap are rejected.
+5. **No source mutation.** No command or browser workflow writes into the grant.
+6. **Ready before output.** Successful serve/review results name accepting URLs.
+7. **Domain results stay structured.** TOON is default, JSON is logically
+   equivalent, native CLI text is separate, and logs never use stdout.
+8. **Lifecycle is explicit and owned.** Sessions are observable, stoppable, and
+   cleaned through scoped idempotent finalization.
+9. **Control ownership is authoritative.** A transient socket failure cannot
+   erase or replace its live owner.
+10. **Review cannot weaken raw serving.** It adds separate origins and state only.
+11. **Comments stay outside authored authority.** Target metadata remains
+    untrusted; typed text and mutation routes stay shell-owned.
+12. **Feedback loss requires explicit intent.** Reads are non-destructive and
+    deletion of pending work requires acknowledgement or discard.
+13. **Diagnostics are isolated and content-free.** They stay bounded/private and
+    never carry feedback or untrusted content.
+14. **Automatic refresh is review-only.** Entry observation may reload the
+    trusted shell's iframe, but it cannot alter raw responses, add a raw
+    notification route, or claim control of already-loaded raw consumers.
 
 ## State and concurrency
 
-At most one healthy supervisor owns the deterministic per-user control socket.
-Its directory is `0700` and the socket is `0600`; there is no persisted control
-credential. An owner-fenced inter-process lock is held for the supervisor's
-full lifetime; it serializes startup and confines stale-socket removal. Lock
-acquisition and transfer are scoped Effect resources: 50 ms observation uses
-`Schedule`/`Clock`, owner-record replacement and finalizer registration are one
-uninterruptible transition, and release remains nonce-fenced. Health includes
-protocol, version, instance, and process identity; mismatches are never replaced
-silently. Content-listener host labels and ports belong to session state and are
-never caller-selected. Each content listener owns a scoped request-fiber set;
-listener shutdown closes active connections and interrupts any remaining
-request work before the session scope is released.
+Supervisor lifecycle mutations are serialized. Session acquisition holds one
+permit across reuse, capacity, listener readiness, and registry commit; static
+file reads do not hold that registry-wide permit after a snapshot is authorized.
+Each session and listener owns its request fibers so shutdown can interrupt and
+release active work.
 
-The registry permits at most 32 live sessions. A FIFO single-permit Effect
-semaphore keeps reuse, capacity, listener readiness, and registry commit atomic.
-Each pending session owns a child scope that is closed on failed readiness,
-targeted stop, or registry shutdown. Listing selects optional fields at the
-control seam, keeping complete enumeration within the bounded response contract
-without pagination.
+The supervisor admits at most 32 live raw sessions and retains at most 128
+non-tombstone review summaries. Fresh random authorities are never intentionally
+reused after a lifecycle ends, isolating cookies, storage, caches, and service
+workers. Raw and review lifecycle mutations share one serialization boundary;
+target review mutations are serialized per review, and at most one foreground
+feedback wait is active for each review. The automatic-refresh slice adds at
+most one selected-entry observer per ready review and bounded shell
+notification work; its exact cadence, coalescing, request/subscription limits,
+and reconnect policy must be recorded with implementation evidence before
+release.
 
-The control listener and its request-fiber set share one scope. Control body
-reads are cancellable and remove native listeners on completion, failure, or
-interruption. Idle shutdown is a supervised Clock-driven fiber; each request or
-session change invalidates an older expiry before the queued close rechecks the
-current state. Shutdown rejects new mutations and attempts cleanup of idle work,
-session scopes, control work, and lifetime ownership even when an earlier
-finalizer fails.
-
-Session mutations are serialized inside the supervisor. Static file reads do
-not require registry-wide locking after a session snapshot has been validated.
-
-Every session listener binds to `127.0.0.1` and issues a cryptographically
-random `h-<random>.localhost` hostname. Exact host-and-port validation prevents
-other localhost authorities from reaching content. Session labels are never
-reused after stop; at least 128 random bits make accidental reuse negligible
-without an unbounded tombstone registry. This isolates same-host cookies and
-origin-keyed state from concurrent services and later port reuse.
+Exact body, connection, timer, and state limits are implementation constants in
+[Security validation](docs/SECURITY_VALIDATION.md), not user-facing tuning
+flags.
 
 ## Start-here code map
 
-- `src/cli.ts` is the executable entry and process-I/O boundary.
-- `src/app.ts` dispatches parsed commands and builds format-neutral results.
-- `src/command.ts` owns strict syntax, flag, field, and usage validation.
-- `src/contracts.ts` owns JSON-compatible result and usage-error types.
-- `src/errors.ts` owns tagged operational failures and their exhaustive safe
-  public projection; unknown defects remain outside that union.
-- `src/output.ts` is the only TOON/JSON encoding boundary.
-- `src/version.ts` is the release version surfaced by the CLI and supervisor.
-- `src/serving/grant.ts` validates and canonicalizes the entry/root disclosure
-  grant.
-- `src/serving/http.ts` owns the byte-faithful confined HTTP handler and
-  per-session content listener.
-- `src/supervisor/server.ts` owns private socket control, serialized session
-  mutation, idle shutdown, and graceful cleanup.
-- `src/supervisor/client.ts` discovers, verifies, starts, and calls the detached
-  supervisor.
-- `src/supervisor/protocol.ts` is the runtime-validated source of truth for
-  control requests, responses, wire errors, identities, and session summaries.
-- `src/supervisor/state.ts` owns private socket paths, bounded private records,
-  and the scoped lifetime ownership lock that serializes startup and stale
-  recovery.
-- `src/service.ts` translates CLI intent into grant and supervisor operations.
-- `test/` holds Vitest unit and integration coverage, including Effect scopes,
-  clocks, schemas, native HTTP, and TOON v3.3 conformance.
-- `test-e2e/` holds black-box executable and detached-process lifecycle tests.
-- `scripts/build.mjs` creates and validates the two minified executable bundles
-  and external source maps, rejecting undeclared imports and unlicensed bundled
-  dependency drift.
-- `scripts/build-publication.mjs` owns content-address verification, immutable
-  generation installation, package-generation checks, and atomic activation
-  through the stable `dist/cli.js` launcher. Its internal pre-activation seam
-  gives deterministic fault and concurrency validation the same publication
-  implementation as production.
-- `validation/browser-origin/` holds browser behavior evidence and remains
-  outside the runtime.
-- `validation/interoperability/` passes real CLI-returned URLs to independent
-  browser controllers without adding them to the runtime.
-- `validation/package/` verifies reproducible pack/install/reinstall/uninstall
-  behavior, exact package contents, and detached cleanup on macOS/current
-  platform and Node 22 Linux.
+- `src/cli.ts`: executable entry and process-I/O boundary.
+- `src/app.ts`: Effect CLI grammar, dispatch, and format-neutral result assembly.
+- `src/diagnostics.ts`: closed diagnostic events and validated foreground sink.
+- `src/service.ts`: command intent to grant/supervisor operations.
+- `src/contracts.ts`, `src/errors.ts`, `src/output.ts`: domain values, tagged
+  public failures, and the serialization boundary.
+- `src/serving/grant.ts`, `src/serving/authorized-file.ts`: disclosure grant and
+  scope-bound authorized reads.
+- `src/serving/listener.ts`: scoped numeric-loopback listener mechanics.
+- `src/serving/http.ts`: byte-faithful raw HTTP policy and response assembly.
+- `src/serving/review.ts`: isolated review-origin routing, browser authorization,
+  state projection, and durable mutation bridge.
+- `src/serving/instrumented-entry.ts`: byte-preserving selected-entry probe
+  insertion and explicit instrumentation limitations.
+- `src/serving/review-assets.ts`, `src/serving/review-browser-protocol.ts`:
+  immutable trusted-shell/probe assets and strict browser request schemas.
+- `src/supervisor/protocol.ts`: validated private wire contract.
+- `src/supervisor/client.ts`, `src/supervisor/server.ts`: supervisor discovery,
+  ownership, control, session registry, and cleanup.
+- `src/supervisor/state.ts`, `src/supervisor/logging.ts`: private paths,
+  records, lifetime lock, and bounded diagnostic persistence.
+- `src/supervisor/supervisor-main.ts`: detached runtime, diagnostic layer, and
+  sanitized process-failure boundary.
+- `test/`: unit/integration tests with Vitest and `@effect/vitest`.
+- `test-e2e/`: black-box executable and detached-process lifecycle tests.
+- `validation/`: browser-origin, controller interoperability, build,
+  documentation, and installed-package release evidence.
+- `scripts/build.mjs`, `scripts/build-publication.mjs`: standalone bundles and
+  atomic content-addressed artifact publication.
 
-Avoid a generic plugin or browser-adapter layer without a current second
-implementation.
+Do not add a generic browser-adapter or plugin layer without a current second
+implementation. Add a nested review architecture document only after that
+subsystem exists in code.
 
-## Related decisions
+## Related documents
 
-- [ADR 0001: Separate serving from browser control](docs/decisions/0001-separate-serving-from-browser-control.md)
-- [ADR 0002: Use a per-user loopback supervisor](docs/decisions/0002-per-user-loopback-supervisor.md)
-- [ADR 0003: Adopt an AXI output contract](docs/decisions/0003-adopt-an-axi-output-contract.md)
-- [ADR 0004: Treat the serving root as a disclosure grant](docs/decisions/0004-treat-the-serving-root-as-a-disclosure-grant.md)
-- [ADR 0005: Use Node.js, TypeScript, pnpm, and the npm registry](docs/decisions/0005-use-node-typescript-pnpm-and-the-npm-registry.md)
-- [ADR 0006: Use a private Unix-domain control socket](docs/decisions/0006-use-a-private-control-socket.md)
-- [ADR 0007: Adopt Effect v4 as the execution model](docs/decisions/0007-adopt-effect-v4.md)
-- [Agent-facing CLI contract](docs/CLI.md)
-- [Threat model](docs/THREAT_MODEL.md)
+- [Documentation map](docs/README.md)
+- [Domain language](CONTEXT.md)
+- [CLI contract](docs/CLI.md)
+- [Threat Model](docs/THREAT_MODEL.md)
+- [Decision index](docs/decisions/README.md)

@@ -2,6 +2,9 @@
 
 - Status: Accepted
 - Date: 2026-07-15
+- Amended: 2026-07-16 for [ADR 0008](0008-separate-raw-serving-from-instrumented-review.md)
+  and [ADR 0009](0009-adopt-effect-cli-and-logging.md), making private-state/grant
+  exclusion symmetric
 
 ## Context
 
@@ -32,9 +35,11 @@ page is untrusted or the surrounding project contains secrets. No command may
 infer a root broader than the entry's parent.
 
 Version one rejects a canonical root equal to or broader than the user's home
-directory. It also rejects a root containing htmlview's runtime state
-directory. These are root-level authorization constraints, not filename
-denylists: directories below the home directory remain ordinary valid grants.
+directory. It also rejects any canonical overlap between the serving root and
+htmlview's private state directory: neither may equal, contain, or be contained
+by the other. These are root-level authorization constraints, not filename
+denylists. Directories below the home directory remain ordinary valid grants
+when they are disjoint from private state.
 
 ## Consequences
 
@@ -48,6 +53,9 @@ denylists: directories below the home directory remain ordinary valid grants.
   they are inside the selected root.
 - Broad home disclosure must be narrowed by moving the entry and assets into a
   dedicated subdirectory; version one has no override for this safety check.
+- Runtime, annotation, and diagnostic-log writes therefore cannot occur inside
+  a serving grant, and private state cannot be disclosed by selecting one of
+  its descendants as a root.
 
 ## Rejected alternatives
 

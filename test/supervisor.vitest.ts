@@ -1,4 +1,4 @@
-import { mkdtemp, rm, stat } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, stat, writeFile } from "node:fs/promises";
 import { request } from "node:http";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -6,6 +6,7 @@ import { expect, it } from "@effect/vitest";
 import { Effect, Exit, Fiber, FiberSet, Scope } from "effect";
 import { TestClock } from "effect/testing";
 import {
+  generateReviewId,
   generateSessionId,
   runSupervisor,
   startSupervisor,
@@ -25,6 +26,17 @@ function exists(pathname: string): Effect.Effect<boolean> {
   );
 }
 
+function removeTemporaryDirectory(directory: string): Effect.Effect<void> {
+  return Effect.promise(() =>
+    rm(directory, {
+      recursive: true,
+      force: true,
+      maxRetries: 3,
+      retryDelay: 10,
+    }),
+  );
+}
+
 function waitUntilMissing(pathname: string): Effect.Effect<boolean> {
   return Effect.gen(function* () {
     for (let attempt = 0; attempt < 20; attempt += 1) {
@@ -39,10 +51,10 @@ function waitUntilMissing(pathname: string): Effect.Effect<boolean> {
 
 function waitUntilPresent(pathname: string): Effect.Effect<boolean> {
   return Effect.gen(function* () {
-    for (let attempt = 0; attempt < 100; attempt += 1) {
+    for (let attempt = 0; attempt < 200; attempt += 1) {
       if (yield* exists(pathname)) return true;
       yield* Effect.promise(
-        () => new Promise<void>((resolve) => setImmediate(resolve)),
+        () => new Promise<void>((resolve) => setTimeout(resolve, 5)),
       );
     }
     return false;
@@ -79,6 +91,12 @@ it("never returns a session identifier that parses as a flag", () => {
   expect(id.startsWith("-")).toBe(false);
 });
 
+it("generates stable review locators with 128 random bits", () => {
+  const ids = new Set(Array.from({ length: 1_000 }, () => generateReviewId()));
+  expect(ids.size).toBe(1_000);
+  for (const id of ids) expect(id).toMatch(/^rv_[A-Za-z0-9_-]{22}$/);
+});
+
 it.effect("uses the test clock for idle supervisor shutdown", () =>
   Effect.acquireUseRelease(
     Effect.promise(() => mkdtemp(path.join(tmpdir(), "htmlview-idle-clock-"))),
@@ -106,8 +124,7 @@ it.effect("uses the test clock for idle supervisor shutdown", () =>
           }),
         );
       }),
-    (parent) =>
-      Effect.promise(() => rm(parent, { recursive: true, force: true })),
+    removeTemporaryDirectory,
   ),
 );
 
@@ -127,9 +144,36 @@ it.effect("closes the supervisor when its root scope is interrupted", () =>
         expect(yield* exists(paths.controlSocket)).toBe(false);
         expect(yield* exists(paths.supervisorLock)).toBe(false);
       }),
-    (parent) =>
-      Effect.promise(() => rm(parent, { recursive: true, force: true })),
+    removeTemporaryDirectory,
   ),
+);
+
+it.effect(
+  "fails startup closed and releases ownership for corrupt annotations",
+  () =>
+    Effect.acquireUseRelease(
+      Effect.promise(() =>
+        mkdtemp(path.join(tmpdir(), "htmlview-corrupt-state-")),
+      ),
+      (parent) =>
+        Effect.gen(function* () {
+          const paths = statePaths({
+            HTMLVIEW_STATE_DIR: path.join(parent, "state"),
+          });
+          yield* ensurePrivateStateDirectory(paths);
+          yield* Effect.promise(() =>
+            mkdir(paths.annotationDirectory, { mode: 0o700 }),
+          );
+          yield* Effect.promise(() =>
+            writeFile(paths.annotationFile, "{", { mode: 0o600 }),
+          );
+          const failure = yield* startSupervisor({ paths }).pipe(Effect.flip);
+          expect(failure.phase).toBe("startup");
+          expect(yield* exists(paths.controlSocket)).toBe(false);
+          expect(yield* exists(paths.supervisorLock)).toBe(false);
+        }),
+      removeTemporaryDirectory,
+    ),
 );
 
 it.effect(
@@ -167,8 +211,7 @@ it.effect(
             }),
           );
         }),
-      (parent) =>
-        Effect.promise(() => rm(parent, { recursive: true, force: true })),
+      removeTemporaryDirectory,
     ),
 );
 
@@ -224,7 +267,6 @@ it.effect(
             }),
           );
         }),
-      (parent) =>
-        Effect.promise(() => rm(parent, { recursive: true, force: true })),
+      removeTemporaryDirectory,
     ),
 );

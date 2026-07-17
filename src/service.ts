@@ -5,16 +5,27 @@ import { resolveServingGrant } from "./serving/grant.js";
 import { SupervisorClient } from "./supervisor/client.js";
 import type {
   OptionalSessionField,
-  SessionSummary,
+  SupervisorStateResult,
 } from "./supervisor/protocol.js";
 
 export interface CommandServiceShape {
-  readonly listSessions: (
+  readonly listState: (
     fields?: readonly OptionalSessionField[],
-  ) => Effect.Effect<readonly SessionSummary[], OperationalError>;
+  ) => Effect.Effect<SupervisorStateResult, OperationalError>;
   readonly serve: (
     entry: string,
     root?: string,
+  ) => Effect.Effect<JsonObject, OperationalError>;
+  readonly review: (
+    session: string,
+  ) => Effect.Effect<JsonObject, OperationalError>;
+  readonly feedback: (
+    review: string,
+    options?: { readonly wait?: boolean; readonly after?: number },
+  ) => Effect.Effect<JsonObject, OperationalError>;
+  readonly deleteReview: (
+    review: string,
+    discardFeedback: boolean,
   ) => Effect.Effect<JsonObject, OperationalError>;
   readonly stopSession: (
     session: string,
@@ -30,7 +41,7 @@ export class CommandService extends Context.Service<
 export function makeCommandService(): CommandServiceShape {
   const supervisor = new SupervisorClient();
   return {
-    listSessions: (fields = []) => supervisor.list(fields),
+    listState: (fields = []) => supervisor.listState(fields),
     serve: (entry, root) =>
       Effect.gen(function* () {
         const grant = yield* resolveServingGrant(
@@ -51,6 +62,35 @@ export function makeCommandService(): CommandServiceShape {
           },
         };
       }),
+    review: (session) =>
+      supervisor.review(session).pipe(
+        Effect.map((result) => ({
+          review: result.review,
+          session: result.session,
+          grant: result.grant,
+          fidelity: result.fidelity,
+        })),
+      ),
+    feedback: (review, options = {}) =>
+      supervisor.feedback(review, options).pipe(
+        Effect.map((result) => ({
+          review: result.review,
+          cursor: result.cursor,
+          count: result.count,
+          feedback: [...result.feedback],
+        })),
+      ),
+    deleteReview: (review, discardFeedback) =>
+      supervisor.deleteReview(review, discardFeedback).pipe(
+        Effect.map((result) => ({
+          delete: {
+            review: result.delete.review,
+            deleted: result.delete.deleted,
+            status: result.delete.status,
+            discarded: result.delete.discarded,
+          },
+        })),
+      ),
     stopSession: (session) =>
       supervisor.stopSession(session).pipe(
         Effect.map((result) => ({

@@ -13,6 +13,7 @@ import {
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
+import { marked } from "marked";
 
 const execute = promisify(execFile);
 const repository = process.cwd();
@@ -154,12 +155,14 @@ try {
     assert.equal(paths.has(required), true, `package is missing ${required}`);
   const exactFiles = new Set([
     "ARCHITECTURE.md",
+    "CONTEXT.md",
     "LICENSE",
     "README.md",
     "THIRD_PARTY_NOTICES.md",
     "dist/cli.js",
     ...generationArtifacts,
     "docs/CLI.md",
+    "docs/README.md",
     "docs/decisions/0001-separate-serving-from-browser-control.md",
     "docs/decisions/0002-per-user-loopback-supervisor.md",
     "docs/decisions/0003-adopt-an-axi-output-contract.md",
@@ -167,6 +170,9 @@ try {
     "docs/decisions/0005-use-node-typescript-pnpm-and-the-npm-registry.md",
     "docs/decisions/0006-use-a-private-control-socket.md",
     "docs/decisions/0007-adopt-effect-v4.md",
+    "docs/decisions/0008-separate-raw-serving-from-instrumented-review.md",
+    "docs/decisions/0009-adopt-effect-cli-and-logging.md",
+    "docs/decisions/README.md",
     "docs/INSTALL.md",
     "docs/INTEROPERABILITY.md",
     "docs/PRODUCT.md",
@@ -182,6 +188,29 @@ try {
       `package contains unexpected file ${file}`,
     );
   assert.equal(paths.size, exactFiles.size, "package file set is incomplete");
+  for (const file of [...paths].filter((candidate) =>
+    candidate.endsWith(".md"),
+  )) {
+    const contents = await readFile(path.join(source, file), "utf8");
+    marked.walkTokens(marked.lexer(contents), (token) => {
+      if (token.type !== "link" && token.type !== "image") return;
+      const reference = token.href.split("#", 1)[0] ?? "";
+      if (
+        reference === "" ||
+        /^[a-z]+:/i.test(reference) ||
+        reference.startsWith("//")
+      )
+        return;
+      const target = path.posix.normalize(
+        path.posix.join(path.posix.dirname(file), decodeURI(reference)),
+      );
+      assert.equal(
+        paths.has(target),
+        true,
+        `packaged document ${file} links to excluded ${target}`,
+      );
+    });
+  }
   for (const sourceMap of [
     `${generation}/cli.js.map`,
     `${generation}/supervisor-main.js.map`,
@@ -241,12 +270,9 @@ try {
   );
 
   await consumerNpm(["install", "--global", tarball, "--prefix", prefix]);
-  const version = await installed(["--version", "--json"]);
+  const version = await installed(["--version"]);
   assert.equal(version.stderr, "");
-  assert.deepEqual(JSON.parse(version.stdout), {
-    command: "htmlview",
-    version: packageMetadata.version,
-  });
+  assert.equal(version.stdout, `htmlview v${packageMetadata.version}\n`);
   const empty = JSON.parse((await installed(["--json"])).stdout);
   assert.equal(empty.count, 0);
 
@@ -273,8 +299,8 @@ try {
 
   await consumerNpm(["install", "--global", tarball, "--prefix", prefix]);
   assert.equal(
-    JSON.parse((await installed(["--version", "--json"])).stdout).version,
-    packageMetadata.version,
+    (await installed(["--version"])).stdout,
+    `htmlview v${packageMetadata.version}\n`,
   );
 
   await consumerNpm([

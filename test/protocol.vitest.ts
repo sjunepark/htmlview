@@ -4,20 +4,34 @@ import { describe, it } from "vitest";
 import { Result } from "effect";
 import {
   decodeControlError,
+  decodeCreateReviewRequest,
   decodeCreateSessionRequest,
+  decodeDeleteReviewControlResult,
+  decodeDeleteReviewRequest,
+  decodeFeedbackControlResult,
+  decodeFeedbackRequest,
   decodeCurrentSupervisorIdentity,
   decodeServeControlResult,
+  decodeReviewControlResult,
   decodeSessionFieldSelection,
   decodeSessionListResult,
+  decodeSupervisorStateResult,
   decodeShutdownRequest,
   decodeStopControlResult,
   decodeStopSessionRequest,
   decodeSupervisorIdentity,
   decodeTargetedStopControlResult,
   encodeControlError,
+  encodeCreateReviewRequest,
   encodeCreateSessionRequest,
+  encodeDeleteReviewControlResult,
+  encodeDeleteReviewRequest,
+  encodeFeedbackControlResult,
+  encodeFeedbackRequest,
   encodeServeControlResult,
+  encodeReviewControlResult,
   encodeSessionListResult,
+  encodeSupervisorStateResult,
   encodeShutdownRequest,
   encodeStopControlResult,
   encodeStopSessionRequest,
@@ -26,6 +40,7 @@ import {
   maximumConcurrentSessions,
   maximumControlBodyBytes,
   maximumControlResponseBytes,
+  maximumRetainedReviews,
   supervisorProtocol,
 } from "../src/supervisor/protocol.js";
 
@@ -45,6 +60,29 @@ const session = {
   url: "http://h-0123456789abcdef0123456789abcdef.localhost:4321/report.html",
   entry: "/tmp/report.html",
   root: "/tmp",
+};
+
+const review = {
+  id: "rv_0123456789abcdefABCDEF",
+  status: "ready" as const,
+  session: session.id,
+  drafts: 0,
+  unacknowledged: 0,
+};
+
+const reviewResult = {
+  review: {
+    id: review.id,
+    status: "ready" as const,
+    url: "http://r-fedcba9876543210fedcba9876543210.localhost:4322/",
+    reused: false,
+  },
+  session: { id: session.id, url: session.url },
+  grant: {
+    root: session.root,
+    access: "read_all_regular_files_beneath_root" as const,
+  },
+  fidelity: "instrumented_review" as const,
 };
 
 describe("control protocol schemas", () => {
@@ -76,14 +114,56 @@ describe("control protocol schemas", () => {
     );
     assert.equal(stop.session, "arbitrary-missing-selector");
     assert.deepEqual(
+      accepted(
+        decodeCreateReviewRequest(
+          encodeCreateReviewRequest({ session: "arbitrary-missing-selector" }),
+        ),
+      ),
+      { session: "arbitrary-missing-selector" },
+    );
+    assert.deepEqual(
       accepted(decodeShutdownRequest(encodeShutdownRequest({}))),
       {},
+    );
+    assert.deepEqual(
+      accepted(
+        decodeFeedbackRequest(
+          encodeFeedbackRequest({
+            review: "arbitrary-missing-selector",
+            wait: true,
+            after: 2,
+          }),
+        ),
+      ),
+      { review: "arbitrary-missing-selector", wait: true, after: 2 },
+    );
+    assert.deepEqual(
+      accepted(
+        decodeDeleteReviewRequest(
+          encodeDeleteReviewRequest({
+            review: "arbitrary-missing-selector",
+            discardFeedback: true,
+          }),
+        ),
+      ),
+      { review: "arbitrary-missing-selector", discardFeedback: true },
     );
 
     const listed = accepted(
       decodeSessionListResult(encodeSessionListResult({ sessions: [session] })),
     );
     assert.deepEqual(listed.sessions, [session]);
+    assert.deepEqual(
+      accepted(
+        decodeSupervisorStateResult(
+          encodeSupervisorStateResult({
+            sessions: [session],
+            reviews: [review],
+          }),
+        ),
+      ),
+      { sessions: [session], reviews: [review] },
+    );
 
     const served = accepted(
       decodeServeControlResult(
@@ -93,9 +173,51 @@ describe("control protocol schemas", () => {
     assert.deepEqual(served, { session, reused: false });
     assert.deepEqual(
       accepted(
+        decodeReviewControlResult(encodeReviewControlResult(reviewResult)),
+      ),
+      reviewResult,
+    );
+    assert.deepEqual(
+      accepted(
         decodeStopControlResult(encodeStopControlResult({ stopped: 1 })),
       ),
       { stopped: 1 },
+    );
+    const feedback = {
+      review: { id: review.id, status: "ready" as const },
+      cursor: 1,
+      count: 1,
+      feedback: [
+        {
+          id: "fb_0123456789abcdefABCDEF",
+          kind: "freeform" as const,
+          comment: "Move the action",
+          entry: "/report.html",
+          revision: `sha256:${"0".repeat(64)}`,
+        },
+      ],
+    };
+    assert.deepEqual(
+      accepted(
+        decodeFeedbackControlResult(encodeFeedbackControlResult(feedback)),
+      ),
+      feedback,
+    );
+    const deleted = {
+      delete: {
+        review: review.id,
+        deleted: 1 as const,
+        status: "deleted" as const,
+        discarded: { drafts: 1, feedback: 2 },
+      },
+    };
+    assert.deepEqual(
+      accepted(
+        decodeDeleteReviewControlResult(
+          encodeDeleteReviewControlResult(deleted),
+        ),
+      ),
+      deleted,
     );
 
     const error = {
@@ -107,6 +229,17 @@ describe("control protocol schemas", () => {
     assert.deepEqual(
       accepted(decodeControlError(encodeControlError(error))),
       error,
+    );
+    const pending = {
+      error: {
+        code: "review.pending_feedback" as const,
+        message: "Pending feedback remains",
+        details: { drafts: 1, unacknowledged: 2 },
+      },
+    };
+    assert.deepEqual(
+      accepted(decodeControlError(encodeControlError(pending))),
+      pending,
     );
   });
 
@@ -131,6 +264,9 @@ describe("control protocol schemas", () => {
       { sessions: [{ ...session, id: "-B3_-xYz" }] },
       { sessions: [{ ...session, status: "starting" }] },
       { sessions: [{ ...session, url: "http://example.com/report.html" }] },
+      { sessions: [{ ...session, url: `${session.url}?query=forbidden` }] },
+      { sessions: [{ ...session, url: `${session.url}#fragment` }] },
+      { sessions: [{ ...session, url: session.url.replace("h-", "H-") }] },
       {
         sessions: Array.from(
           { length: maximumConcurrentSessions + 1 },
@@ -139,6 +275,50 @@ describe("control protocol schemas", () => {
       },
     ])
       rejected(decodeSessionListResult(value));
+
+    for (const value of [
+      {},
+      { sessions: [], reviews: [], extra: true },
+      { sessions: [], reviews: [{ ...review, id: "rv_bad" }] },
+      { sessions: [], reviews: [{ ...review, status: "pending" }] },
+      { sessions: [], reviews: [{ ...review, drafts: -1 }] },
+      {
+        sessions: [],
+        reviews: Array.from(
+          { length: maximumRetainedReviews + 1 },
+          () => review,
+        ),
+      },
+    ])
+      rejected(decodeSupervisorStateResult(value));
+
+    for (const value of [
+      {},
+      { ...reviewResult, extra: true },
+      {
+        ...reviewResult,
+        review: { ...reviewResult.review, url: session.url },
+      },
+      {
+        ...reviewResult,
+        review: {
+          ...reviewResult.review,
+          url: `${reviewResult.review.url}?query=forbidden`,
+        },
+      },
+      {
+        ...reviewResult,
+        review: {
+          ...reviewResult.review,
+          url: reviewResult.review.url.replace("r-", "R-"),
+        },
+      },
+      {
+        ...reviewResult,
+        fidelity: "raw",
+      },
+    ])
+      rejected(decodeReviewControlResult(value));
 
     for (const value of [
       {},
@@ -210,5 +390,23 @@ describe("control protocol schemas", () => {
     rejected(decodeShutdownRequest({ extra: true }));
     rejected(decodeSessionFieldSelection(["entry", "entry"]));
     rejected(decodeSessionFieldSelection(["unknown"]));
+    assert.deepEqual(
+      accepted(decodeCreateReviewRequest({ session: "short" })),
+      { session: "short" },
+    );
+    rejected(decodeCreateReviewRequest({ session: session.id, extra: true }));
+    rejected(
+      decodeFeedbackRequest({ review: review.id, wait: false, after: -1 }),
+    );
+    rejected(
+      decodeFeedbackRequest({ review: review.id, wait: false, extra: true }),
+    );
+    rejected(
+      decodeDeleteReviewRequest({
+        review: review.id,
+        discardFeedback: false,
+        extra: true,
+      }),
+    );
   });
 });

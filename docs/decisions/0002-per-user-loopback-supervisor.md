@@ -2,6 +2,12 @@
 
 - Status: Accepted
 - Date: 2026-07-15
+- Extended by: [ADR 0008](0008-separate-raw-serving-from-instrumented-review.md)
+
+## Current applicability
+
+“Session” in the original decision below means the raw session. ADR 0008 adds
+review listeners as optional children without changing raw listener ownership.
 
 ## Context
 

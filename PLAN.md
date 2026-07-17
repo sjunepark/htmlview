@@ -1,60 +1,93 @@
-# Implementation Plan
+# Implementation plan
+
+- Updated: 2026-07-17
+- Release target: `0.1.0`
+- Publication status: unpublished
 
 ## Goal
 
-Deliver a small agent-facing CLI that turns a local HTML entry and explicitly
-granted directory root into a byte-faithful, confined loopback HTTP URL.
-Browser tools remain separate, interchangeable dependencies chosen by the
-caller.
+Deliver a browser-neutral CLI that turns an explicitly granted local HTML tree
+into a byte-faithful loopback URL and, on request, provides a separate human
+review surface whose comments reach one agent as durable structured feedback.
+When that agent edits the selected entry HTML, the live review refreshes its
+own instrumented representation automatically so the human can continue the
+feedback loop without a manual reload.
 
 ## Current state
 
-The version-one raw-serving implementation and Effect v4 execution model are
-complete. The `0.1.0` artifact has not been published.
+Raw serving, the per-user supervisor, Effect execution/resource ownership, and
+the existing release gate are implemented. Human annotation is a core
+first-release feature. Its public contracts are accepted. The Effect CLI,
+native output boundary, symmetric state/grant exclusion, foreground/private
+diagnostic sinks, durable annotation delivery, and the trusted browser review
+surface are implemented. Automatic selected-entry refresh is now the next
+annotation slice; packaging and final release hardening follow it, so `0.1.0`
+is not ready to publish. The existing annotation authorization,
+hostile-content, authenticated probe-readiness, and explicit
+instrumentation-limitation matrices pass and must remain intact through the
+refresh work. Review navigation now requires a shell-minted one-use capability,
+target messages are bound to the active probe lease/revision, and stop/delete
+persistence barriers prevent ready-but-closed review records. Supervisor
+protocol mismatches are rejected explicitly without compatibility fallbacks.
 
-- Browser-origin evidence established fresh random `.localhost` names bound to
-  `127.0.0.1` for cookie, storage, cache, and service-worker isolation.
-- ADRs 0001–0007 record the browser boundary, supervisor, AXI output, serving
-  grant, toolchain, private control socket, and Effect execution model.
-- The CLI preserves byte-faithful GET/HEAD behavior, exact Host checks,
-  canonical root confinement, read-only source handling, TOON/JSON logical
-  equivalence, and explicit lifecycle control.
-- One user-private supervisor owns scoped session listeners, request work,
-  files, timers, and the lifetime lock. Client transport and detached startup
-  are cancellable and ownership-safe.
-- TypeScript tests run once under Vitest/`@effect/vitest`; native process E2E,
-  Playwright/browser-controller, and clean installed-package validations remain
-  separate release evidence.
-- The package is two minified standalone ESM executables with external source
-  maps, exact consumer documentation, bundled-dependency notices, and only
-  TOON/MIME runtime dependencies.
-- Builds validate unique staged output and publish immutable,
-  content-addressed generations behind one atomically replaced `dist/cli.js`
-  launcher. Concurrent builds retain runnable, generation-consistent artifacts
-  without a publication lock. Deterministic publication tests cover failure
-  between installation and activation, competing distinct generations, and
-  tampered generation reuse.
-- Committed examples exercise standalone, relative-asset, and explicit-root
-  workflows through source-checkout scripts and the black-box E2E suite.
-- The Effect migration comparison and final implementation details are in
-  [`docs/plans/effect-v4-adoption.md`](docs/plans/effect-v4-adoption.md).
+Documentation now has explicit ownership and current-versus-target status; see
+[`docs/README.md`](docs/README.md). There is no external blocker.
+The organized surface, contract tests, link/fragment checks, and packaged-link
+closure pass the complete current-platform `pnpm run check` gate.
 
-## Completed milestones
+| Slice                             | Status      | Detail                                                                |
+| --------------------------------- | ----------- | --------------------------------------------------------------------- |
+| Raw serving and supervisor        | Complete    | Fidelity, confinement, private control, lifecycle, packaging          |
+| Effect execution model            | Complete    | Typed failures, schemas, cancellation, scopes, release measurements   |
+| Annotation and CLI contracts      | Complete    | Product, CLI, architecture, threat model, ADRs 0008–0009              |
+| Documentation organization        | Complete    | Canonical map, ADR index, contract cleanup, validation hardening      |
+| Effect CLI and diagnostic logging | Complete    | Native CLI, private logs, measurements, and complete release evidence |
+| Annotation runtime                | In progress | Automatic selected-entry refresh is next; packaging follows           |
+| Publication                       | Pending     | Complete release matrix and explicit publish action                   |
 
-| Milestone                              | Result                                                                  |
-| -------------------------------------- | ----------------------------------------------------------------------- |
-| Browser-origin gate                    | Two independent controllers and retained-state isolation validated      |
-| Foundation and AXI contract            | Strict commands, TOON/JSON, help/errors, conformance fixtures           |
-| Faithful static serving                | Raw bytes, MIME/cache semantics, grant and adversarial confinement      |
-| Supervisor and sessions                | Private control, ownership fencing, readiness, recovery, cleanup        |
-| Agent interoperability                 | Real CLI URLs consumed by Playwright and Browser Use                    |
-| Security and release hardening         | Bounds, permissions, hostile values, macOS/Linux package lifecycle      |
-| Effect v4 adoption                     | Typed errors, schemas, scopes, cancellation, deterministic policy tests |
-| Package and documentation finalization | Exact artifact surface, licenses, metrics, architecture/security docs   |
+## Release invariants
 
-## Release validation
+- Raw entry and asset bodies remain unmodified and no operation writes into a
+  serving grant.
+- The canonical root is the complete read-disclosure grant; it and htmlview
+  private state are disjoint in both directions.
+- Browser-facing listeners bind only to loopback and validate their exact fresh
+  `.localhost` authority.
+- Supervisor control remains on the user-private Unix-domain socket under one
+  lifetime owner.
+- Domain stdout is one TOON value or logically equivalent JSON; native Effect
+  CLI text and stderr diagnostics stay separate.
+- Review uses different shell/content origins and cannot add to or change the
+  raw origin.
+- Entry-change observation belongs to the review lifecycle. It may refresh the
+  instrumented review iframe but never injects a client into the raw page or
+  claims to refresh arbitrary raw consumers.
+- Feedback is durable, one-way, cursor-delivered, and never transported through
+  logs.
 
-The release gate is:
+## Required slices
+
+### 1. Effect CLI and diagnostic logging
+
+Complete Phase 10 in
+[`docs/plans/effect-v4-adoption.md`](docs/plans/effect-v4-adoption.md). It owns
+the implementation checklist, baseline measurements, and validation matrix.
+The slice replaces the custom parser/help/dispatcher, adds stderr-only
+foreground logging and bounded private supervisor logs, and enforces symmetric
+grant/private-state exclusion before the file sink is enabled.
+
+### 2. Annotation MVP
+
+Then execute [`docs/plans/annotation-mvp.md`](docs/plans/annotation-mvp.md).
+Its phases add shared authorized reads, review lifecycle, durable feedback,
+trusted-shell/instrumented-content browser surfaces, automatic selected-entry
+refresh, and final fidelity/security hardening. Annotation is not complete when
+only the browser UI works; durable agent delivery and the edit-review loop are
+both part of the feature.
+
+## Release gate
+
+Before publication, pass:
 
 - `pnpm run check`;
 - `pnpm run validate:browser-use`;
@@ -63,26 +96,26 @@ The release gate is:
 - `pnpm run validate:docs`; and
 - `git diff --check`.
 
-Current-platform tests, E2E, seven Playwright checks, strict Effect
-diagnostics, build validation, clean install/reinstall/uninstall, Node 22 Linux
-lifecycle, Browser Use interoperability, dependency audit, and final
-implementation/diet review pass. The artifact is ready for an explicit
-publication request.
+Extend those gates with native Effect CLI/channel/logging checks first, then
+annotation origin, persistence, feedback, automatic refresh, raw-fidelity,
+adversarial, and real-browser checks. Rerun package size, cold-command,
+readiness, and idle-memory measurements after Phase 10 and account for the
+bounded refresh observer before release.
 
 ## Later work
 
-Optional human annotation remains deferred until after the raw-serving release
-is stable. Any future workflow must consume the existing raw URL, keep state
-outside served projects, preserve an uninstrumented route, and receive a
-separate fidelity and threat-model review. No annotation interface is part of
-the current release.
-
-TOON readability optimization is also deferred until after `0.1.0`. Revisit
-the quoted structural-character hardening only with evidence that supported
-decoders preserve hostile values and with size comparisons showing the default
-format remains worthwhile; retain the current hardening until then.
+TOON readability optimization remains deferred. Retain the current hostile
+structural-character hardening until supported decoders prove logical fidelity
+and a size comparison justifies changing it.
 
 ## Next action
 
-Present the validated `0.1.0` artifact for an explicit publication decision.
-Do not publish automatically.
+Implement Phase 5, automatic selected-entry refresh, in
+[`docs/plans/annotation-mvp.md`](docs/plans/annotation-mvp.md). A ready review
+must observe confirmed byte changes to its original entry, coalesce writes,
+notify its trusted shell, and reload only the instrumented iframe while leaving
+the raw route and already-loaded raw consumers untouched. Preserve drafts with
+their capture revisions; keep the last rendered review non-annotatable while
+the fixed entry pathname is unavailable. Close every observer/notification
+resource on stop, End, deletion, or failed acquisition. Then finish packaging
+and the release-command matrix. Do not publish automatically.

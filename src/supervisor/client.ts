@@ -8,14 +8,16 @@ import {
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { Clock, Data, Effect, Result, Schedule, Scope } from "effect";
+import { loadAnnotationState } from "../annotation/store.js";
 import {
   operationalError,
   PathError,
+  ReviewError,
   RuntimeStateError,
   SupervisorError,
   type OperationalError,
 } from "../errors.js";
-import { isWithinRoot } from "../serving/grant.js";
+import { canonicalTreesOverlap } from "../serving/grant.js";
 import { htmlviewVersion } from "../version.js";
 import {
   acquireSupervisorLock,
@@ -28,24 +30,36 @@ import {
 import {
   controlHost,
   decodeControlError,
+  decodeDeleteReviewControlResult,
+  decodeFeedbackControlResult,
+  decodeReviewControlResult,
   decodeServeControlResult,
   decodeSessionListResult,
+  decodeSupervisorStateResult,
   decodeStopControlResult,
   decodeTargetedStopControlResult,
   decodeSupervisorIdentity,
+  encodeCreateReviewRequest,
   encodeCreateSessionRequest,
+  encodeDeleteReviewRequest,
+  encodeFeedbackRequest,
   encodeShutdownRequest,
   encodeStopSessionRequest,
   maximumControlResponseBytes,
   supervisorProtocol,
+  type DeleteReviewControlResult,
+  type FeedbackControlResult,
   type OptionalSessionField,
+  type ReviewControlResult,
   type ServeControlResult,
   type SessionSummary,
   type StopControlResult,
   type SupervisorIdentity,
+  type SupervisorStateResult,
 } from "./protocol.js";
 
 const controlRequestTimeoutMilliseconds = 2_000;
+const reviewRequestTimeoutMilliseconds = 6_000;
 const healthRequestTimeoutMilliseconds = 500;
 const healthRetryCount = 3;
 const healthRetryDelayMilliseconds = 100;
@@ -105,11 +119,11 @@ function assertStateOutsideRoot(
           }),
       ),
     );
-    if (root === stateDirectory || isWithinRoot(root, stateDirectory))
+    if (canonicalTreesOverlap(root, stateDirectory))
       return yield* new PathError({
         code: "path.root_contains_state",
         message:
-          "Serving root cannot contain the htmlview runtime state directory",
+          "Serving root and htmlview runtime state directory must be disjoint",
       });
   });
 }
@@ -274,7 +288,10 @@ type ProbeResult =
       readonly identity: SupervisorIdentity;
     }
   | { readonly status: "absent" | "stale" | "unavailable" }
-  | { readonly status: "incompatible" };
+  | {
+      readonly status: "protocol_mismatch";
+      readonly identity: SupervisorIdentity;
+    };
 
 function probeOnce(paths: StatePaths): Effect.Effect<ProbeResult> {
   return controlRequest(
@@ -295,7 +312,7 @@ function probeOnce(paths: StatePaths): Effect.Effect<ProbeResult> {
         const decoded = decodeSupervisorIdentity(response.value);
         if (Result.isFailure(decoded)) return { status: "unavailable" };
         if (decoded.success.protocol !== supervisorProtocol)
-          return { status: "incompatible" };
+          return { status: "protocol_mismatch", identity: decoded.success };
         if (decoded.success.version !== htmlviewVersion)
           return { status: "version_mismatch", identity: decoded.success };
         return { status: "healthy", identity: decoded.success };
@@ -325,12 +342,17 @@ function probeWithRetries(paths: StatePaths): Effect.Effect<ProbeResult> {
   );
 }
 
-function incompatibleError(result: ProbeResult): SupervisorError {
-  const message =
-    result.status === "version_mismatch"
-      ? `The running htmlview supervisor uses version ${result.identity.version}; stop it before using ${htmlviewVersion}`
-      : "The running htmlview supervisor uses an incompatible control protocol";
-  return new SupervisorError({ code: "supervisor.incompatible", message });
+function mismatchError(result: ProbeResult): SupervisorError {
+  return result.status === "version_mismatch"
+    ? new SupervisorError({
+        code: "supervisor.version_mismatch",
+        message: `The running htmlview supervisor uses version ${result.identity.version}; stop it before using ${htmlviewVersion}`,
+      })
+    : new SupervisorError({
+        code: "supervisor.protocol_mismatch",
+        message:
+          "The running htmlview supervisor uses an incompatible control protocol; use the htmlview installation that started it to run stop --all before retrying",
+      });
 }
 
 function currentSupervisor(
@@ -344,9 +366,9 @@ function currentSupervisor(
       return result.identity;
     if (
       result.status === "version_mismatch" ||
-      result.status === "incompatible"
+      result.status === "protocol_mismatch"
     )
-      return yield* incompatibleError(result);
+      return yield* mismatchError(result);
     if (result.status === "unavailable")
       return yield* new SupervisorError({
         code: "supervisor.unavailable",
@@ -483,9 +505,9 @@ function waitForStartup(
       if (started.status === "healthy") return started.identity;
       if (
         started.status === "version_mismatch" ||
-        started.status === "incompatible"
+        started.status === "protocol_mismatch"
       )
-        return yield* incompatibleError(started);
+        return yield* mismatchError(started);
       return yield* new StartupPending();
     });
     return yield* attempt.pipe(
@@ -526,9 +548,9 @@ function ensureSupervisor(
       if (afterLock.status === "healthy") return afterLock.identity;
       if (
         afterLock.status === "version_mismatch" ||
-        afterLock.status === "incompatible"
+        afterLock.status === "protocol_mismatch"
       )
-        return yield* incompatibleError(afterLock);
+        return yield* mismatchError(afterLock);
       if (afterLock.status === "unavailable")
         return yield* new SupervisorError({
           code: "supervisor.unavailable",
@@ -536,6 +558,7 @@ function ensureSupervisor(
             "The htmlview supervisor is alive but temporarily unavailable",
         });
 
+      yield* loadAnnotationState(paths);
       yield* removeStaleControlSocket(paths).pipe(
         Effect.andThen(startProcess(paths, ownership.lock.nonce)),
         Effect.mapError(
@@ -613,9 +636,9 @@ function acquireOwnershipOrObserve(
         return { kind: "identity" as const, identity: result.identity };
       if (
         result.status === "version_mismatch" ||
-        result.status === "incompatible"
+        result.status === "protocol_mismatch"
       )
-        return yield* incompatibleError(result);
+        return yield* mismatchError(result);
       if (result.status === "unavailable")
         return yield* new SupervisorError({
           code: "supervisor.unavailable",
@@ -636,31 +659,38 @@ function acquireOwnershipOrObserve(
   });
 }
 
-function existingSupervisor(
+function observeSupervisorOr<A, E>(
   paths: StatePaths,
   allowVersionMismatch: boolean,
   acquireLock: AcquireSupervisorLock,
-): Effect.Effect<SupervisorIdentity | undefined, OperationalError> {
+  whenAbsent: Effect.Effect<A, E>,
+): Effect.Effect<
+  | { readonly kind: "identity"; readonly identity: SupervisorIdentity }
+  | { readonly kind: "absent"; readonly value: A },
+  OperationalError | E
+> {
   return Effect.scoped(
     Effect.gen(function* () {
       const current = yield* currentSupervisor(paths, allowVersionMismatch);
-      if (current !== undefined) return current;
+      if (current !== undefined)
+        return { kind: "identity" as const, identity: current };
 
       const ownership = yield* acquireOwnershipOrObserve(
         paths,
         allowVersionMismatch,
         acquireLock,
       );
-      if (ownership.kind === "identity") return ownership.identity;
+      if (ownership.kind === "identity") return ownership;
       const afterLock = yield* probeWithRetries(paths);
-      if (afterLock.status === "healthy") return afterLock.identity;
+      if (afterLock.status === "healthy")
+        return { kind: "identity" as const, identity: afterLock.identity };
       if (afterLock.status === "version_mismatch" && allowVersionMismatch)
-        return afterLock.identity;
+        return { kind: "identity" as const, identity: afterLock.identity };
       if (
         afterLock.status === "version_mismatch" ||
-        afterLock.status === "incompatible"
+        afterLock.status === "protocol_mismatch"
       )
-        return yield* incompatibleError(afterLock);
+        return yield* mismatchError(afterLock);
       if (afterLock.status === "unavailable")
         return yield* new SupervisorError({
           code: "supervisor.unavailable",
@@ -668,8 +698,25 @@ function existingSupervisor(
             "The htmlview supervisor is alive but temporarily unavailable",
         });
       if (afterLock.status === "stale") yield* removeStaleControlSocket(paths);
-      return undefined;
+      return { kind: "absent" as const, value: yield* whenAbsent };
     }),
+  );
+}
+
+function existingSupervisor(
+  paths: StatePaths,
+  allowVersionMismatch: boolean,
+  acquireLock: AcquireSupervisorLock,
+): Effect.Effect<SupervisorIdentity | undefined, OperationalError> {
+  return observeSupervisorOr(
+    paths,
+    allowVersionMismatch,
+    acquireLock,
+    Effect.void,
+  ).pipe(
+    Effect.map((observation) =>
+      observation.kind === "identity" ? observation.identity : undefined,
+    ),
   );
 }
 
@@ -679,6 +726,7 @@ function controlError(value: unknown, fallback: string): OperationalError {
     const error = operationalError(
       decoded.success.error.code,
       decoded.success.error.message,
+      decoded.success.error.details,
     );
     if (error !== undefined) return error;
   }
@@ -744,9 +792,16 @@ function requiredRequest<T>(
   route: string,
   decode: (value: unknown) => Result.Result<T, unknown>,
   body?: unknown,
+  timeoutMilliseconds = controlRequestTimeoutMilliseconds,
 ): Effect.Effect<T, OperationalError> {
   const request = Effect.gen(function* () {
-    const response = yield* controlRequest(paths, method, route, body);
+    const response = yield* controlRequest(
+      paths,
+      method,
+      route,
+      body,
+      timeoutMilliseconds,
+    );
     if (response.status < 200 || response.status >= 300)
       return yield* new ControlResponseStatusError({
         status: response.status,
@@ -893,6 +948,47 @@ export class SupervisorClient {
     });
   }
 
+  listState(
+    fields: readonly OptionalSessionField[] = [],
+  ): Effect.Effect<SupervisorStateResult, OperationalError> {
+    const paths = this.#paths;
+    const startProcess = this.#startProcess;
+    const acquireLock = this.#acquireLock;
+    return Effect.gen(function* () {
+      yield* ensurePrivateStateDirectory(paths);
+      const observation = yield* observeSupervisorOr(
+        paths,
+        false,
+        acquireLock,
+        loadAnnotationState(paths),
+      );
+      if (observation.kind === "absent") {
+        if (
+          observation.value.reviews.length === 0 &&
+          observation.value.tombstones.length === 0
+        )
+          return { sessions: [], reviews: [] };
+        yield* ensureSupervisor(paths, startProcess, acquireLock);
+      }
+      const query =
+        fields.length === 0
+          ? ""
+          : `?fields=${encodeURIComponent(fields.join(","))}`;
+      return yield* requiredRequest(paths, "GET", `/state${query}`, (value) => {
+        const decoded = decodeSupervisorStateResult(value);
+        if (Result.isFailure(decoded)) return decoded;
+        const expected = new Set(fields);
+        return decoded.success.sessions.every(
+          (session) =>
+            Object.hasOwn(session, "entry") === expected.has("entry") &&
+            Object.hasOwn(session, "root") === expected.has("root"),
+        )
+          ? decoded
+          : Result.fail("Session fields did not match the request");
+      });
+    });
+  }
+
   serve(
     entry: string,
     root: string,
@@ -917,6 +1013,92 @@ export class SupervisorClient {
             : Result.fail("Session grant did not match the request");
         },
         encodeCreateSessionRequest({ entry, root }),
+      );
+    });
+  }
+
+  review(
+    session: string,
+  ): Effect.Effect<ReviewControlResult, OperationalError> {
+    const paths = this.#paths;
+    const acquireLock = this.#acquireLock;
+    return Effect.gen(function* () {
+      yield* ensurePrivateStateDirectory(paths);
+      const identity = yield* existingSupervisor(paths, false, acquireLock);
+      if (identity === undefined)
+        return yield* new ReviewError({
+          code: "review.session_not_found",
+          message: "The raw session is not available",
+        });
+      return yield* requiredRequest(
+        paths,
+        "POST",
+        "/reviews",
+        (value) => {
+          const decoded = decodeReviewControlResult(value);
+          if (Result.isFailure(decoded)) return decoded;
+          return decoded.success.session.id === session
+            ? decoded
+            : Result.fail("Review session did not match the request");
+        },
+        encodeCreateReviewRequest({ session }),
+        reviewRequestTimeoutMilliseconds,
+      );
+    });
+  }
+
+  feedback(
+    review: string,
+    options: { readonly after?: number; readonly wait?: boolean } = {},
+  ): Effect.Effect<FeedbackControlResult, OperationalError> {
+    const paths = this.#paths;
+    const startProcess = this.#startProcess;
+    const acquireLock = this.#acquireLock;
+    return Effect.gen(function* () {
+      yield* ensureSupervisor(paths, startProcess, acquireLock);
+      return yield* requiredRequest(
+        paths,
+        "POST",
+        "/feedback",
+        (value) => {
+          const decoded = decodeFeedbackControlResult(value);
+          if (Result.isFailure(decoded)) return decoded;
+          return decoded.success.review.id === review &&
+            decoded.success.count === decoded.success.feedback.length
+            ? decoded
+            : Result.fail("Feedback result did not match the request");
+        },
+        encodeFeedbackRequest({
+          review,
+          wait: options.wait === true,
+          ...(options.after === undefined ? {} : { after: options.after }),
+        }),
+        options.wait === true ? 0 : controlRequestTimeoutMilliseconds,
+      );
+    });
+  }
+
+  deleteReview(
+    review: string,
+    discardFeedback: boolean,
+  ): Effect.Effect<DeleteReviewControlResult, OperationalError> {
+    const paths = this.#paths;
+    const startProcess = this.#startProcess;
+    const acquireLock = this.#acquireLock;
+    return Effect.gen(function* () {
+      yield* ensureSupervisor(paths, startProcess, acquireLock);
+      return yield* requiredRequest(
+        paths,
+        "POST",
+        "/reviews/delete",
+        (value) => {
+          const decoded = decodeDeleteReviewControlResult(value);
+          if (Result.isFailure(decoded)) return decoded;
+          return decoded.success.delete.review === review
+            ? decoded
+            : Result.fail("Deleted review did not match the request");
+        },
+        encodeDeleteReviewRequest({ review, discardFeedback }),
       );
     });
   }
