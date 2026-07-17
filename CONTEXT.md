@@ -27,7 +27,8 @@ element-targeted or freeform feedback.
 _Avoid_: Mode, annotation session
 
 **Review URL**:
-The instrumented URL shared by humans and agents during review. It is not a
+The trusted review-shell URL shared by humans and agents. It displays the
+instrumented review content from a separate internal origin and is not a
 fidelity-equivalent replacement for the raw URL.
 _Avoid_: Raw URL, preview URL
 

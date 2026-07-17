@@ -65,7 +65,8 @@ specifications.
 - Observation is limited to the selected entry path. It does not watch the
   whole serving grant, switch to a newly created output file, launch or control
   a browser, or turn raw serving into a development server.
-- Browser installation, launch, and automation stay outside the package.
+- Browser installation and product browser launch or automation stay outside
+  this repository. Development-only browser validation remains package-excluded.
 
 ## Workflow to preserve
 
