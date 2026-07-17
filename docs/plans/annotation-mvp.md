@@ -218,7 +218,7 @@ raw fidelity.
 
 ### Release measurement evidence
 
-Commit `c19f07b7436af9e0cdeea2a4526e4913efb28509` was measured on macOS
+Commit `a006c375b35c93c61c2404938a66653cdba87150` was measured on macOS
 26.5.1 arm64 with Node 24.15.0 and pnpm 11.13.0. These are local medians, not
 benchmarks. Package and install figures use one clean packed artifact; process
 samples use the installed executable. An empty query uses a fresh state root
@@ -228,24 +228,24 @@ the selected entry revision.
 
 | Measure                                 | Phase 10 baseline | Annotation artifact | Change              |
 | --------------------------------------- | ----------------- | ------------------- | ------------------- |
-| Tarball                                 | 1,058,473 bytes   | 1,122,704 bytes     | +6.1%               |
+| Tarball                                 | 1,058,473 bytes   | 1,122,730 bytes     | +6.1%               |
 | Packed files                            | 29                | 29                  | none                |
 | Installed size including dependencies   | 3,908 KiB         | 4,976 KiB           | +27.3%              |
 | Installed files                         | 47                | 137                 | +90                 |
-| Version command median, 11 spawns       | 98.07 ms          | 90.80 ms            | -7.4%               |
-| Empty query median, 7 fresh state roots | 132.88 ms         | 108.47 ms           | -18.4%              |
-| Fresh `serve` readiness median, 7       | 236.43 ms         | 232.16 ms           | -1.8%               |
-| Empty-supervisor RSS median, 7          | 75,968 KiB        | 85,312 KiB          | +12.3%              |
-| Fresh `review` readiness median, 7      | —                 | 119.96 ms           | annotation baseline |
-| Ready-review observer RSS median, 7     | —                 | 86,560 KiB          | +1,248 KiB vs empty |
+| Version command median, 11 spawns       | 98.07 ms          | 90.87 ms            | -7.3%               |
+| Empty query median, 7 fresh state roots | 132.88 ms         | 109.82 ms           | -17.4%              |
+| Fresh `serve` readiness median, 7       | 236.43 ms         | 232.75 ms           | -1.6%               |
+| Empty-supervisor RSS median, 7          | 75,968 KiB        | 85,264 KiB          | +12.2%              |
+| Fresh `review` readiness median, 7      | —                 | 122.32 ms           | annotation baseline |
+| Ready-review observer RSS median, 7     | —                 | 85,968 KiB          | +704 KiB vs empty   |
 
 The package keeps the same packed file count. Installed size and file count
 increase primarily because the token-aware transform adds external `parse5`
 8.0.1 and `entities` 8.0.0 runtime trees rather than duplicating them into the
 standalone bundles. Cold version, empty-query, and serving readiness show no
 regression in this sample. The complete annotation service raises empty-daemon
-RSS by 9,344 KiB from Phase 10; activating one bounded selected-entry observer
-adds 1,248 KiB (1.5%) over that current empty supervisor.
+RSS by 9,296 KiB from Phase 10; activating one bounded selected-entry observer
+adds 704 KiB (0.8%) over that current empty supervisor.
 
 ## Deliberately deferred
 

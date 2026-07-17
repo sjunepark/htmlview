@@ -150,7 +150,7 @@ automatically.
   Bookworm.
 - Recorded the clean installed artifact and process measurements against the
   Phase 10 baseline. One ready review and its bounded observer add a median
-  1,248 KiB over the current empty supervisor.
+  704 KiB over the current empty supervisor.
 - Resolved a release-only flaky shutdown test by pausing its sparse client
   before flowing, resuming only after scope closure, and requiring an incomplete
   destroyed response. The focused contract passes 100 macOS runs and 50 clean
