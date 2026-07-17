@@ -2,8 +2,8 @@
 
 > **Status:** The package is not published. These instructions describe the
 > accepted `0.1.0` interface. Annotation commands and the review runtime are
-> implemented, including automatic selected-entry refresh; release hardening
-> remains.
+> implemented, including automatic selected-entry refresh, and the complete
+> release validation matrix passes.
 
 `htmlview` is distributed as an npm package containing compiled JavaScript. It
 supports macOS and glibc-based Linux environments supported by Node.js 22,

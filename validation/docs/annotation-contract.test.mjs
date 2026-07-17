@@ -22,6 +22,7 @@ test("public docs make annotation a required 0.1.0 feature", async () => {
     readme,
     /Ready reviews now refresh automatically after confirmed entry\s+HTML changes/s,
   );
+  assert.match(readme, /release-ready but\s+has not been published/s);
   assert.doesNotMatch(readme, /runtime is not implemented/);
   assert.doesNotMatch(readme, /Human annotations are a possible later layer/);
   assert.match(
@@ -29,6 +30,7 @@ test("public docs make annotation a required 0.1.0 feature", async () => {
     /Annotation commands and the review runtime are.*implemented/s,
   );
   assert.match(install, /including automatic selected-entry refresh/);
+  assert.match(install, /complete.*release validation matrix passes/s);
   assert.match(install, /^## Review an installed page$/m);
   assert.match(install, /htmlview review "\$session" --json/);
   assert.match(install, /htmlview feedback --wait --json "\$review_id"/);
@@ -83,7 +85,7 @@ test("public docs make automatic refresh review-owned and leave raw passive", as
     interoperability,
     /external browser\/controller must reload any already-open raw page/,
   );
-  assert.match(plan, /Phases 0–5 complete/);
+  assert.match(plan, /Phases 0–6 complete/);
   assert.match(plan, /browser\s+evidence covers\s+edit-only refresh/i);
   assert.match(security, /third makes the shell terminal and read-only/);
 });

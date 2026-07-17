@@ -6,7 +6,7 @@ set; Linux package installation is the separate
 `pnpm run validate:package:linux` release check. The first table is the
 implemented raw-serving, native CLI, logging, annotation, and browser-review
 baseline, including automatic selected-entry refresh. The release commands
-still must pass before `0.1.0`.
+pass for the unpublished `0.1.0` release candidate.
 
 | Control or adversarial case                                             | Evidence                                                                                                                                           |
 | ----------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -48,12 +48,12 @@ still must pass before `0.1.0`.
 | Revision and annotation continuity                                      | Playwright staged B→C→B rejection, stale-editor clearing, old-revision drafts, same-byte recovery, and multiple-shell refresh                      |
 | Raw independence through automatic refresh                              | Playwright raw URL/body/header comparison around observed writes; raw handler and browser route tables remain unchanged                            |
 
-## Remaining `0.1.0` release evidence
+## `0.1.0` release evidence
 
-The remaining macOS/current-platform, external browser-use, audit, and
-documentation release commands recorded in the repository implementation plan
-must pass before publication. Node 22 Linux, installed review/observer
-lifecycle, and resource-measurement evidence are complete.
+The macOS/current-platform, external browser-use, Node 22 Linux, installed
+review/observer lifecycle, audit, documentation, and resource-measurement
+evidence recorded in the repository implementation plan is complete. The
+package remains unpublished.
 
 ## Residual risks
 

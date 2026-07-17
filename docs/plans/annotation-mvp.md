@@ -1,6 +1,6 @@
 # Annotation MVP plan
 
-- Status: Phases 0–5 complete; Phase 6 release hardening in progress
+- Status: Phases 0–6 complete; release-ready and unpublished
 - Updated: 2026-07-17
 - Parent: [`PLAN.md`](../../PLAN.md)
 - Decision: [ADR 0008](../decisions/0008-separate-raw-serving-from-instrumented-review.md)
@@ -92,16 +92,16 @@ counts discoverable.
 
 ## Phase status
 
-| Phase                                     | Status      | Outcome                                         |
-| ----------------------------------------- | ----------- | ----------------------------------------------- |
-| 0. Contracts and decisions                | Complete    | Public specs, ADRs, domain language, doc tests  |
-| Prerequisite: Effect CLI/logging          | Complete    | One final command model and diagnostic boundary |
-| 1. Authorized reads and review lifecycle  | Complete    | Review identity, origins, scopes, protocol      |
-| 2. Durable feedback and agent delivery    | Complete    | Store, transitions, CLI/control operations      |
-| 3. Instrumented content and trusted shell | Complete    | Entry probe, shell UI, browser boundaries       |
-| 4. Security and fidelity hardening        | Complete    | Adversarial matrix and authenticated readiness  |
-| 5. Automatic selected-entry refresh       | Complete    | Observe, notify, reload, preserve review state  |
-| 6. Packaging and release matrix           | In progress | Measurements complete; release commands remain  |
+| Phase                                     | Status   | Outcome                                         |
+| ----------------------------------------- | -------- | ----------------------------------------------- |
+| 0. Contracts and decisions                | Complete | Public specs, ADRs, domain language, doc tests  |
+| Prerequisite: Effect CLI/logging          | Complete | One final command model and diagnostic boundary |
+| 1. Authorized reads and review lifecycle  | Complete | Review identity, origins, scopes, protocol      |
+| 2. Durable feedback and agent delivery    | Complete | Store, transitions, CLI/control operations      |
+| 3. Instrumented content and trusted shell | Complete | Entry probe, shell UI, browser boundaries       |
+| 4. Security and fidelity hardening        | Complete | Adversarial matrix and authenticated readiness  |
+| 5. Automatic selected-entry refresh       | Complete | Observe, notify, reload, preserve review state  |
+| 6. Packaging and release matrix           | Complete | Measurements, release commands, and review pass |
 
 ## Prerequisite: Effect CLI and logging
 
@@ -212,9 +212,9 @@ raw fidelity.
 - **Complete:** rerun the automatic-refresh resource and performance
   measurements against the recorded Phase 10 baseline, including one ready
   review with its bounded observer.
-- **In progress:** complete the remaining release-command matrix.
-- Run the complete release gate and final implementation/diet review after the
-  automatic-refresh resource and performance bounds are recorded.
+- **Complete:** the full release-command matrix and final implementation/diet
+  review pass after the automatic-refresh resource and performance bounds were
+  recorded.
 
 ### Release measurement evidence
 
@@ -261,8 +261,8 @@ adds 1,248 KiB (1.5%) over that current empty supervisor.
 
 ## Next action
 
-Finish Phase 6: complete the remaining release-command matrix without
-publishing automatically.
+Keep the release-ready candidate unpublished. Production promotion is outside
+this plan and requires a later explicit action.
 
 ## Completion gate
 
@@ -272,3 +272,5 @@ an agent edit to the original entry refreshes the ready review automatically,
 raw serving remains byte-faithful and independent, review limitations are
 explicit, private state stays outside every grant, and the complete release
 matrix passes. Do not publish automatically.
+
+This gate is satisfied for the unpublished `0.1.0` release candidate.

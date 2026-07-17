@@ -2,7 +2,8 @@
 
 > **Status:** This is the accepted `0.1.0` target. Raw serving, Effect CLI,
 > foreground/private diagnostics, annotation runtime, and automatic
-> selected-entry refresh are implemented; release hardening remains. See
+> selected-entry refresh are implemented and release validation is complete.
+> The package remains unpublished. See
 > [the repository plan](https://github.com/sjunepark/htmlview/blob/main/PLAN.md)
 > for implementation status.
 
