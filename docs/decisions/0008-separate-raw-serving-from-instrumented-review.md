@@ -3,7 +3,7 @@
 - Status: Accepted
 - Date: 2026-07-16
 - Amended: 2026-07-17 to authenticate document readiness with one-use probe
-  leases
+  leases and make selected-entry refresh review-owned and automatic
 - Extends: [ADR 0001](0001-separate-serving-from-browser-control.md)
 - Related: [ADR 0009](0009-adopt-effect-cli-and-logging.md) defines the CLI and
   diagnostic boundary
@@ -64,6 +64,30 @@ explicit review attached to a live raw session:
 - Authored CSP and other document policy are not weakened. If safe
   instrumentation cannot run, the review reports that limitation while the raw
   URL remains available.
+- A ready review owns one bounded observer for the fixed selected-entry pathname
+  represented by its public entry route. The initial canonical target is not a
+  permanent identity: after each change hint, reauthorize the regular file that
+  pathname currently resolves to and confirm its byte revision. This supports
+  safe atomic replacement while still rejecting root escape. Coalesce editor
+  write bursts, do not watch the whole serving grant, and do not switch the
+  review to a different output pathname.
+- The observer may notify the shell of an authorized availability-state change
+  without a byte revision. A content-change notification is distinct and
+  requires a confirmed revision different from the last successfully rendered
+  bytes; only that notification can trigger an iframe reload.
+- On a confirmed change, the shell automatically reloads only its
+  instrumented-content iframe. Preserve durable drafts with their capture
+  revisions, clear transient selection state tied to the replaced DOM, and
+  require the new document to complete authenticated probe readiness. The raw
+  listener receives no notification route or injected reload client, so
+  already-loaded raw consumers remain responsible for refetching.
+- If the fixed entry pathname is temporarily missing, forbidden, or unreadable,
+  keep the last successfully rendered iframe visible but disable annotation and
+  show a shell-owned unavailable status. Do not navigate the iframe to an error
+  response. Re-enable it when the pathname again resolves to authorized readable
+  bytes; reload only when those bytes have a different revision. A confirmed
+  readable but unsupported document follows the existing explicit review-
+  limitation flow.
 
 The review shell starts in Annotate mode and offers an Explore/Annotate switch.
 Element selection opens a shell-owned tooltip editor; freeform feedback has no
@@ -119,8 +143,9 @@ cleanable after listener or supervisor stop.
 
 The MVP is a one-way queue. It does not keep submitted comments as visible
 pins or threads and does not show agent replies in the review shell. Humans
-follow agent progress in their agent session and reload the review content after
-source changes.
+follow agent progress in their agent session; while the review remains ready,
+an edit to the original selected entry refreshes its iframe automatically so
+the human can inspect the fix and send another batch.
 
 ## Consequences
 
@@ -137,6 +162,10 @@ source changes.
   subjects.
 - Durable drafts and cursor acknowledgement add bounded private state and
   lifecycle transitions that the supervisor must serialize and recover.
+- Automatic refresh adds a scoped entry observer and trusted-shell notification
+  mechanism. They must coalesce writes, confirm revisions through authorized
+  reads, close with the review lifecycle, and never become a raw live-reload
+  mechanism.
 - Release evidence must compare the raw HTTP contract before and after review
   creation and exercise the shell/content boundary, CSP failure, hostile page
   scripts, durable queue, cursor retry, interruption, and package lifecycle in
@@ -149,6 +178,10 @@ source changes.
 
 - **Instrument the raw URL.** This breaks the byte-faithful invariant and makes
   the meaning of `session.url` depend on caller intent.
+- **Inject or expose a reload client on the raw URL.** This changes raw page
+  behavior and still cannot force arbitrary non-browser consumers to refetch.
+  Review owns its iframe refresh; external browser tools own any raw-page
+  reload they need.
 - **Use one shared instrumented origin.** Authored scripts would share browser
   authority with the comment editor and state API.
 - **Make `serve` hang and emit feedback in logs.** This reverses its readiness

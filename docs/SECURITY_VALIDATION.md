@@ -5,7 +5,9 @@ repeatable evidence. `pnpm run check` runs the automated macOS/current-platform
 set; Linux package installation is the separate
 `pnpm run validate:package:linux` release check. The first table is the
 implemented raw-serving, native CLI, logging, annotation, and browser-review
-baseline. The separate release commands still must pass before `0.1.0`.
+baseline. Automatic selected-entry refresh is accepted but not yet implemented;
+its required evidence is listed separately. The release commands still must
+pass before `0.1.0`.
 
 | Control or adversarial case                                             | Evidence                                                                                                                                          |
 | ----------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -44,9 +46,16 @@ baseline. The separate release commands still must pass before `0.1.0`.
 
 ## Required `0.1.0` evidence (pending)
 
-No control-specific row remains pending. The complete release-command matrix
-recorded in the repository implementation plan remains required before
-publication.
+| Pending control or adversarial case               | Required evidence                                                                                                                                                                                                                                  |
+| ------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Edit-only automatic review refresh                | A real-browser workflow edits the original entry without calling reload, observes the new rendered revision, sends another batch, and repeats                                                                                                      |
+| Observer authorization, coalescing, and lifecycle | In-place writes, atomic replacement, unchanged-byte touches, rapid bursts, missing/unsupported transitions, interruption, stop, End, deletion, and shutdown                                                                                        |
+| Trusted-shell notification boundary               | Exact authority plus same-origin/fetch-metadata enforcement, no CORS read, bounded delivery/reconnect behavior, multiple shell clients, disconnect cleanup, and content-frame attempts                                                             |
+| Revision and annotation continuity                | Authorized byte confirmation, unavailable-without-revision status, unavailable→same-bytes re-enable without reload, stale-selection clearing, old-revision draft preservation, authenticated replacement readiness, and reconnect/restart behavior |
+| Raw independence through automatic refresh        | Raw URL/body/header/cache/path/lifecycle comparison before and after observation plus proof that no raw script, route, or forced consumer reload is added                                                                                          |
+
+After these rows pass, the complete release-command matrix recorded in the
+repository implementation plan remains required before publication.
 
 ## Residual risks
 
@@ -73,6 +82,10 @@ accepted residual risk. This file records evidence and pending gates only.
   rejects entries larger than 8 MiB before parsing.
   Each review-origin start/readiness sequence is bounded at 2 seconds, and the
   private two-origin client operation is bounded at 6 seconds.
+- The automatic-refresh implementation must fix and test the maximum observer
+  count, metadata/revision check cadence, quiet-window duration, reconnect
+  policy, and notification request/subscription limits per ready review before
+  this pending contract can move into the implemented table.
 - Control shutdown gives admitted sockets 2 seconds before forcing them closed;
   the session-registry shutdown fence rejects any delayed serve mutation that
   resumes after cleanup begins.

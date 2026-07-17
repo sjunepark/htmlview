@@ -1,8 +1,8 @@
 # Agent-facing CLI contract
 
-> **Status:** This is the implemented `0.1.0` command interface. The browser
-> review shell that produces annotation drafts remains under implementation;
-> track that surface in
+> **Status:** This is the implemented `0.1.0` command interface. The review and
+> durable-feedback runtime is implemented; automatic selected-entry refresh is
+> the next implementation slice. Track that surface in
 > [the repository plan](https://github.com/sjunepark/htmlview/blob/main/PLAN.md).
 
 ## Purpose
@@ -261,6 +261,17 @@ not stop the raw session. An ended review does not reopen silently. If its raw
 session remains live, another `review <session>` creates a new review.
 Supervisor recovery changes an orphaned `ready` record to `stopped` before
 returning any command result.
+
+While a review remains `ready`, a confirmed byte change to its original
+selected entry automatically reloads the instrumented content iframe. The
+replacement document must complete the normal authenticated readiness
+handshake before annotation resumes. Durable drafts keep the revisions where
+they were captured, while selection and unsaved element context tied to the old
+DOM are cleared. This behavior does not reload `session.url`: the raw route
+serves the latest bytes when its browser or other consumer requests them again.
+If the original entry pathname is temporarily unavailable, the shell keeps the
+last rendered document visible but disables annotation until an authorized
+read succeeds; it does not navigate the iframe to an HTTP error response.
 
 ## Feedback result
 

@@ -65,7 +65,22 @@ Open `$review_url` with any external browser or controller. A human can queue
 and send element-targeted or freeform comments; the foreground `feedback`
 command completes with one durable structured batch. It is the agent wake-up
 boundary. Supervisor logs are diagnostics only and cannot replace the feedback
-queue. Use the original raw `$url` for fidelity checks and application E2E.
+queue.
+
+For an iterative review, the human uses Send rather than Send & End. The agent
+applies the batch to the original selected entry, acknowledges the returned
+cursor, and waits again:
+
+```sh
+htmlview feedback --after <cursor> --wait --json "$review_id"
+```
+
+A ready review automatically refreshes its instrumented iframe after a
+confirmed byte change to that entry, so the human sees the edit without a
+manual reload and can send another batch. Use the original raw `$url` for
+fidelity checks and application E2E. It serves the latest bytes on the next
+request; an external browser/controller must reload any already-open raw page
+when it wants to observe them.
 
 ## Validated controllers
 

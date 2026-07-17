@@ -7,18 +7,62 @@ async function read(relativePath) {
 }
 
 test("public docs make annotation a required 0.1.0 feature", async () => {
-  const [product, readme] = await Promise.all([
+  const [product, readme, install] = await Promise.all([
     read("docs/PRODUCT.md"),
     read("README.md"),
+    read("docs/INSTALL.md"),
   ]);
 
   assert.match(product, /^### Review and feedback$/m);
   assert.match(product, /separate instrumented surface/);
   assert.match(product, /element-targeted and freeform comments/);
   assert.match(product, /accepted `0\.1\.0` target/);
-  assert.match(readme, /required `0\.1\.0` milestone/);
-  assert.match(readme, /runtime is not implemented/);
+  assert.match(readme, /trusted review surface\s+are implemented/);
+  assert.match(
+    readme,
+    /Automatic refresh of a ready review.*next `0\.1\.0` implementation slice/s,
+  );
+  assert.doesNotMatch(readme, /runtime is not implemented/);
   assert.doesNotMatch(readme, /Human annotations are a possible later layer/);
+  assert.match(
+    install,
+    /Annotation commands and the review runtime are.*implemented/s,
+  );
+  assert.match(install, /automatic selected-entry refresh.*remain/s);
+});
+
+test("public docs make automatic refresh review-owned and leave raw passive", async () => {
+  const [product, architecture, adr, interoperability, plan] =
+    await Promise.all([
+      read("docs/PRODUCT.md"),
+      read("ARCHITECTURE.md"),
+      read(
+        "docs/decisions/0008-separate-raw-serving-from-instrumented-review.md",
+      ),
+      read("docs/INTEROPERABILITY.md"),
+      read("docs/plans/annotation-mvp.md"),
+    ]);
+
+  assert.match(
+    product,
+    /automatically reload only the instrumented review iframe/,
+  );
+  assert.match(product, /does not.*inject a client into raw\s+HTML/s);
+  assert.match(
+    architecture,
+    /^### Automatic selected-entry refresh \(accepted, pending\)$/m,
+  );
+  assert.match(architecture, /already-loaded raw page.*under its own control/s);
+  assert.match(adr, /make selected-entry refresh review-owned and automatic/);
+  assert.match(
+    interoperability,
+    /external browser\/controller must reload any already-open raw page/,
+  );
+  assert.match(plan, /Phase 5 automatic refresh next/);
+  assert.match(
+    plan,
+    /edits the original entry without calling `location\.reload\(\)`/,
+  );
 });
 
 test("CLI docs define review, feedback, acknowledgement, and deletion", async () => {

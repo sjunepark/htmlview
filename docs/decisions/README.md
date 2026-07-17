@@ -15,7 +15,7 @@ in place when the original boundary remains intact.
 | [0005](0005-use-node-typescript-pnpm-and-the-npm-registry.md) | Partially superseded | Node, TypeScript, pnpm, npm distribution, and external browser boundary remain active | Packaging/test details superseded by 0007       |
 | [0006](0006-use-a-private-control-socket.md)                  | Accepted             | Supervisor control remains on a user-private Unix-domain socket                       | Complements 0002 and 0008                       |
 | [0007](0007-adopt-effect-v4.md)                               | Partially superseded | Effect execution, ownership, exact pins, native leaves, and packaging remain active   | CLI choice superseded and logging added by 0009 |
-| [0008](0008-separate-raw-serving-from-instrumented-review.md) | Accepted             | Separate review origins, element/freeform feedback, and durable cursor delivery       | Extends 0001; uses 0009 CLI boundary            |
+| [0008](0008-separate-raw-serving-from-instrumented-review.md) | Accepted, amended    | Separate review origins, durable feedback, and review-owned entry refresh             | Extends 0001; uses 0009 CLI boundary            |
 | [0009](0009-adopt-effect-cli-and-logging.md)                  | Accepted             | Effect CLI is authoritative; logs are isolated diagnostics                            | Partially supersedes 0003 and 0007              |
 
 The [CLI contract](../CLI.md), [Product requirements](../PRODUCT.md), and

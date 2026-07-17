@@ -13,10 +13,10 @@ install, launch, or automate a browser.
 ## Status
 
 Raw serving, the Effect CLI grammar, native output boundary, and foreground
-diagnostic seam are implemented. Human annotation is a required `0.1.0` milestone.
-Its runtime is not implemented. Private bounded supervisor logs and their
-filesystem hardening are the remaining prerequisite before review and feedback.
-The package has not been published.
+and private diagnostic seams, durable feedback, and the trusted review surface
+are implemented. Automatic refresh of a ready review after its selected entry
+HTML changes is the next `0.1.0` implementation slice; packaging and the final
+release matrix follow it. The package has not been published.
 
 The public docs describe the accepted `0.1.0` target. See the repository
 [`PLAN.md`](https://github.com/sjunepark/htmlview/blob/main/PLAN.md) for
@@ -52,6 +52,9 @@ The first release will:
   instrumented-content origins;
 - let a human queue element-targeted and freeform comments without writing to
   the served project;
+- automatically refresh the instrumented review iframe when the original
+  selected entry HTML changes, without injecting a reload client into raw
+  responses;
 - persist feedback outside the serving grant and deliver it through a
   retry-safe foreground agent command;
 - keep the local server alive across CLI invocations;
@@ -85,7 +88,10 @@ htmlview feedback --wait <review>
 
 The human and agent may both open the review URL, but only the raw URL is the
 fidelity and end-to-end testing reference. The foreground feedback command is
-the agent wake path; diagnostic logs never deliver feedback.
+the agent wake path; diagnostic logs never deliver feedback. While the review
+remains open, editing the original entry refreshes the review iframe
+automatically. The raw URL serves the latest bytes on its next request, but
+`htmlview` does not force already-loaded raw consumers to refresh.
 
 ## Start here
 

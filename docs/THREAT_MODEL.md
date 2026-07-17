@@ -1,8 +1,9 @@
 # Threat Model
 
 > **Status:** Raw-serving controls, Effect CLI grammar, diagnostic filtering and
-> persistence, durable annotations, and review controls are implemented. Final
-> adversarial release evidence remains in
+> persistence, durable annotations, and existing review controls are
+> implemented. Automatic selected-entry refresh and its adversarial evidence
+> are the next slice; final release evidence remains in
 > [Security validation](SECURITY_VALIDATION.md).
 
 ## Scope
@@ -16,8 +17,10 @@ isolated from both the raw path and trusted annotation controls.
 This model covers the Effect CLI boundary, foreground and detached diagnostic
 logging, supervisor, state files, control channel, raw static HTTP service,
 trusted review shell, instrumented-content origin, annotation store, and
-feedback delivery. It does not claim that rendered HTML is safe or that target
-metadata reported by authored code is authentic.
+feedback delivery. It also covers the accepted review-owned entry observer and
+trusted-shell change notification without extending that mechanism to the raw
+origin. It does not claim that rendered HTML is safe or that target metadata
+reported by authored code is authentic.
 
 ## Assets
 
@@ -71,11 +74,14 @@ metadata reported by authored code is authentic.
 7. Raw and review-content handlers cross from URL paths into the granted local
    filesystem; the annotation store and supervisor log sink cross into separate
    private state.
-8. Authored page scripts cross from local content into the browser's network,
+8. The ready review's entry observer crosses from a filesystem change hint into
+   an authorized revision check, then a bounded same-origin notification asks
+   the trusted shell to reload its content iframe.
+9. Authored page scripts cross from local content into the browser's network,
    storage, and credential environment.
-9. Effect CLI's native text help, version, completion, and syntax diagnostics
-   cross directly to terminal channels; domain results cross the separate
-   TOON/JSON encoder boundary.
+10. Effect CLI's native text help, version, completion, and syntax diagnostics
+    cross directly to terminal channels; domain results cross the separate
+    TOON/JSON encoder boundary.
 
 ## Threats and required controls
 
@@ -139,6 +145,18 @@ metadata reported by authored code is authentic.
   corruption rather than using partial records. Logs are not replayed as state.
 - **Source modification.** Open content read-only and never place state,
   generated files, or annotations under the serving root.
+- **Unsafe or forged source-change refresh.** Scope observation to the fixed
+  pathname represented by the ready review's public entry route, not the
+  complete grant, its initial canonical target, or a path supplied by the
+  browser. Treat watcher events and metadata differences as hints, reauthorize
+  the path's current regular-file target, and distinguish availability state
+  from content change. Missing, forbidden, or unreadable may produce a bounded
+  unavailable notification without a revision; iframe reload requires a
+  confirmed byte revision different from the last rendered bytes. Coalesce
+  bursts and atomic replacement, bound retries and notification delivery, and
+  close every observer and notification resource with its review scope. Never
+  send canonical paths, source bytes, comments, or anchors in a notification,
+  and expose no equivalent raw-origin route.
 - **Feedback loss or implicit deletion.** Persist queue success before the
   browser reports it, convert drafts to sent events atomically, read events
   non-destructively, and advance acknowledgement only through an explicit
@@ -159,8 +177,10 @@ metadata reported by authored code is authentic.
   raw remains the fidelity reference.
 - **Resource exhaustion.** Bound headers, request concurrency, request
   duration, file streaming resources, state size, startup waits, and idle
-  lifetime. Make waits and body reads cancellable, and scope listeners,
-  request fibers, files, ownership, and timers so interruption releases them.
+  lifetime. Bound entry-observation cadence, change coalescing, revision reads,
+  notification requests/subscriptions, and reconnect behavior. Make waits and body reads
+  cancellable, and scope listeners, observers, request fibers, files,
+  ownership, and timers so interruption releases them.
 - **Information disclosure, injection, or exhaustion through logs.** Route
   foreground Effect logs only to stderr. Write detached supervisor logs only as
   bounded, rotated JSONL beneath the excluded private state directory using
@@ -249,8 +269,8 @@ The canonical matrix of implemented evidence and pending release checks is
 [Security validation](SECURITY_VALIDATION.md). It covers confinement, hostile
 protocol and browser input, ownership and interruption races, resource bounds,
 origin isolation, structured output, Effect CLI/logging, raw/review fidelity,
-and durable feedback. A required control is not complete merely because it is
-described here.
+durable feedback, and automatic selected-entry refresh. A required control is
+not complete merely because it is described here.
 
 ## Residual risks
 
@@ -284,6 +304,10 @@ described here.
 - Review rendering differs from raw rendering because of framing, sandboxing,
   event handling, and the inserted probe. The review URL is not a fidelity or
   end-to-end testing substitute.
+- Automatic refresh observes ordinary filesystem state rather than an editor
+  transaction. A quiet-window policy can coalesce partial writes but cannot
+  make arbitrary multi-step edits atomic; a temporarily unsupported entry may
+  therefore surface a review limitation until a later confirmed change.
 - Annotation persistence increases the lifetime of sensitive human comments.
   User-only permissions and explicit deletion reduce exposure but do not
   protect against another process running as the same operating-system user.

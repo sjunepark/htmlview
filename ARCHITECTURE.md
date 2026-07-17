@@ -4,8 +4,9 @@
 
 The raw-serving core, per-user supervisor, Effect execution model, Effect CLI,
 foreground/private diagnostic sinks, review lifecycle, trusted browser review
-surface, and release packaging are implemented. The accepted `0.1.0` target
-still needs final adversarial and release-matrix evidence. The repository
+surface, and its authenticated probe-readiness boundary are implemented.
+Automatic selected-entry refresh is the next accepted slice; packaging and the
+final release matrix follow it. The repository
 [implementation plan](https://github.com/sjunepark/htmlview/blob/main/PLAN.md)
 owns their sequencing.
 
@@ -20,7 +21,9 @@ not narrow that grant.
 
 Review is a consumer of the same authorized-file boundary, not a mode of the raw
 handler. It may instrument its own representation, but it cannot change the raw
-URL, origin, path, response bytes, headers, or lifecycle.
+URL, origin, path, response bytes, headers, or lifecycle. A review-owned entry
+observer may ask its trusted shell to reload the instrumented iframe; it never
+injects a reload client into raw content or controls arbitrary raw consumers.
 
 ## System map
 
@@ -41,6 +44,7 @@ short-lived agent CLI
         +-- review lifecycle
                 +-- trusted shell origin
                 +-- instrumented-content origin --> granted files
+                +-- selected-entry observer (next) --> shell iframe reload
                 +-- durable feedback queue --> foreground agent wait
 ```
 
@@ -236,6 +240,36 @@ state retains only a bounded retry tombstone. Stopped, unended reviews may resum
 for the same document identity with stable records and fresh browser origins;
 ended reviews do not resume.
 
+### Automatic selected-entry refresh (accepted, pending)
+
+A ready review will own one scoped observer for the fixed pathname represented
+by its public entry route, not the complete serving grant or its initial
+canonical target. Filesystem or metadata notifications are hints: the observer
+reauthorizes the path's current regular-file target before publishing browser
+state. An availability notification may report that no authorized readable
+entry exists; a content-change notification requires a confirmed different byte
+revision. Bursts are coalesced so ordinary editor writes and atomic path
+replacement produce one stable transition rather than a reload storm.
+
+The trusted shell receives a bounded same-origin change notification and
+reloads only its instrumented-content iframe. Durable drafts retain their
+capture revisions; transient selection, highlight, and unsaved element context
+from the replaced DOM are cleared. The new document cannot accept annotations
+until it completes the existing one-use probe and lease handshake.
+
+If the fixed pathname is temporarily missing, forbidden, or unreadable, the
+shell keeps the last successfully rendered iframe visible, shows an unavailable
+state, and disables annotation. It does not navigate to an error response. An
+authorized return to the same bytes re-enables annotation without reload; a new
+revision reloads normally. Readable but unsupported bytes use the existing
+explicit review-limitation flow.
+
+The observer and notification resources belong to the ready review scope.
+Failed acquisition, stop, End, deletion, shutdown, and interruption close them
+without keeping retained review state or an otherwise empty supervisor alive.
+Raw serving remains passive: its next request reads current bytes, while an
+already-loaded raw page or other consumer refreshes only under its own control.
+
 ## Runtime flows
 
 ### Serve and request (implemented)
@@ -263,6 +297,19 @@ ended reviews do not resume.
    `--after` first acknowledges a previously returned cursor.
 5. The CLI emits one bounded result. Cancelling a waiter changes neither cursor
    nor stored event state.
+
+### Edit-review loop (accepted next slice)
+
+1. A ready review observes its original selected entry outside the raw request
+   path.
+2. After an authorized read confirms a new byte revision, the trusted shell is
+   notified and reloads its content iframe.
+3. The replacement entry is transformed and completes authenticated probe
+   readiness. The shell then re-enables annotation with durable old-revision
+   drafts intact and stale DOM selection state cleared.
+4. The human sends another batch; the agent acknowledges the prior cursor,
+   applies the next edit, and waits again. The raw URL and its consumers are not
+   pushed or reloaded by this flow.
 
 ### Stop and recovery
 
@@ -298,6 +345,9 @@ refused stale socket is reclaimed only under the lifetime ownership lock.
     deletion of pending work requires acknowledgement or discard.
 13. **Diagnostics are isolated and content-free.** They stay bounded/private and
     never carry feedback or untrusted content.
+14. **Automatic refresh is review-only.** Entry observation may reload the
+    trusted shell's iframe, but it cannot alter raw responses, add a raw
+    notification route, or claim control of already-loaded raw consumers.
 
 ## State and concurrency
 
@@ -312,7 +362,11 @@ non-tombstone review summaries. Fresh random authorities are never intentionally
 reused after a lifecycle ends, isolating cookies, storage, caches, and service
 workers. Raw and review lifecycle mutations share one serialization boundary;
 target review mutations are serialized per review, and at most one foreground
-feedback wait is active for each review.
+feedback wait is active for each review. The automatic-refresh slice adds at
+most one selected-entry observer per ready review and bounded shell
+notification work; its exact cadence, coalescing, request/subscription limits,
+and reconnect policy must be recorded with implementation evidence before
+release.
 
 Exact body, connection, timer, and state limits are implementation constants in
 [Security validation](docs/SECURITY_VALIDATION.md), not user-facing tuning
