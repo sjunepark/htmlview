@@ -194,53 +194,14 @@ channel that later needs replacing.
 **Complete.** One scoped observer per ready review combines fixed-path
 filesystem hints with bounded metadata fallback checks, reauthorizes through
 the shared file boundary, confirms byte revisions, and coalesces transitions.
-The shell polls a same-origin bounded entry-state endpoint and reloads only its
-instrumented iframe through a one-use expected-revision capability. Browser
-evidence covers edit-only refresh, transform-time B→C→B races, rapid and
-unchanged writes, atomic replacement, temporary unavailability, transient poll
-failure, page pause/resume, terminal peer End, multiple shell clients, stale
-editor clearing, draft revision continuity, and raw fidelity.
-
-- Characterize the existing manual-reload path first. Replace its browser test
-  trigger with an edit-only expectation while retaining explicit reload tests
-  for navigation, authenticated probe readiness, and recovery behavior.
-- Add one review-owned, scoped observer for the fixed pathname represented by
-  the public entry route, not its initial canonical target. It must detect
-  in-place writes and atomic replacement, coalesce bursts, and treat filesystem
-  notifications or metadata changes only as hints. Reauthorize the path's
-  current regular-file target through the authorized-file boundary and compare
-  a confirmed byte revision before publishing a content change. Model
-  availability changes separately: missing, forbidden, or unreadable may notify
-  the shell without a revision but cannot trigger an iframe reload.
-- Add a bounded shell-origin notification mechanism. It carries only a
-  review-local availability state or opaque confirmed revision, never a
-  filesystem path, source bytes, comment, anchor, or arbitrary diagnostic
-  value. Exact Host and same-origin browser protections remain authoritative.
-  Keep the contract transport-neutral until implementation evidence chooses
-  bounded polling, push, or an equivalent mechanism.
-- On a confirmed new revision, reload only the review content iframe. Clear
-  selection, highlight, and unsaved element context tied to the prior DOM;
-  preserve durable drafts and their capture revisions. Admit annotation only
-  after the replacement document completes the existing authenticated probe
-  handshake.
-- If the fixed pathname is missing, forbidden, or unreadable, retain the last
-  successfully rendered iframe, show a shell-owned unavailable state, and
-  disable annotation rather than navigating to an error response. Boundedly
-  retry observation. If authorized readable bytes return unchanged, re-enable
-  without reload; if their revision differs, reload. Readable but unsupported
-  bytes use the existing explicit limitation flow.
-- Keep the raw route byte/header/URL/cache/lifecycle contract identical.
-  `htmlview` does not inject a reload client, mutate source, or force arbitrary
-  browser/controller/HTTP consumers to refetch the raw URL.
-- Bound observation cadence, coalescing, in-flight notification work, retries,
-  and shutdown. A ready review owns the resources; failed acquisition, stop,
-  End, deletion, supervisor shutdown, and interruption close them idempotently.
-  Observation alone must not keep a stopped review or empty supervisor alive.
-- Validate edit → automatic review refresh → new feedback in one real-browser
-  loop. Cover rapid writes, unchanged-byte touches, atomic replacement,
-  temporary missing/unsupported entries, multiple shell clients, preserved
-  old-revision drafts, stale selections, disconnect/reconnect, cancellation,
-  restart, cleanup, and raw before/after fidelity.
+The shell polls a same-origin bounded entry-state endpoint and stages only its
+instrumented iframe through a one-use expected-revision capability, promoting
+the candidate after authenticated probe readiness. Browser evidence covers
+edit-only refresh, transform-time B→C→B races, failed-candidate preservation,
+rapid and unchanged writes, atomic replacement, temporary unavailability,
+transient poll failure, hidden/page-history pause and resume, terminal peer End,
+multiple shell clients, stale editor clearing, draft revision continuity, and
+raw fidelity.
 
 ## Phase 6: packaging and release matrix
 

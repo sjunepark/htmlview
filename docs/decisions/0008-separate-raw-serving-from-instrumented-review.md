@@ -84,9 +84,11 @@ explicit review attached to a live raw session:
   requires a confirmed revision different from the last successfully rendered
   bytes; only that notification can trigger an iframe reload.
 - On a confirmed change, the shell automatically reloads only its
-  instrumented-content iframe. Preserve durable drafts with their capture
-  revisions, clear transient selection state tied to the replaced DOM, and
-  require the new document to complete authenticated probe readiness. The raw
+  instrumented-content iframe. It stages the replacement under the same content
+  origin and promotes it only after authenticated probe readiness, so a raced
+  or failed response cannot replace the last successfully rendered document.
+  Preserve durable drafts with their capture revisions and clear transient
+  selection state tied to the replaced DOM. The raw
   listener receives no notification route or injected reload client, so
   already-loaded raw consumers remain responsible for refetching.
 - Observer-driven navigation binds the confirmed expected revision into the
@@ -96,8 +98,8 @@ explicit review attached to a live raw session:
   Initial and explicit manual navigation omit the expectation so Explore
   behavior remains independent of entry observation.
 - Each shell keeps at most one two-second entry-state request active. It pauses
-  and aborts that request while the document is hidden in page history, resumes
-  on return, and becomes permanently read-only after successful local End or
+  and aborts that request while the document is hidden or in page history,
+  resumes on return, and becomes permanently read-only after successful local End or
   three consecutive request/response failures. Peer End, stop, deletion, and
   listener shutdown therefore converge on a bounded closed state instead of an
   unbounded reconnect loop.

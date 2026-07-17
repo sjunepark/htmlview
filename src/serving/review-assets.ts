@@ -18,7 +18,7 @@ const shellHtml = `<!doctype html>
   </header>
   <main>
     <section class="canvas" aria-label="Reviewed page">
-      <iframe id="content" title="Page under review" sandbox="allow-scripts allow-same-origin" referrerpolicy="no-referrer"></iframe>
+      <iframe id="content" class="content-frame" title="Page under review" sandbox="allow-scripts allow-same-origin" referrerpolicy="no-referrer"></iframe>
       <div id="highlight" aria-hidden="true"></div>
       <div id="limitation" class="notice" role="status" hidden></div>
       <section id="editor" class="editor" aria-label="New annotation" hidden>
@@ -97,7 +97,8 @@ button:disabled { cursor: not-allowed; opacity: .48; transform: none; }
 
 main { height: calc(100% - var(--toolbar)); display: grid; grid-template-columns: minmax(0, 1fr) 340px; }
 .canvas { position: relative; min-width: 0; overflow: hidden; background: var(--surface); }
-#content { display: block; width: 100%; height: 100%; border: 0; background: var(--bg); }
+.content-frame { position: absolute; inset: 0; display: block; width: 100%; height: 100%; border: 0; background: var(--bg); }
+.content-frame[data-staging="true"] { visibility: hidden; pointer-events: none; }
 #highlight { position: absolute; pointer-events: none; border: 2px solid var(--primary); background: oklch(0.75 0.08 200 / .16); transition: transform 120ms ease-out, width 120ms ease-out, height 120ms ease-out; }
 #highlight:not([data-visible="true"]) { display: none; }
 .notice { position: absolute; inset: 18px auto auto 50%; translate: -50% 0; max-width: min(560px, calc(100% - 36px)); padding: 12px 14px; border-radius: 10px; color: var(--ink); background: var(--bg); border: 1px solid var(--line); }
@@ -152,7 +153,7 @@ const shellJs = embeddedJavaScript(String.raw`(() => {
   const maximumEntryPollFailures = 3;
   const entryPollRequestTimeoutMilliseconds = 2000;
   const byId = (id) => document.getElementById(id);
-  const iframe = byId("content");
+  let iframe = byId("content");
   const status = byId("review-status");
   const limitation = byId("limitation");
   const live = byId("live");
@@ -182,7 +183,7 @@ const shellJs = embeddedJavaScript(String.raw`(() => {
   let readyIntervalTimer;
   let navigationPending = false;
   let navigationInFlight = false;
-  let pendingNavigationLoad;
+  let stagedNavigation;
   let entryPollTimer;
   let entryPollController;
   let entryPollEpoch = 0;
@@ -299,13 +300,28 @@ const shellJs = embeddedJavaScript(String.raw`(() => {
     entryPollController = undefined;
   }
 
+  function resumeEntryPolling() {
+    if (entryPollPhase !== "paused" || document.hidden) return;
+    entryPollPhase = "active";
+    entryPollFailures = 0;
+    pollEntry();
+  }
+
+  function discardStagedNavigation() {
+    const pending = stagedNavigation;
+    stagedNavigation = undefined;
+    if (pending) pending.frame.remove();
+    clearTimeout(readyTimer);
+    stopModeRetry();
+    navigationInFlight = false;
+  }
+
   function terminateReviewConnection(statusMessage, announcement) {
     if (entryPollPhase === "terminal") return;
     suspendEntryPolling("terminal");
     entryPollPhase = "terminal";
     reviewConnectionClosed = true;
-    clearTimeout(readyTimer);
-    stopModeRetry();
+    discardStagedNavigation();
     clearPendingTargetMessages();
     resetEditor();
     byId("end-confirm").hidden = true;
@@ -375,8 +391,124 @@ const shellJs = embeddedJavaScript(String.raw`(() => {
     if (!iframe.hasAttribute("src")) await navigate();
   }
 
+  async function refreshStagedState(pending, generation) {
+    const nextState = await api("/.htmlview/api/state");
+    if (
+      reviewConnectionClosed ||
+      stagedNavigation !== pending ||
+      pending.generation !== generation
+    )
+      return false;
+    state = nextState;
+    contentOrigin = new URL(state.content_url).origin;
+    render();
+    return true;
+  }
+
+  function stageNavigation(navigationUrl, expectedRevision, attempt) {
+    const frame = document.createElement("iframe");
+    frame.className = "content-frame";
+    frame.dataset.staging = "true";
+    frame.title = "Updated page under review";
+    frame.setAttribute("aria-hidden", "true");
+    frame.setAttribute("sandbox", "allow-scripts allow-same-origin");
+    frame.setAttribute("referrerpolicy", "no-referrer");
+    const pending = {
+      frame,
+      revision: expectedRevision,
+      attempt,
+      generation: 0,
+    };
+    pending.onLoad = () => handleStagedFrameLoad(pending);
+    stagedNavigation = pending;
+    frame.addEventListener("load", pending.onLoad);
+    frame.src = navigationUrl;
+    iframe.after(frame);
+  }
+
+  function handleStagedFrameLoad(pending) {
+    if (reviewConnectionClosed || stagedNavigation !== pending) return;
+    const generation = ++pending.generation;
+    clearTimeout(readyTimer);
+    stopModeRetry();
+    announce("Loading annotation tools");
+    const sendStagedMode = () => sendModeTo(pending.frame);
+    sendStagedMode();
+    readyInterval = setInterval(sendStagedMode, 100);
+    readyTimer = setTimeout(
+      () => finishStagedNavigation(pending, generation),
+      1800,
+    );
+    readyIntervalTimer = setTimeout(stopModeRetry, 2000);
+  }
+
+  async function finishStagedNavigation(pending, generation) {
+    try {
+      if (!(await refreshStagedState(pending, generation))) return;
+    } catch {
+      // Polling owns connection failure accounting; the active frame stays put.
+    }
+    if (
+      reviewConnectionClosed ||
+      stagedNavigation !== pending ||
+      pending.generation !== generation
+    )
+      return;
+    stagedNavigation = undefined;
+    pending.frame.remove();
+    navigationInFlight = false;
+    stopModeRetry();
+    if (
+      state?.limitation &&
+      entryNavigationRevision === pending.revision &&
+      entryNavigationAttempts === pending.attempt
+    )
+      entryNavigationAttempts = maximumEntryNavigationAttempts;
+    if (
+      !state?.limitation &&
+      entryNavigationRevision === pending.revision &&
+      entryNavigationAttempts >= maximumEntryNavigationAttempts
+    ) {
+      localLimitation = "instrumentation_unavailable";
+      announce("Updated review could not be loaded");
+    }
+    renderLimitation();
+  }
+
+  function promoteStagedNavigation(pending, nextRevision, lease) {
+    if (stagedNavigation !== pending) return;
+    const previousFrame = iframe;
+    stagedNavigation = undefined;
+    clearTimeout(readyTimer);
+    stopModeRetry();
+    previousFrame.removeAttribute("id");
+    pending.frame.removeEventListener("load", pending.onLoad);
+    pending.frame.id = "content";
+    pending.frame.title = "Page under review";
+    pending.frame.removeAttribute("aria-hidden");
+    delete pending.frame.dataset.staging;
+    iframe = pending.frame;
+    iframe.addEventListener("load", handleCurrentFrameLoad);
+    previousFrame.remove();
+    loadGeneration += 1;
+    revision = nextRevision;
+    activeProbeLease = lease;
+    navigationPending = false;
+    navigationInFlight = false;
+    entryNavigationRevision = nextRevision;
+    entryNavigationAttempts = 0;
+    localLimitation = undefined;
+    if (state) delete state.limitation;
+    clearPendingTargetMessages();
+    resetEditor();
+    announce("Annotation tools ready");
+    sendMode();
+    renderLimitation();
+  }
+
   async function navigate(expectedRevision) {
     if (reviewConnectionClosed) return;
+    discardStagedNavigation();
     navigationInFlight = true;
     if (expectedRevision !== undefined) {
       if (entryNavigationRevision !== expectedRevision)
@@ -399,14 +531,14 @@ const shellJs = embeddedJavaScript(String.raw`(() => {
       if (reviewConnectionClosed) return;
       clearTimeout(readyTimer);
       stopModeRetry();
-      pendingNavigationLoad =
-        expectedRevision === undefined
-          ? undefined
-          : {
-              revision: expectedRevision,
-              attempt: entryNavigationAttempts,
-            };
-      iframe.src = navigation.navigation_url;
+      if (expectedRevision === undefined)
+        iframe.src = navigation.navigation_url;
+      else
+        stageNavigation(
+          navigation.navigation_url,
+          expectedRevision,
+          entryNavigationAttempts,
+        );
     } catch (error) {
       navigationInFlight = false;
       if (
@@ -457,8 +589,10 @@ const shellJs = embeddedJavaScript(String.raw`(() => {
       entryPollFailures = 0;
       if (checking) return;
       if (unavailable) {
+        discardStagedNavigation();
         entryAvailable = false;
         entryLimitation = undefined;
+        observedEntryRevision = revision;
         entryNavigationRevision = undefined;
         entryNavigationAttempts = 0;
         clearPendingTargetMessages();
@@ -468,8 +602,10 @@ const shellJs = embeddedJavaScript(String.raw`(() => {
         return;
       }
       if (unsupported) {
+        discardStagedNavigation();
         entryAvailable = false;
         entryLimitation = entry.limitation;
+        observedEntryRevision = revision;
         entryNavigationRevision = undefined;
         entryNavigationAttempts = 0;
         clearPendingTargetMessages();
@@ -494,6 +630,8 @@ const shellJs = embeddedJavaScript(String.raw`(() => {
         observedEntryRevision = entry.revision;
         entryNavigationRevision = entry.revision;
         entryNavigationAttempts = 0;
+        localLimitation = undefined;
+        if (state) delete state.limitation;
         renderLimitation();
         if (!wasAvailable) {
           announce("Annotation tools ready");
@@ -545,9 +683,17 @@ const shellJs = embeddedJavaScript(String.raw`(() => {
     }
   }
 
-  function sendMode() {
+  function sendModeTo(frame) {
     if (reviewConnectionClosed) return;
-    iframe.contentWindow?.postMessage({ channel, version, type: "set_mode", mode }, contentOrigin);
+    frame.contentWindow?.postMessage(
+      { channel, version, type: "set_mode", mode },
+      contentOrigin,
+    );
+  }
+
+  function sendMode() {
+    sendModeTo(iframe);
+    if (stagedNavigation) sendModeTo(stagedNavigation.frame);
   }
 
   function setMode(next) {
@@ -592,15 +738,50 @@ const shellJs = embeddedJavaScript(String.raw`(() => {
     return true;
   }
 
-  async function activateProbe(data) {
-    if (reviewConnectionClosed || revision !== undefined || activatingProbeLeases.has(data.lease) || usedProbeLeases.has(data.lease) || activatingProbeLeases.size >= 8) return;
-    const generation = loadGeneration;
+  async function activateProbe(data, sourceWindow) {
+    const pending =
+      stagedNavigation?.frame.contentWindow === sourceWindow
+        ? stagedNavigation
+        : undefined;
+    const activatingCurrent = iframe.contentWindow === sourceWindow;
+    if (
+      reviewConnectionClosed ||
+      (!activatingCurrent && pending === undefined) ||
+      (activatingCurrent && revision !== undefined) ||
+      (pending !== undefined && pending.revision !== data.revision) ||
+      activatingProbeLeases.has(data.lease) ||
+      usedProbeLeases.has(data.lease) ||
+      activatingProbeLeases.size >= 8
+    )
+      return;
+    const generation = activatingCurrent
+      ? loadGeneration
+      : pending.generation;
     activatingProbeLeases.add(data.lease);
     try {
       const result = await api("/.htmlview/api/probe", { method: "POST", body: JSON.stringify({ lease: data.lease }) });
       usedProbeLeases.add(data.lease);
       if (usedProbeLeases.size > 8) usedProbeLeases.delete(usedProbeLeases.values().next().value);
-      if (reviewConnectionClosed || generation !== loadGeneration || result.revision !== data.revision || !/^sha256:[0-9a-f]{64}$/.test(result.revision || "")) return;
+      if (
+        reviewConnectionClosed ||
+        result.revision !== data.revision ||
+        !/^sha256:[0-9a-f]{64}$/.test(result.revision || "")
+      )
+        return;
+      if (!activatingCurrent) {
+        if (
+          stagedNavigation !== pending ||
+          pending.generation !== generation
+        )
+          return;
+        promoteStagedNavigation(pending, result.revision, data.lease);
+        return;
+      }
+      if (
+        iframe.contentWindow !== sourceWindow ||
+        generation !== loadGeneration
+      )
+        return;
       revision = result.revision;
       activeProbeLease = data.lease;
       navigationPending = false;
@@ -665,14 +846,22 @@ const shellJs = embeddedJavaScript(String.raw`(() => {
   }
 
   window.addEventListener("message", (event) => {
-    if (event.source !== iframe.contentWindow || event.origin !== contentOrigin) return;
+    const fromCurrentFrame = event.source === iframe.contentWindow;
+    const fromStagedFrame =
+      stagedNavigation?.frame.contentWindow === event.source;
+    if (
+      (!fromCurrentFrame && !fromStagedFrame) ||
+      event.origin !== contentOrigin
+    )
+      return;
     const data = event.data;
     if (!data || data.channel !== channel || data.version !== version || typeof data.type !== "string") return;
     if (data.type === "probe_ready" && exactKeys(data, ["channel", "lease", "revision", "type", "version"]) && /^[0-9a-f]{32}$/.test(data.lease) && /^sha256:[0-9a-f]{64}$/.test(data.revision)) {
-      activateProbe(data);
+      activateProbe(data, event.source);
       return;
     }
     if (
+      fromCurrentFrame &&
       (data.type === "target_preview" || data.type === "target_selected" || data.type === "target_cleared") &&
       annotationActive() &&
       data.lease === activeProbeLease &&
@@ -681,11 +870,10 @@ const shellJs = embeddedJavaScript(String.raw`(() => {
       scheduleTargetMessage(data);
   });
 
-  iframe.addEventListener("load", () => {
+  function handleCurrentFrameLoad() {
     if (reviewConnectionClosed) return;
+    discardStagedNavigation();
     const generation = ++loadGeneration;
-    const navigationLoad = pendingNavigationLoad;
-    pendingNavigationLoad = undefined;
     navigationPending = navigationPending || revision !== undefined;
     revision = undefined;
     activeProbeLease = undefined;
@@ -702,19 +890,14 @@ const shellJs = embeddedJavaScript(String.raw`(() => {
       refresh(generation).catch(() => undefined).finally(() => {
         if (generation !== loadGeneration || revision) return;
         navigationInFlight = false;
-        if (
-          state?.limitation &&
-          navigationLoad !== undefined &&
-          entryNavigationRevision === navigationLoad.revision &&
-          entryNavigationAttempts === navigationLoad.attempt
-        )
-          entryNavigationAttempts = maximumEntryNavigationAttempts;
         if (!state?.limitation) localLimitation = navigationPending ? "unsupported_navigation" : "instrumentation_unavailable";
         renderLimitation();
       });
     }, 1800);
     readyIntervalTimer = setTimeout(stopModeRetry, 2000);
-  });
+  }
+
+  iframe.addEventListener("load", handleCurrentFrameLoad);
 
   async function queueDraft() {
     if (reviewConnectionClosed) return;
@@ -817,15 +1000,18 @@ const shellJs = embeddedJavaScript(String.raw`(() => {
     editorDirty = comment.value.length > 0;
   });
   window.addEventListener("resize", () => highlight.removeAttribute("data-visible"));
+  document.addEventListener("visibilitychange", () => {
+    if (document.hidden) {
+      if (entryPollPhase === "active") suspendEntryPolling("paused");
+      return;
+    }
+    resumeEntryPolling();
+  });
   window.addEventListener("pagehide", () => {
     if (entryPollPhase === "active") suspendEntryPolling("paused");
   });
-  window.addEventListener("pageshow", () => {
-    if (entryPollPhase !== "paused") return;
-    entryPollPhase = "active";
-    entryPollFailures = 0;
-    pollEntry();
-  });
+  window.addEventListener("pageshow", resumeEntryPolling);
+  if (document.hidden) suspendEntryPolling("paused");
   refresh()
     .then(pollEntry)
     .catch((error) => { limitation.hidden = false; limitation.textContent = error.message; });

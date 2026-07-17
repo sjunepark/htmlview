@@ -163,7 +163,7 @@ reported by authored code is authentic.
   bursts and atomic replacement, bind observer-driven navigation capabilities
   to that expected revision, and reject different transform bytes before probe
   creation or recording a limitation derived from those mismatched bytes. Bound
-  requests, retries, page-lifecycle pause/resume, and terminal closure; close
+  requests, retries, hidden/page-lifecycle pause and resume, and terminal closure; close
   every observer and notification resource with its review scope. Never send
   canonical paths, source bytes, comments, or anchors in a notification, and
   expose no equivalent raw-origin route.

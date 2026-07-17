@@ -67,13 +67,20 @@ test("public docs make automatic refresh review-owned and leave raw passive", as
   );
   assert.match(adr, /review-owned, revision-bound, automatic/);
   assert.match(adr, /binds the confirmed expected revision/);
-  assert.match(architecture, /active, page-lifecycle paused, or terminal/);
+  assert.match(
+    architecture,
+    /active, hidden\/page-lifecycle paused, or terminal/,
+  );
+  assert.match(
+    architecture,
+    /promotes the candidate.*one-use probe and lease handshake/s,
+  );
   assert.match(
     interoperability,
     /external browser\/controller must reload any already-open raw page/,
   );
   assert.match(plan, /Phases 0–5 complete/);
-  assert.match(plan, /browser\s+evidence covers edit-only refresh/i);
+  assert.match(plan, /browser\s+evidence covers\s+edit-only refresh/i);
   assert.match(security, /third makes the shell terminal and read-only/);
 });
 

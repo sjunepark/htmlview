@@ -1220,14 +1220,24 @@ test("automatic refresh binds navigation to the confirmed entry revision", async
     });
     let racedNavigation = false;
     let restoreExpected;
+    let rejectObserved;
+    let allowRestore;
     const expectedRestored = new Promise((resolve) => {
       restoreExpected = resolve;
+    });
+    const rejectedNavigation = new Promise((resolve) => {
+      rejectObserved = resolve;
+    });
+    const restoreAllowed = new Promise((resolve) => {
+      allowRestore = resolve;
     });
     const navigationStatuses = [];
     page.on("response", async (response) => {
       if (response.url().includes("__htmlview_navigation=")) {
         navigationStatuses.push(response.status());
         if (response.status() === 409 && restoreExpected !== undefined) {
+          rejectObserved();
+          await restoreAllowed;
           const restore = restoreExpected;
           restoreExpected = undefined;
           await writeFile(entry, expected);
@@ -1247,6 +1257,10 @@ test("automatic refresh binds navigation to the confirmed entry revision", async
 
     await writeFile(entry, expected);
     await expect.poll(() => racedNavigation).toBe(true);
+    await rejectedNavigation;
+    await expect(content.locator("#target")).toHaveText("Initial");
+    await expect(page.getByRole("button", { name: "Annotate" })).toBeDisabled();
+    allowRestore();
     await expectedRestored;
     await expect(content.locator("#target")).toHaveText("Expected");
     await expect(page.locator("#live")).toHaveText("Annotation tools ready");
@@ -1255,6 +1269,222 @@ test("automatic refresh binds navigation to the confirmed entry revision", async
     expect(navigationStatuses).toContain(409);
     expect(navigationStatuses.at(-1)).toBe(200);
     await expect(content.locator("body")).not.toContainText("Transient");
+  } finally {
+    await execute(process.execPath, [cli, "stop", "--all", "--json"], {
+      env: environment,
+    }).catch(() => undefined);
+    await rm(parent, { recursive: true, force: true });
+  }
+});
+
+test("failed refresh recovery keeps the rendered revision and retries restored bytes", async ({
+  page,
+}) => {
+  test.setTimeout(45_000);
+  const parent = await mkdtemp(path.join(tmpdir(), "hv-review-recovery-"));
+  const root = path.join(parent, "root");
+  const entry = path.join(root, "index.html");
+  const moved = path.join(root, "index.moved.html");
+  const initial =
+    '<!doctype html><html><body><h1 id="target">Initial</h1></body></html>';
+  const updated =
+    '<!doctype html><html><body><h1 id="target">Updated</h1></body></html>';
+  const delayed =
+    '<!doctype html><html><body><h1 id="target">Delayed</h1></body></html>';
+  const recovered =
+    '<!doctype html><html><body><h1 id="target">Recovered</h1></body></html>';
+  const environment = {
+    ...process.env,
+    HTMLVIEW_STATE_DIR: path.join(parent, "state"),
+    HTMLVIEW_IDLE_MS: "10000",
+  };
+  delete environment.NO_COLOR;
+  delete environment.FORCE_COLOR;
+  try {
+    await mkdir(root);
+    await writeFile(entry, initial);
+    const served = await command(environment, "serve", entry, "--root", root);
+    const opened = await command(environment, "review", served.session.id);
+    await page.goto(opened.review.url);
+    const content = page.frameLocator("#content");
+    await expect(page.locator("#live")).toHaveText("Annotation tools ready");
+    await page.locator("#content").evaluate((iframe) => {
+      window.__htmlviewActiveFrame = iframe;
+    });
+
+    let navigationMode = "exhaust";
+    let navigationRequests = 0;
+    let heldNavigationResolve;
+    let releaseHeldNavigation;
+    const heldNavigation = new Promise((resolve) => {
+      heldNavigationResolve = resolve;
+    });
+    const heldNavigationRelease = new Promise((resolve) => {
+      releaseHeldNavigation = resolve;
+    });
+    await page.route("**/.htmlview/api/navigation", async (route) => {
+      navigationRequests += 1;
+      if (navigationMode === "exhaust") {
+        await route.abort();
+        return;
+      }
+      if (navigationMode === "hold") {
+        heldNavigationResolve();
+        await heldNavigationRelease;
+        await route.abort();
+        return;
+      }
+      await route.continue();
+    });
+
+    await writeFile(entry, updated);
+    await expect.poll(() => navigationRequests).toBeGreaterThanOrEqual(3);
+    await expect(page.locator("#limitation")).toContainText(
+      "instrumentation unavailable",
+    );
+    await expect(content.locator("#target")).toHaveText("Initial");
+    expect(
+      await page.evaluate(
+        () =>
+          document.querySelector("#content") === window.__htmlviewActiveFrame,
+      ),
+    ).toBe(true);
+
+    await writeFile(entry, initial);
+    await expect(page.locator("#limitation")).toBeHidden();
+    await expect(page.getByRole("button", { name: "Annotate" })).toBeEnabled();
+    await expect(page.getByRole("button", { name: "Page note" })).toBeEnabled();
+    expect(
+      await page.evaluate(
+        () =>
+          document.querySelector("#content") === window.__htmlviewActiveFrame,
+      ),
+    ).toBe(true);
+
+    navigationMode = "allow";
+    await writeFile(entry, "<!doctype html><plaintext>unsupported");
+    await expect(page.locator("#limitation")).toContainText(
+      "unsupported markup",
+    );
+    await expect(content.locator("#target")).toHaveText("Initial");
+    await writeFile(entry, initial);
+    await expect(page.locator("#limitation")).toBeHidden();
+    await expect(page.getByRole("button", { name: "Annotate" })).toBeEnabled();
+    expect(
+      await page.evaluate(
+        () =>
+          document.querySelector("#content") === window.__htmlviewActiveFrame,
+      ),
+    ).toBe(true);
+
+    navigationMode = "hold";
+    await writeFile(entry, updated);
+    await heldNavigation;
+    await rename(entry, moved);
+    releaseHeldNavigation();
+    await expect(page.locator("#limitation")).toContainText(
+      "temporarily unavailable",
+    );
+    await expect(content.locator("#target")).toHaveText("Initial");
+
+    navigationMode = "allow";
+    await rename(moved, entry);
+    await expect(content.locator("#target")).toHaveText("Updated");
+    await expect(page.locator("#live")).toHaveText("Annotation tools ready");
+    await expect(page.locator("#limitation")).toBeHidden();
+    expect(
+      await page.evaluate(
+        () =>
+          document.querySelector("#content") !== window.__htmlviewActiveFrame,
+      ),
+    ).toBe(true);
+
+    await page.locator("#content").evaluate((iframe) => {
+      window.__htmlviewActiveFrame = iframe;
+    });
+    let delayedContentResolve;
+    let releaseDelayedContent;
+    const delayedContent = new Promise((resolve) => {
+      delayedContentResolve = resolve;
+    });
+    const delayedContentRelease = new Promise((resolve) => {
+      releaseDelayedContent = resolve;
+    });
+    const contentNavigationPattern = "**/*__htmlview_navigation=*";
+    const delayContentNavigation = async (route) => {
+      delayedContentResolve();
+      await delayedContentRelease;
+      await route.continue();
+    };
+    await page.route(contentNavigationPattern, delayContentNavigation);
+    await writeFile(entry, delayed);
+    await delayedContent;
+    await page.waitForTimeout(2_000);
+    await expect(content.locator("#target")).toHaveText("Updated");
+    expect(
+      await page.evaluate(
+        () =>
+          document.querySelector("#content") === window.__htmlviewActiveFrame,
+      ),
+    ).toBe(true);
+    releaseDelayedContent();
+    await expect(content.locator("#target")).toHaveText("Delayed");
+    await page.unroute(contentNavigationPattern, delayContentNavigation);
+    await page.unroute("**/.htmlview/api/navigation");
+
+    let staleStateResolve;
+    let releaseStaleState;
+    let staleStateDoneResolve;
+    const staleStateCaptured = new Promise((resolve) => {
+      staleStateResolve = resolve;
+    });
+    const staleStateRelease = new Promise((resolve) => {
+      releaseStaleState = resolve;
+    });
+    const staleStateDone = new Promise((resolve) => {
+      staleStateDoneResolve = resolve;
+    });
+    const statePattern = "**/.htmlview/api/state";
+    let captureNextState = true;
+    const delayStaleState = async (route) => {
+      if (!captureNextState) {
+        await route.continue();
+        return;
+      }
+      captureNextState = false;
+      const response = await route.fetch();
+      staleStateResolve();
+      await staleStateRelease;
+      await route.fulfill({ response });
+      staleStateDoneResolve();
+    };
+    await page.route(statePattern, delayStaleState);
+    await writeFile(entry, "<!doctype html><plaintext>stale limitation");
+    await staleStateCaptured;
+    await rename(entry, moved);
+    await expect(page.locator("#limitation")).toContainText(
+      "temporarily unavailable",
+    );
+    await writeFile(moved, recovered);
+    await rename(moved, entry);
+    await expect
+      .poll(() =>
+        page.evaluate(() =>
+          fetch("/.htmlview/api/entry")
+            .then((response) => response.json())
+            .then((result) => result.entry.availability),
+        ),
+      )
+      .toBe("available");
+    await reloadReviewFrame(page);
+    await expect(content.locator("#target")).toHaveText("Recovered");
+    await expect(page.locator("#live")).toHaveText("Annotation tools ready");
+    releaseStaleState();
+    await staleStateDone;
+    await page.unroute(statePattern, delayStaleState);
+    await page.waitForTimeout(250);
+    await expect(page.locator("#limitation")).toBeHidden();
+    await expect(page.getByRole("button", { name: "Annotate" })).toBeEnabled();
   } finally {
     await execute(process.execPath, [cli, "stop", "--all", "--json"], {
       env: environment,
@@ -1317,6 +1547,29 @@ test("entry polling pauses, recovers transiently, and terminates after peer End"
     page.on("request", (request) => {
       if (request.url().endsWith("/.htmlview/api/entry")) entryRequests += 1;
     });
+    await page.evaluate(() => {
+      let hidden = false;
+      Object.defineProperties(document, {
+        hidden: { configurable: true, get: () => hidden },
+        visibilityState: {
+          configurable: true,
+          get: () => (hidden ? "hidden" : "visible"),
+        },
+      });
+      window.__htmlviewSetTestVisibility = (nextHidden) => {
+        hidden = nextHidden;
+        document.dispatchEvent(new Event("visibilitychange"));
+      };
+    });
+    await page.evaluate(() => window.__htmlviewSetTestVisibility(true));
+    expect(await page.evaluate(() => document.hidden)).toBe(true);
+    const requestsWhileHidden = entryRequests;
+    await page.waitForTimeout(1_200);
+    expect(entryRequests).toBe(requestsWhileHidden);
+    await page.evaluate(() => window.__htmlviewSetTestVisibility(false));
+    expect(await page.evaluate(() => document.visibilityState)).toBe("visible");
+    await expect.poll(() => entryRequests).toBeGreaterThan(requestsWhileHidden);
+
     await page.evaluate(() =>
       window.dispatchEvent(
         new PageTransitionEvent("pagehide", { persisted: true }),
@@ -1414,10 +1667,7 @@ test("entry observation is coalesced, recoverable, and shared by review clients"
       "Annotation tools ready",
     );
     await page.locator("#content").evaluate((iframe) => {
-      window.__htmlviewObservedLoads = 0;
-      iframe.addEventListener("load", () => {
-        window.__htmlviewObservedLoads += 1;
-      });
+      window.__htmlviewActiveFrame = iframe;
     });
     let navigationRequests = 0;
     await page.route("**/.htmlview/api/navigation", async (route) => {
@@ -1435,14 +1685,25 @@ test("entry observation is coalesced, recoverable, and shared by review clients"
     await expect(page.getByRole("button", { name: "Annotate" })).toBeDisabled();
     await expect(content.locator("#target")).toHaveText("Rapid final");
     await expect(secondContent.locator("#target")).toHaveText("Rapid final");
-    await expect
-      .poll(() => page.evaluate(() => window.__htmlviewObservedLoads))
-      .toBe(1);
+    expect(
+      await page.evaluate(
+        () =>
+          document.querySelector("#content") !== window.__htmlviewActiveFrame,
+      ),
+    ).toBe(true);
+    await page.locator("#content").evaluate((iframe) => {
+      window.__htmlviewActiveFrame = iframe;
+    });
     expect(navigationRequests).toBeGreaterThanOrEqual(3);
 
     await writeFile(entry, rapidFinal);
     await page.waitForTimeout(1_500);
-    expect(await page.evaluate(() => window.__htmlviewObservedLoads)).toBe(1);
+    expect(
+      await page.evaluate(
+        () =>
+          document.querySelector("#content") === window.__htmlviewActiveFrame,
+      ),
+    ).toBe(true);
 
     await rename(entry, moved);
     await expect(page.locator("#limitation")).toContainText(
@@ -1453,7 +1714,12 @@ test("entry observation is coalesced, recoverable, and shared by review clients"
     await rename(moved, entry);
     await expect(page.locator("#limitation")).toBeHidden();
     await expect(page.locator("#live")).toHaveText("Annotation tools ready");
-    expect(await page.evaluate(() => window.__htmlviewObservedLoads)).toBe(1);
+    expect(
+      await page.evaluate(
+        () =>
+          document.querySelector("#content") === window.__htmlviewActiveFrame,
+      ),
+    ).toBe(true);
 
     await writeFile(entry, Buffer.alloc(8 * 1024 * 1024 + 1, 0x20));
     await expect(page.locator("#limitation")).toContainText("entry too large");
@@ -1462,7 +1728,12 @@ test("entry observation is coalesced, recoverable, and shared by review clients"
     await writeFile(entry, rapidFinal);
     await expect(page.locator("#limitation")).toBeHidden();
     await expect(page.locator("#live")).toHaveText("Annotation tools ready");
-    expect(await page.evaluate(() => window.__htmlviewObservedLoads)).toBe(1);
+    expect(
+      await page.evaluate(
+        () =>
+          document.querySelector("#content") === window.__htmlviewActiveFrame,
+      ),
+    ).toBe(true);
 
     await writeFile(replacement, atomic);
     await rename(replacement, entry);
@@ -1470,9 +1741,12 @@ test("entry observation is coalesced, recoverable, and shared by review clients"
     await expect(secondContent.locator("#target")).toHaveText(
       "Atomic replacement",
     );
-    await expect
-      .poll(() => page.evaluate(() => window.__htmlviewObservedLoads))
-      .toBe(2);
+    expect(
+      await page.evaluate(
+        () =>
+          document.querySelector("#content") !== window.__htmlviewActiveFrame,
+      ),
+    ).toBe(true);
     const rawAfterResponse = await fetch(served.session.url);
     expect(rawHeaders(rawAfterResponse)).toEqual(rawBeforeHeaders);
     expect(await rawAfterResponse.text()).toBe(atomic);

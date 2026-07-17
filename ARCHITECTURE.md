@@ -267,10 +267,12 @@ revision. Bursts are coalesced so ordinary editor writes and atomic path
 replacement produce one stable transition rather than a reload storm.
 
 The trusted shell polls a bounded same-origin entry-state endpoint and
-reloads only its instrumented-content iframe. Durable drafts retain their
-capture revisions; transient selection, highlight, and unsaved element context
-from the replaced DOM are cleared. The new document cannot accept annotations
-until it completes the existing one-use probe and lease handshake. Every
+stages replacement content in a second isolated iframe. Durable drafts retain
+their capture revisions; transient selection, highlight, and unsaved element
+context from the replaced DOM are cleared. The shell promotes the candidate and
+discards the prior frame only after the new document completes the existing
+one-use probe and lease handshake; failed candidates are discarded without
+replacing the rendered document. Every
 observer-driven navigation capability also carries the expected confirmed
 revision. The content handler rejects different bytes before creating a probe
 or recording a limitation derived from those mismatched bytes, and the shell
@@ -284,7 +286,7 @@ revision reloads normally. Readable but unsupported bytes use the existing
 explicit review-limitation flow.
 
 The observer and notification resources belong to the ready review scope. A
-shell polls in one of three phases: active, page-lifecycle paused, or terminal.
+shell polls in one of three phases: active, hidden/page-lifecycle paused, or terminal.
 Local End enters terminal immediately; peer End, stop, deletion, and listener
 shutdown enter it after a bounded failure budget. Terminal shells preserve the
 last iframe read-only and never resume polling. Failed acquisition, shutdown,

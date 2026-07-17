@@ -44,8 +44,8 @@ still must pass before `0.1.0`.
 | Instrumentation failure remains explicit                                | Playwright CSP/encoding/markup limits, authenticated navigation/recovery, native controls, modes, and stale revisions                              |
 | Edit-only automatic review refresh                                      | Playwright source edit without manual reload, authenticated replacement readiness, second-revision draft/send, and distinct delivered revisions    |
 | Observer authorization, coalescing, and lifecycle                       | Authorized-file observer tests cover rapid/in-place writes, unchanged bytes, atomic replacement, missing/restore, and scoped shutdown              |
-| Trusted-shell notification boundary                                     | Exact-Host/fetch-metadata API checks, two-second reads, transient recovery, page pause/resume, terminal failure budget, and local/peer End cleanup |
-| Revision and annotation continuity                                      | Playwright B→C→B transform-race rejection, stale-editor clearing, old-revision drafts, same-byte recovery, and multiple-shell refresh              |
+| Trusted-shell notification boundary                                     | Exact-Host/fetch-metadata, two-second reads, transient recovery, visibility/BFCache pause-resume, failure budget, and End cleanup                  |
+| Revision and annotation continuity                                      | Playwright staged B→C→B rejection, stale-editor clearing, old-revision drafts, same-byte recovery, and multiple-shell refresh                      |
 | Raw independence through automatic refresh                              | Playwright raw URL/body/header comparison around observed writes; raw handler and browser route tables remain unchanged                            |
 
 ## Remaining `0.1.0` release evidence

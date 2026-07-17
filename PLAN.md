@@ -30,9 +30,11 @@ target messages are bound to the active probe lease/revision, and stop/delete
 persistence barriers prevent ready-but-closed review records. Supervisor
 protocol mismatches are rejected explicitly without compatibility fallbacks.
 Observer-driven iframe navigation is bound to its confirmed expected revision,
-and shell polling now has explicit active, paused, and terminal phases rather
-than an unbounded reconnect path. Source-checkout feedback stays behind the
-example wrapper without exposing the private state-directory override.
+automatic replacements are promoted only after authenticated probe readiness,
+and shell polling now has explicit active, hidden-page paused, and terminal
+phases rather than an unbounded reconnect path. Source-checkout feedback stays
+behind the example wrapper without exposing the private state-directory
+override.
 
 Documentation now has explicit ownership and current-versus-target status; see
 [`docs/README.md`](docs/README.md). There is no external blocker.
@@ -132,7 +134,10 @@ release-only gaps. Do not publish automatically.
 - Bound automatic navigation to the observer-confirmed revision, added bounded
   polling termination across local/peer closure, and added the state-isolated
   `example:feedback` pass-through.
+- Kept the authenticated rendered iframe visible across failed refresh races,
+  restored same-revision retry/limitation state, and paused polling for ordinary
+  hidden documents as well as page-history transitions.
 - Validation: `pnpm run check` passes 198 Vitest tests, black-box CLI/example
-  workflows, 18 browser-origin tests, interoperability, build validation, and
+  workflows, 19 browser-origin tests, interoperability, build validation, and
   package install/reinstall/uninstall smoke. The external browser-use, Linux,
   audit, and final resource-measurement release checks remain.
