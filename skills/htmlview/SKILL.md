@@ -14,11 +14,19 @@ installed version.
 
 Use an installed `htmlview` executable. If it is unavailable, report the
 prerequisite. For the unpublished `0.1.0` candidate, require a source checkout
-and use its candidate-tarball installation flow. Only after publication should
-you suggest `npm install --global @sejunpark/htmlview`. Use default TOON for
-direct agent reading and `--json` when shell code must extract fields. Treat
-stdout as the single domain result and stderr as diagnostics. Continue only
-after the executable responds and the relevant help has been inspected.
+and run this from its repository root:
+
+```sh
+candidate_dir="$(mktemp -d)"
+tarball="$(pnpm pack --json --pack-destination "$candidate_dir" | node -e 'const v=JSON.parse(require("fs").readFileSync(0,"utf8")); process.stdout.write(v.filename)')"
+npm install --global "$candidate_dir/$tarball"
+```
+
+Only after publication should you suggest
+`npm install --global @sejunpark/htmlview`. Use default TOON for direct agent
+reading and `--json` when shell code must extract fields. Treat stdout as the
+single domain result and stderr as diagnostics. Continue only after the
+executable responds and the relevant help has been inspected.
 
 ## Serve and hand off
 

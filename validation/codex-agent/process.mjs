@@ -1,4 +1,4 @@
-import { spawn } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import { readdirSync, readFileSync } from "node:fs";
 
 const maximumTimerMilliseconds = 2_147_483_647;
@@ -44,9 +44,14 @@ function readLinuxProcessStat(pid) {
       .trim()
       .split(/\s+/);
     const processGroup = Number(fields[2]);
-    if (fields.length < 3 || !Number.isSafeInteger(processGroup))
+    const startTime = fields[19];
+    if (
+      fields.length < 20 ||
+      !Number.isSafeInteger(processGroup) ||
+      !/^\d+$/.test(startTime)
+    )
       return undefined;
-    return { state: fields[0], processGroup };
+    return { state: fields[0], processGroup, startTime };
   } catch {
     return undefined;
   }
@@ -83,6 +88,32 @@ export function processIsRunning(pid) {
   if (process.platform !== "linux") return true;
   const stat = readLinuxProcessStat(pid);
   return stat === undefined || (stat.state !== "Z" && stat.state !== "X");
+}
+
+export function processIdentity(pid) {
+  if (!processIsRunning(pid)) return undefined;
+  if (process.platform === "linux") {
+    const stat = readLinuxProcessStat(pid);
+    return stat === undefined ? undefined : `linux:${pid}:${stat.startTime}`;
+  }
+  if (process.platform === "darwin") {
+    try {
+      const identity = execFileSync(
+        "/bin/ps",
+        ["-p", String(pid), "-o", "lstart=", "-o", "ppid=", "-o", "command="],
+        {
+          encoding: "utf8",
+          maxBuffer: 64 * 1024,
+          stdio: ["ignore", "pipe", "ignore"],
+          timeout: 1_000,
+        },
+      ).trim();
+      return identity === "" ? undefined : `darwin:${identity}`;
+    } catch {
+      return undefined;
+    }
+  }
+  return undefined;
 }
 
 function processGroupPresent(child) {

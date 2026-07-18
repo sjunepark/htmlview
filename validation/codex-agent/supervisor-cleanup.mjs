@@ -12,13 +12,24 @@ async function attempt(operation, action, failures) {
   }
 }
 
-function processRunning(pid, isProcessRunning, failures) {
+async function processState(inspectProcess, failures) {
   try {
-    return isProcessRunning(pid);
+    const state = await inspectProcess();
+    if (["running", "exited", "unverified"].includes(state)) return state;
+    throw new Error(`unexpected process state: ${String(state)}`);
   } catch (error) {
-    failures.push(operationFailure("supervisor liveness check", error));
-    return true;
+    failures.push(operationFailure("supervisor identity check", error));
+    return "unverified";
   }
+}
+
+function retainUnverifiedProcess(failures) {
+  failures.push(
+    new Error(
+      "supervisor process identity could not be confirmed; refusing to signal it",
+    ),
+  );
+  return { safeToRemove: false, failures };
 }
 
 export async function stopSupervisorSafely({
@@ -27,7 +38,7 @@ export async function stopSupervisorSafely({
   waitForCleanExit,
   waitForProcessExit,
   signalProcess,
-  isProcessRunning,
+  inspectProcess,
 }) {
   const failures = [];
   await attempt("htmlview stop --all", requestStop, failures);
@@ -35,8 +46,9 @@ export async function stopSupervisorSafely({
     return { safeToRemove: true, failures };
 
   if (pid === undefined) return { safeToRemove: false, failures };
-  if (!processRunning(pid, isProcessRunning, failures))
-    return { safeToRemove: true, failures };
+  const beforeTerm = await processState(inspectProcess, failures);
+  if (beforeTerm === "exited") return { safeToRemove: true, failures };
+  if (beforeTerm === "unverified") return retainUnverifiedProcess(failures);
 
   await attempt(
     "supervisor SIGTERM",
@@ -51,8 +63,9 @@ export async function stopSupervisorSafely({
     )
   )
     return { safeToRemove: true, failures };
-  if (!processRunning(pid, isProcessRunning, failures))
-    return { safeToRemove: true, failures };
+  const beforeKill = await processState(inspectProcess, failures);
+  if (beforeKill === "exited") return { safeToRemove: true, failures };
+  if (beforeKill === "unverified") return retainUnverifiedProcess(failures);
 
   await attempt(
     "supervisor SIGKILL",

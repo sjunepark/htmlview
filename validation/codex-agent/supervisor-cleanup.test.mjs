@@ -17,7 +17,7 @@ test("graceful supervisor cleanup needs no process signal", async () => {
     waitForCleanExit: async () => undefined,
     waitForProcessExit: async () => undefined,
     signalProcess: (...signal) => signals.push(signal),
-    isProcessRunning: () => true,
+    inspectProcess: () => "running",
   });
 
   assert.deepEqual(result, { safeToRemove: true, failures: [] });
@@ -31,7 +31,7 @@ test("a failed stop is retained after the process exits cleanly", async () => {
     waitForCleanExit: async () => undefined,
     waitForProcessExit: async () => undefined,
     signalProcess: () => undefined,
-    isProcessRunning: () => false,
+    inspectProcess: () => "exited",
   });
 
   assert.equal(result.safeToRemove, true);
@@ -51,7 +51,7 @@ test("cleanup escalates from SIGTERM to SIGKILL", async () => {
     waitForCleanExit: () => cleanExit.shift()(),
     waitForProcessExit: async () => undefined,
     signalProcess: (pid, signal) => signals.push([pid, signal]),
-    isProcessRunning: () => true,
+    inspectProcess: () => "running",
   });
 
   assert.equal(result.safeToRemove, true);
@@ -75,7 +75,7 @@ test("cleanup preserves state when forced termination cannot be confirmed", asyn
     waitForCleanExit: rejected("cleanup timeout"),
     waitForProcessExit: rejected("process retained"),
     signalProcess: () => undefined,
-    isProcessRunning: () => true,
+    inspectProcess: () => "running",
   });
 
   assert.equal(result.safeToRemove, false);
@@ -86,6 +86,45 @@ test("cleanup preserves state when forced termination cannot be confirmed", asyn
       "supervisor cleanup after SIGTERM failed",
       "supervisor exit after SIGKILL failed",
     ],
+  );
+});
+
+test("cleanup refuses to signal an unverified process identity", async () => {
+  const signals = [];
+  const result = await stopSupervisorSafely({
+    pid: 42,
+    requestStop: async () => undefined,
+    waitForCleanExit: rejected("cleanup timeout"),
+    waitForProcessExit: async () => undefined,
+    signalProcess: (...signal) => signals.push(signal),
+    inspectProcess: () => "unverified",
+  });
+
+  assert.equal(result.safeToRemove, false);
+  assert.deepEqual(signals, []);
+  assert.deepEqual(
+    result.failures.map((failure) => failure.message),
+    [
+      "graceful supervisor cleanup failed",
+      "supervisor process identity could not be confirmed; refusing to signal it",
+    ],
+  );
+});
+
+test("cleanup preserves state when serve may have started without a PID", async () => {
+  const result = await stopSupervisorSafely({
+    pid: undefined,
+    requestStop: rejected("serve result unavailable"),
+    waitForCleanExit: rejected("cleanup unavailable"),
+    waitForProcessExit: async () => undefined,
+    signalProcess: () => undefined,
+    inspectProcess: () => "unverified",
+  });
+
+  assert.equal(result.safeToRemove, false);
+  assert.deepEqual(
+    result.failures.map((failure) => failure.message),
+    ["htmlview stop --all failed", "graceful supervisor cleanup failed"],
   );
 });
 

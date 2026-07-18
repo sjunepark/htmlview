@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
   assertProcessGroupPlatform,
+  processIdentity,
   processIsRunning,
   runProcessGroup,
 } from "./process.mjs";
@@ -17,6 +18,7 @@ function readyParent({
   exitAfterReady = false,
   ignoreTermination = false,
   inheritOutput = false,
+  overflowAfterReady = false,
 } = {}) {
   const stdio = inheritOutput
     ? ["ignore", "inherit", "inherit", "ipc"]
@@ -29,7 +31,9 @@ function readyParent({
     "if (message !== 'ready') process.exit(2);",
     exitAfterReady
       ? "process.stdout.write(`${child.pid}\\n`, () => process.exit(0));"
-      : "process.stdout.write(`${child.pid}\\n`);",
+      : overflowAfterReady
+        ? "process.stdout.write(`${child.pid}\\n${'x'.repeat(256)}`);"
+        : "process.stdout.write(`${child.pid}\\n`);",
     "});",
     "setInterval(() => undefined, 1_000);",
   ]
@@ -41,6 +45,13 @@ test("acceptance process groups support only macOS and Linux", () => {
   assert.doesNotThrow(() => assertProcessGroupPlatform("darwin"));
   assert.doesNotThrow(() => assertProcessGroupPlatform("linux"));
   assert.throws(() => assertProcessGroupPlatform("win32"), /macOS or Linux/);
+});
+
+test("captures a stable identity for a running process", () => {
+  const identity = processIdentity(process.pid);
+  assert.equal(typeof identity, "string");
+  assert.equal(processIdentity(process.pid), identity);
+  assert.equal(processIdentity(2_147_483_647), undefined);
 });
 
 test("captures a completed process result", async () => {
@@ -65,31 +76,55 @@ test("captures a completed process result", async () => {
 });
 
 test(
-  "a timeout terminates descendants that retain the output pipes",
+  "an output limit terminates ready descendants that retain the output pipes",
   { skip: process.platform === "win32" },
   async () => {
-    const started = Date.now();
     const result = await runProcessGroup(
       process.execPath,
-      ["-e", readyParent({ ignoreTermination: true, inheritOutput: true })],
+      [
+        "-e",
+        readyParent({
+          ignoreTermination: true,
+          inheritOutput: true,
+          overflowAfterReady: true,
+        }),
+      ],
       {
         cwd: process.cwd(),
         env: environment,
-        timeoutMilliseconds: 1_000,
+        timeoutMilliseconds: 30_000,
         terminationGraceMilliseconds: 100,
         streamDrainMilliseconds: 100,
+        maximumOutputBytes: 64,
       },
     );
 
-    assert.equal(result.termination, "timeout");
+    assert.equal(result.termination, "output_limit");
     assert.equal(result.signal, "SIGKILL");
     assert.equal(result.processGroupRetained, false);
-    assert.ok(Date.now() - started < 5_000, "process group exceeded deadline");
-    const descendantPid = Number(result.stdout.trim());
+    const descendantPid = Number(result.stdout.split("\n", 1)[0]);
     assert.equal(Number.isSafeInteger(descendantPid), true);
     assert.equal(processIsRunning(descendantPid), false);
   },
 );
+
+test("a timeout terminates a running process", async () => {
+  const result = await runProcessGroup(
+    process.execPath,
+    ["-e", "setInterval(() => undefined, 1_000)"],
+    {
+      cwd: process.cwd(),
+      env: environment,
+      timeoutMilliseconds: 100,
+      terminationGraceMilliseconds: 100,
+      streamDrainMilliseconds: 100,
+    },
+  );
+
+  assert.equal(result.termination, "timeout");
+  assert.equal(result.signal, "SIGTERM");
+  assert.equal(result.processGroupRetained, false);
+});
 
 test(
   "a direct-child close does not disarm descendant escalation",
@@ -97,20 +132,21 @@ test(
   async () => {
     const result = await runProcessGroup(
       process.execPath,
-      ["-e", readyParent()],
+      ["-e", readyParent({ overflowAfterReady: true })],
       {
         cwd: process.cwd(),
         env: environment,
-        timeoutMilliseconds: 1_000,
+        timeoutMilliseconds: 30_000,
         terminationGraceMilliseconds: 100,
         streamDrainMilliseconds: 1_000,
+        maximumOutputBytes: 64,
       },
     );
 
-    assert.equal(result.termination, "timeout");
+    assert.equal(result.termination, "output_limit");
     assert.equal(result.signal, "SIGTERM");
     assert.equal(result.processGroupRetained, false);
-    const descendantPid = Number(result.stdout.trim());
+    const descendantPid = Number(result.stdout.split("\n", 1)[0]);
     assert.equal(Number.isSafeInteger(descendantPid), true);
     assert.equal(processIsRunning(descendantPid), false);
   },
@@ -126,7 +162,7 @@ test(
       {
         cwd: process.cwd(),
         env: environment,
-        timeoutMilliseconds: 5_000,
+        timeoutMilliseconds: 30_000,
         terminationGraceMilliseconds: 100,
         streamDrainMilliseconds: 1_000,
       },

@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
+import { readFileSync } from "node:fs";
 import {
   access,
   cp,
@@ -18,6 +19,7 @@ import { promisify } from "node:util";
 import { chromium, expect } from "@playwright/test";
 import {
   assertProcessGroupPlatform,
+  processIdentity,
   processIsRunning,
   runProcessGroup,
 } from "./process.mjs";
@@ -135,13 +137,43 @@ async function waitForSupervisorExit(pid) {
 async function waitForSupervisorProcessExit(pid) {
   const deadline = Date.now() + 5_000;
   while (Date.now() < deadline) {
-    if (!processIsRunning(pid)) return;
+    if (processIdentity(pid) !== supervisorProcessIdentity) return;
     await new Promise((resolve) => setTimeout(resolve, 20));
   }
   throw new Error("Codex validation retained the htmlview supervisor process");
 }
 
+function expectedSupervisorIsCurrent() {
+  if (
+    supervisorPid === undefined ||
+    supervisorNonce === undefined ||
+    supervisorProcessIdentity === undefined ||
+    processIdentity(supervisorPid) !== supervisorProcessIdentity
+  )
+    return false;
+  try {
+    const owner = JSON.parse(
+      readFileSync(path.join(supervisorLock, "owner.json"), "utf8"),
+    );
+    return owner.pid === supervisorPid && owner.nonce === supervisorNonce;
+  } catch {
+    return false;
+  }
+}
+
+function inspectSupervisorProcess() {
+  if (!processIsRunning(supervisorPid)) return "exited";
+  if (
+    supervisorProcessIdentity !== undefined &&
+    processIdentity(supervisorPid) !== supervisorProcessIdentity
+  )
+    return "exited";
+  return expectedSupervisorIsCurrent() ? "running" : "unverified";
+}
+
 function signalSupervisor(pid, signal) {
+  if (pid !== supervisorPid || !expectedSupervisorIsCurrent())
+    throw new Error("htmlview supervisor process identity changed");
   try {
     process.kill(pid, signal);
   } catch (error) {
@@ -203,8 +235,10 @@ function loopbackRequest(url) {
 }
 
 let browser;
-let supervisorStarted = false;
+let supervisorMayExist = false;
 let supervisorPid;
+let supervisorNonce;
+let supervisorProcessIdentity;
 let result;
 let primaryFailure;
 
@@ -271,13 +305,16 @@ try {
   await git(["commit", "--quiet", "-m", "Add Codex validation fixture"]);
   const initialHead = (await git(["rev-parse", "HEAD"])).stdout.trim();
 
+  supervisorMayExist = true;
   const served = JSON.parse(
     (await installed(["serve", "report.html", "--json"])).stdout,
   );
-  supervisorStarted = true;
-  supervisorPid = JSON.parse(
+  const supervisorOwner = JSON.parse(
     await readFile(path.join(supervisorLock, "owner.json"), "utf8"),
-  ).pid;
+  );
+  supervisorPid = supervisorOwner.pid;
+  supervisorNonce = supervisorOwner.nonce;
+  supervisorProcessIdentity = processIdentity(supervisorPid);
   const opened = JSON.parse(
     (await installed(["review", served.session.id, "--json"])).stdout,
   );
@@ -518,8 +555,8 @@ if (browser !== undefined) {
   }
 }
 
-let safeToRemove = !supervisorStarted;
-if (supervisorStarted) {
+let safeToRemove = !supervisorMayExist;
+if (supervisorMayExist) {
   try {
     const cleanup = await stopSupervisorSafely({
       pid: supervisorPid,
@@ -527,7 +564,7 @@ if (supervisorStarted) {
       waitForCleanExit: () => waitForSupervisorExit(supervisorPid),
       waitForProcessExit: () => waitForSupervisorProcessExit(supervisorPid),
       signalProcess: signalSupervisor,
-      isProcessRunning: processIsRunning,
+      inspectProcess: inspectSupervisorProcess,
     });
     cleanupFailures.push(...cleanup.failures);
     safeToRemove = cleanup.safeToRemove;
