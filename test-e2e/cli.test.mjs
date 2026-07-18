@@ -45,7 +45,7 @@ function cli(args, cwd = firstRoot, childEnvironment = environment) {
       stderr += chunk;
     });
     child.once("error", reject);
-    child.once("exit", (code, signal) =>
+    child.once("close", (code, signal) =>
       resolve({ code, signal, stdout, stderr }),
     );
   });
@@ -222,10 +222,14 @@ test("native CLI metadata, syntax, and logging keep their channels", async () =>
     "fatal",
     "none",
   ]) {
+    const levelEnvironment = {
+      ...metadataEnvironment,
+      HTMLVIEW_STATE_DIR: path.join(metadataState, level),
+    };
     const result = await cli(
       ["--json", "--log-level", level],
       firstRoot,
-      metadataEnvironment,
+      levelEnvironment,
     );
     assert.equal(result.code, 0, `${level}: ${JSON.stringify(result)}`);
     assert.equal(JSON.parse(result.stdout).count, 0);

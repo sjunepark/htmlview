@@ -147,6 +147,11 @@ installed CLI.
 
 ### 2026-07-18
 
+- Hardened the release-pipeline PR against Linux scheduling races: observer
+  coverage now changes files through the same atomic-replacement boundary it
+  is asserting, and CLI metadata cases use independent supervisor state with
+  complete child-process stream closure. The focused observer and CLI suites
+  pass after the change.
 - Added the Release Please manifest configuration, pinned GitHub Actions CI and
   release workflows, npm OIDC publication boundary, package repository metadata,
   release operations guide, release contract coverage, and ADR 0010. The npm

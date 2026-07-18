@@ -108,7 +108,8 @@ describe("review entry observer", () => {
       );
 
       const unchangedCount = observations.length;
-      await writeFile(entry, rapidFinal);
+      await writeFile(replacement, rapidFinal);
+      await rename(replacement, entry);
       await new Promise((resolve) => setTimeout(resolve, 150));
       assert.equal(observations.length, unchangedCount);
 
