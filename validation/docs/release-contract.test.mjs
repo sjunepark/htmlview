@@ -27,16 +27,27 @@ test("Release Please owns one root npm package", async () => {
     "initial-version": "0.1.0",
     "include-component-in-tag": false,
   });
-  assert.deepEqual(manifest, {});
+  assert.deepEqual(
+    manifest,
+    Object.keys(manifest).length === 0 ? {} : { ".": packageJson.version },
+  );
 });
 
 test("release workflow publishes only the Release Please output through OIDC", async () => {
-  const workflow = await read(".github/workflows/release-please.yml");
+  const [ciWorkflow, workflow] = await Promise.all([
+    read(".github/workflows/ci.yml"),
+    read(".github/workflows/release-please.yml"),
+  ]);
 
+  assert.match(ciWorkflow, /persist-credentials: false/);
   assert.match(workflow, /googleapis\/release-please-action@[0-9a-f]{40} # v4/);
   assert.match(workflow, /group: release-please-main/);
   assert.match(workflow, /target-branch: main/);
-  assert.match(workflow, /gh workflow run ci\.yml --ref "\$release_branch"/);
+  assert.match(
+    workflow,
+    /gh workflow run ci\.yml --repo "\$GITHUB_REPOSITORY" --ref "\$release_branch"/,
+  );
+  assert.match(workflow, /persist-credentials: false/);
   assert.match(workflow, /release-created == 'true'/);
   assert.match(
     workflow,
