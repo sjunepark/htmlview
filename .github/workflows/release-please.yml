@@ -1,0 +1,129 @@
+name: Release Please
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: release-please-main
+  cancel-in-progress: false
+
+jobs:
+  release-please:
+    name: Prepare or create release
+    runs-on: ubuntu-latest
+    permissions:
+      actions: write
+      contents: write
+      issues: write
+      pull-requests: write
+    outputs:
+      release-created: ${{ steps.release.outputs.release_created }}
+      release-sha: ${{ steps.release.outputs.sha }}
+      release-tag: ${{ steps.release.outputs.tag_name }}
+      release-version: ${{ steps.release.outputs.version }}
+    steps:
+      - name: Run Release Please
+        id: release
+        uses: googleapis/release-please-action@5c625bfb5d1ff62eadeeb3772007f7f66fdcf071 # v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          target-branch: main
+
+      - name: Dispatch CI for the Release Please pull request
+        if: ${{ steps.release.outputs.pr != '' }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_PR: ${{ steps.release.outputs.pr }}
+        run: |
+          release_branch="$(node --input-type=module -e 'const pull = JSON.parse(process.env.RELEASE_PR); process.stdout.write(pull.headBranchName)')"
+          gh workflow run ci.yml --ref "$release_branch"
+
+  publish:
+    name: Publish npm package
+    needs: release-please
+    if: ${{ needs.release-please.outputs.release-created == 'true' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    environment: npm
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - name: Check out the released commit
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          ref: ${{ needs.release-please.outputs.release-sha }}
+
+      - name: Set up Node.js and npm
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: "24"
+          registry-url: https://registry.npmjs.org
+          package-manager-cache: false
+
+      - name: Enable the pinned package manager
+        run: corepack enable
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Install Playwright Chromium
+        run: pnpm exec playwright install --with-deps chromium
+
+      - name: Revalidate the release commit
+        run: |
+          pnpm run check
+          pnpm audit
+          pnpm run validate:package:linux
+
+      - name: Require npm trusted-publishing support
+        run: |
+          node --input-type=module <<'NODE'
+          import { execFileSync } from "node:child_process";
+          const version = execFileSync("npm", ["--version"], { encoding: "utf8" }).trim();
+          const [major, minor, patch] = version.split(".").map(Number);
+          if (major < 11 || (major === 11 && (minor < 5 || (minor === 5 && patch < 1)))) {
+            throw new Error(`npm ${version} does not support trusted publishing; require >=11.5.1`);
+          }
+          NODE
+
+      - name: Pack the immutable version
+        id: package
+        run: |
+          candidate_dir="${RUNNER_TEMP}/htmlview-release"
+          mkdir "$candidate_dir"
+          tarball="$(node scripts/pack-release.mjs "$candidate_dir")"
+          echo "tarball=$tarball" >> "$GITHUB_OUTPUT"
+
+      - name: Retain the exact release tarball
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: npm-package-${{ needs.release-please.outputs.release-version }}
+          path: ${{ steps.package.outputs.tarball }}
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Publish the immutable version
+        env:
+          RELEASE_VERSION: ${{ needs.release-please.outputs.release-version }}
+          RELEASE_TARBALL: ${{ steps.package.outputs.tarball }}
+        run: |
+          package_name="$(node -p 'require("./package.json").name')"
+          package_version="$(node -p 'require("./package.json").version')"
+          if [ "$package_version" != "$RELEASE_VERSION" ]; then
+            echo "Release Please output $RELEASE_VERSION does not match package.json $package_version" >&2
+            exit 1
+          fi
+          registry_integrity="$(npm view "$package_name@$package_version" dist.integrity 2>/dev/null || true)"
+          if [ -n "$registry_integrity" ]; then
+            local_integrity="$(node --input-type=module -e 'import { createHash } from "node:crypto"; import { readFileSync } from "node:fs"; const digest = createHash("sha512").update(readFileSync(process.argv[1])).digest("base64"); process.stdout.write(`sha512-${digest}`)' "$RELEASE_TARBALL")"
+            if [ "$local_integrity" != "$registry_integrity" ]; then
+              echo "$package_name@$package_version exists with different bytes" >&2
+              exit 1
+            fi
+            echo "$package_name@$package_version already has the exact release bytes."
+            exit 0
+          fi
+          npm publish "$RELEASE_TARBALL" --access public

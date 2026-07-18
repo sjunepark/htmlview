@@ -28,7 +28,9 @@ now implemented. A portable Agent Skill for external CLI users is implemented
 and included in the version-matched npm artifact. The complete release-command
 matrix, refreshed resource measurements, and final implementation/diet review
 pass against the current bounded served-resource observer. The `0.1.0`
-candidate is release-ready and remains unpublished. The annotation
+candidate is release-ready and remains unpublished. Release Please and the
+GitHub Actions npm publication job are configured; the initial registry
+bootstrap, trusted-publisher binding, tag, and GitHub release remain. The annotation
 authorization, hostile-content, authenticated probe-readiness, and explicit
 instrumentation-limitation matrices pass and must remain intact through the
 refresh work. Review navigation now requires a shell-minted one-use capability,
@@ -61,7 +63,7 @@ closure pass the complete current-platform `pnpm run check` gate.
 | Effect CLI and diagnostic logging | Complete | Native CLI, private logs, measurements, and complete release evidence    |
 | Annotation runtime                | Complete | Durable feedback, trusted review UI, and bounded automatic refresh       |
 | Packaging and release hardening   | Complete | Installed checks, Agent Skill, measurements, release matrix, review pass |
-| Publication                       | Pending  | Requires a later explicit production-promotion action                    |
+| Publication                       | Pending  | Release Please PR, initial 2FA publish, and trusted-publisher binding    |
 
 ## Release invariants
 
@@ -103,6 +105,13 @@ refresh, and final fidelity/security hardening. Annotation is not complete when
 only the browser UI works; durable agent delivery and the edit-review loop are
 both part of the feature.
 
+### 3. Release automation and publication
+
+Use [`docs/RELEASING.md`](docs/RELEASING.md). Release Please owns generated
+versions, changelogs, tags, and GitHub releases. The GitHub Actions publication
+job uses npm trusted publishing after the one-time interactive `0.1.0`
+bootstrap creates the registry package.
+
 ## Release gate
 
 Before publication, pass:
@@ -128,14 +137,22 @@ and a size comparison justifies changing it.
 
 ## Next action
 
-Keep the release-ready `0.1.0` candidate unpublished. Production promotion is
-outside this plan and requires a later explicit action; never publish
-automatically.
+Merge the release-pipeline setup, review the generated Release Please PR for
+exactly `@sjunepark/htmlview@0.1.0`, and rerun the complete release gate before
+merging it. Then perform the documented one-time interactive npm publication,
+bind the trusted publisher, and verify the registry, tag, GitHub release, and
+installed CLI.
 
 ## Progress log
 
 ### 2026-07-18
 
+- Added the Release Please manifest configuration, pinned GitHub Actions CI and
+  release workflows, npm OIDC publication boundary, package repository metadata,
+  release operations guide, release contract coverage, and ADR 0010. The npm
+  identity is corrected to the requested `@sjunepark/htmlview`; the initial
+  `0.1.0` publication remains an interactive 2FA bootstrap because npm requires
+  a package to exist before trusted-publisher configuration.
 - Addressed PR #7 review findings across the Codex acceptance harness and Agent
   Skill guidance. Cleanup now fails before allocation on unsupported platforms,
   preserves the original Host on loopback raw checks, retains every primary and

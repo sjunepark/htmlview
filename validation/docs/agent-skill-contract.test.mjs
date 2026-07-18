@@ -27,12 +27,12 @@ test("the distributed htmlview skill preserves its agent contract", async () => 
   assert.match(skill, /htmlview <command> --help/);
   assert.match(skill, /narrowest serving grant/);
   assert.match(skill, /references\/review-loop\.md/);
-  assert.match(skill, /unpublished `0\.1\.0` candidate/);
-  assert.match(skill, /pnpm pack --json --pack-destination "\$candidate_dir"/);
-  assert.match(skill, /npm install --global "\$candidate_dir\/\$tarball"/);
+  assert.match(skill, /For a source-checkout candidate/);
+  assert.match(skill, /node scripts\/pack-release\.mjs "\$candidate_dir"/);
+  assert.match(skill, /npm install --global "\$tarball"/);
   assert.match(
     skill,
-    /Only after publication should\s+you suggest\s+`npm install --global @sejunpark\/htmlview`/,
+    /For a registry installation, suggest `npm install --global\s+@sjunepark\/htmlview`/,
   );
   assert.match(review, /Delivery does not\s+acknowledge the batch/);
   assert.match(review, /htmlview feedback --after <cursor>/);

@@ -17,9 +17,9 @@ and private diagnostic seams, durable feedback, and the trusted review surface
 are implemented. Ready reviews now refresh automatically after confirmed entry
 or bounded linked-resource changes. A version-matched, manually invoked Agent
 Skill now ships with the CLI package. The complete release matrix passes;
-`0.1.0` is release-ready but has not been published.
+the implemented `0.1.0` contract is release-ready.
 
-The public docs describe the implemented `0.1.0` release candidate. See the repository
+The public docs describe the implemented `0.1.0` contract. See the repository
 [`PLAN.md`](https://github.com/sjunepark/htmlview/blob/main/PLAN.md) for
 implementation truth.
 
@@ -45,7 +45,7 @@ black-box E2E fixtures.
 
 ## Product boundary
 
-The first release will:
+The `0.1.0` release:
 
 - serve an HTML entry file and its local assets from loopback;
 - preserve the entry document and asset bytes on the raw route;

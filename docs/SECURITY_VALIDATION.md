@@ -6,7 +6,7 @@ set; Linux package installation is the separate
 `pnpm run validate:package:linux` release check. The first table is the
 implemented raw-serving, native CLI, logging, annotation, and browser-review
 baseline, including bounded entry and served-resource refresh. The release commands
-pass for the unpublished `0.1.0` release candidate.
+pass for the `0.1.0` release.
 
 | Control or adversarial case                                             | Evidence                                                                                                                                           |
 | ----------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -53,7 +53,7 @@ pass for the unpublished `0.1.0` release candidate.
 The macOS/current-platform, external browser-use, Node 22 Linux, installed
 review/observer lifecycle, audit, documentation, and resource-measurement
 evidence recorded in the repository implementation plan is complete. The
-package remains unpublished.
+registry and GitHub release state are tracked in that plan.
 
 ## Residual risks
 

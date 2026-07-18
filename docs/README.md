@@ -18,6 +18,7 @@ source of truth for implementation progress.
 | [Install and remove](INSTALL.md)            | Consumer installation, upgrade, recovery, and removal operations              |
 | [Interoperability](INTEROPERABILITY.md)     | Browser-neutral URL handoff and externally supplied controller workflows      |
 | [Agent Skill](../skills/htmlview/SKILL.md)  | Manually invoked workflow for serving, review feedback, and lifecycle cleanup |
+| [Release operations](RELEASING.md)          | Release Please ownership, validation gates, and npm publication               |
 | [Decision index](decisions/README.md)       | ADR status, current applicability, and relationships                          |
 
 The [browser-origin evidence](validation/browser-origin.md) records why every
@@ -33,6 +34,9 @@ The npm package excludes work plans. In the repository, use:
   for the completed execution-model, native CLI, and logging migration; and
 - [the annotation MVP plan](https://github.com/sjunepark/htmlview/blob/main/docs/plans/annotation-mvp.md)
   for implementation sequencing and completion gates.
+
+Release maintainers should follow [release operations](RELEASING.md); Release
+Please owns generated release artifacts after its setup lands.
 
 ## Ownership rules
 

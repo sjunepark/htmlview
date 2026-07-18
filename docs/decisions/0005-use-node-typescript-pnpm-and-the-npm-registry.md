@@ -1,7 +1,8 @@
 # ADR 0005: Use Node.js, TypeScript, pnpm, and the npm registry
 
 - Status: Accepted; partially superseded by
-  [ADR 0007](0007-adopt-effect-v4.md)
+  [ADR 0007](0007-adopt-effect-v4.md) and
+  [ADR 0010](0010-automate-releases-with-release-please.md)
 - Date: 2026-07-15
 
 ## Context
@@ -17,13 +18,14 @@ workflow, while consumers should remain free to use any npm-compatible client.
 
 Implement `htmlview` in strict TypeScript targeting Node.js 22.13 or newer and
 publish the compiled ESM CLI to the npm registry with an `htmlview` executable.
-The registry package identity is `@sejunpark/htmlview`, published publicly; the
+The registry package identity is `@sjunepark/htmlview`, published publicly; the
 unscoped `htmlview` name belongs to an unrelated project. Node's standard
 library owns process spawning, loopback HTTP, filesystem, and cryptographic
 primitives.
 
 Use pnpm 11, pinned through `packageManager`, for dependency installation,
-locking, repository scripts, packing, and publishing. Keep npm installation in
+locking, repository scripts, and packing. ADR 0010 supersedes the publication
+boundary with the npm CLI required for trusted publishing. Keep npm installation in
 package smoke tests as a consumer-compatibility check rather than a repository
 tooling dependency. Use `@toon-format/toon` 2.3.0 at the stdout boundary. Pin
 `@toon-format/spec` 3.3.0 as a development dependency and run every official

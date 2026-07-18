@@ -20,7 +20,7 @@ assert.deepEqual(JSON.parse(process.argv[1]), {
 
 npm install --global "${tarball[0]}" >/dev/null
 htmlview --version >/dev/null
-npm uninstall --global @sejunpark/htmlview >/dev/null
+npm uninstall --global @sjunepark/htmlview >/dev/null
 hash -r
 if command -v htmlview >/dev/null; then
   echo "htmlview remained installed" >&2

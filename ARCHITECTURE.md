@@ -5,9 +5,10 @@
 The raw-serving core, per-user supervisor, Effect execution model, Effect CLI,
 foreground/private diagnostic sinks, review lifecycle, trusted browser review
 surface, authenticated probe-readiness boundary, and bounded automatic review
-refresh are implemented. Packaging and the final release matrix remain. The repository
+refresh are implemented. Packaging and the final release matrix pass; Release
+Please and npm trusted publishing own production promotion. The repository
 [implementation plan](https://github.com/sjunepark/htmlview/blob/main/PLAN.md)
-owns their sequencing.
+owns current release status.
 
 `htmlview` converts a local HTML entry and an explicitly granted directory into
 a ready loopback HTTP URL. The core owns grant validation, byte-faithful static
