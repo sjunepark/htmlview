@@ -417,8 +417,9 @@ events, target context, and comments. Complete field-selected enumeration and
 one feedback batch therefore remain bounded without pagination. Add `--full`,
 pagination, or new aggregates only when real output requires them.
 
-Ordinary commands never install agent hooks or edit agent configuration. An
-installable Agent Skill generated from the same static guidance as the home
-view may be added after the core CLI is stable. Ambient session-start
-integration requires separate evidence that its recurring context cost is
-worthwhile.
+Ordinary commands never install agent hooks or edit agent configuration. The
+package ships a manually invoked Agent Skill under `skills/htmlview`; it keeps
+live CLI help authoritative and adds cross-command guidance for grants, browser
+handoff, review feedback, and cleanup. Its OpenAI metadata disables implicit
+invocation, and it adds no ambient hooks. Ambient session-start integration
+requires separate evidence that its recurring context cost is worthwhile.

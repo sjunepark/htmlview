@@ -15,8 +15,9 @@ install, launch, or automate a browser.
 Raw serving, the Effect CLI grammar, native output boundary, and foreground
 and private diagnostic seams, durable feedback, and the trusted review surface
 are implemented. Ready reviews now refresh automatically after confirmed entry
-or bounded linked-resource changes. The complete release matrix passes; `0.1.0`
-is release-ready but has not been published.
+or bounded linked-resource changes. A version-matched, manually invoked Agent
+Skill now ships with the CLI package. The complete release matrix passes;
+`0.1.0` is release-ready but has not been published.
 
 The public docs describe the implemented `0.1.0` release candidate. See the repository
 [`PLAN.md`](https://github.com/sjunepark/htmlview/blob/main/PLAN.md) for
@@ -65,9 +66,11 @@ The first release will:
 - emit compact TOON by default, with the same logical result available as JSON
   through `--json`;
 - use pinned Effect CLI for native text help, version, completions, log-level
-  selection, syntax validation, and dispatch; and
+  selection, syntax validation, and dispatch;
 - follow the applicable [AXI](https://axi.md/) conventions for agent-facing
-  output, errors, discovery, and next commands.
+  output, errors, discovery, and next commands; and
+- ship a manually invoked Agent Skill that keeps live CLI help authoritative while
+  guiding serving grants, browser handoff, review feedback, and cleanup.
 
 It will not install or control a browser, mutate source, instrument the raw URL,
 publish content beyond the machine, emulate an application server, keep
@@ -102,5 +105,6 @@ to refresh.
 - [Install, upgrade, and remove](docs/INSTALL.md)
 - [CLI contract](docs/CLI.md)
 - [Browser-controller interoperability](docs/INTEROPERABILITY.md)
+- [Installable Agent Skill](skills/htmlview/SKILL.md)
 - [Documentation map](docs/README.md)
 - [Architecture decision index](docs/decisions/README.md)

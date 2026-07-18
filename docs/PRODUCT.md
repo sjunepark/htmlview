@@ -85,6 +85,10 @@ already sufficient.
   actionable raw-session and retained-review state.
 - Route foreground diagnostics to stderr and keep detached diagnostics bounded,
   private, and separate from feedback.
+- Ship a manually invoked, portable Agent Skill that delegates command syntax to live
+  CLI help and guides serving grants, URL handoff, review feedback, and
+  lifecycle cleanup without installing agent hooks or enabling implicit
+  invocation.
 
 ### Review and feedback
 

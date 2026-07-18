@@ -132,11 +132,18 @@ allowed socket, and rejects a second Unix socket. The timeout owns a separate
 process group, escalates from termination to forced termination, caps captured
 output, and waits for descendant-held pipes to close before cleanup.
 
-## Agent Skill evaluation
+## Agent Skill
 
-Version one does not ship an Agent Skill. The structured home view and native
-Effect CLI command help expose the workflow, while a generated skill would
-duplicate that static guidance and would need installation-aware invocation
-rules. Revisit a generated skill only if observed workflows need more guidance
-than `htmlview`, `htmlview serve --help`, `htmlview review --help`, and
-`htmlview feedback --help` provide. Ambient session hooks remain out of scope.
+The package ships a portable, manually invoked skill at
+[`skills/htmlview`](../skills/htmlview/SKILL.md). Install the version-matched
+copy through the [installation workflow](INSTALL.md#install-the-agent-skill),
+then invoke it as `$htmlview`. Its OpenAI metadata disables implicit invocation.
+The portable skill description carries the same explicit-invocation rule for
+clients that do not consume that metadata.
+
+The skill keeps `htmlview --help` and each subcommand's live help authoritative
+for syntax. It adds the cross-command process that help alone cannot carry:
+choosing the narrowest serving grant, preserving the raw/review fidelity
+boundary, handing URLs to an external browser, consuming and explicitly
+acknowledging durable feedback, and cleaning up only the selected lifecycle.
+It installs no ambient session hook and adds no browser dependency.

@@ -24,11 +24,12 @@ diagnostic sinks, durable annotation delivery, and the trusted browser review
 surface are implemented. Bounded entry and served-resource refresh and the
 source-checkout `example:review` workflow, installed-package review guidance,
 and the macOS and Node 22 Linux installed review/observer lifecycle checks are
-now implemented. The complete release-command matrix, refreshed resource
-measurements, and final implementation/diet review pass against the current
-bounded served-resource observer. The `0.1.0` candidate is release-ready and
-remains unpublished. The annotation authorization,
-hostile-content, authenticated probe-readiness, and explicit
+now implemented. A portable Agent Skill for external CLI users is implemented
+and included in the version-matched npm artifact. The complete release-command
+matrix, refreshed resource measurements, and final implementation/diet review
+pass against the current bounded served-resource observer. The `0.1.0`
+candidate is release-ready and remains unpublished. The annotation
+authorization, hostile-content, authenticated probe-readiness, and explicit
 instrumentation-limitation matrices pass and must remain intact through the
 refresh work. Review navigation now requires a shell-minted one-use capability,
 target messages are bound to the active probe lease/revision, and stop/delete
@@ -51,16 +52,16 @@ Documentation now has explicit ownership and current-versus-target status; see
 The organized surface, contract tests, link/fragment checks, and packaged-link
 closure pass the complete current-platform `pnpm run check` gate.
 
-| Slice                             | Status   | Detail                                                                |
-| --------------------------------- | -------- | --------------------------------------------------------------------- |
-| Raw serving and supervisor        | Complete | Fidelity, confinement, private control, lifecycle, packaging          |
-| Effect execution model            | Complete | Typed failures, schemas, cancellation, scopes, release measurements   |
-| Annotation and CLI contracts      | Complete | Product, CLI, architecture, threat model, ADRs 0008–0009              |
-| Documentation organization        | Complete | Canonical map, ADR index, contract cleanup, validation hardening      |
-| Effect CLI and diagnostic logging | Complete | Native CLI, private logs, measurements, and complete release evidence |
-| Annotation runtime                | Complete | Durable feedback, trusted review UI, and bounded automatic refresh    |
-| Packaging and release hardening   | Complete | Installed checks, measurements, release matrix, and review pass       |
-| Publication                       | Pending  | Requires a later explicit production-promotion action                 |
+| Slice                             | Status   | Detail                                                                   |
+| --------------------------------- | -------- | ------------------------------------------------------------------------ |
+| Raw serving and supervisor        | Complete | Fidelity, confinement, private control, lifecycle, packaging             |
+| Effect execution model            | Complete | Typed failures, schemas, cancellation, scopes, release measurements      |
+| Annotation and CLI contracts      | Complete | Product, CLI, architecture, threat model, ADRs 0008–0009                 |
+| Documentation organization        | Complete | Canonical map, ADR index, contract cleanup, validation hardening         |
+| Effect CLI and diagnostic logging | Complete | Native CLI, private logs, measurements, and complete release evidence    |
+| Annotation runtime                | Complete | Durable feedback, trusted review UI, and bounded automatic refresh       |
+| Packaging and release hardening   | Complete | Installed checks, Agent Skill, measurements, release matrix, review pass |
+| Publication                       | Pending  | Requires a later explicit production-promotion action                    |
 
 ## Release invariants
 
@@ -135,6 +136,17 @@ automatically.
 
 ### 2026-07-18
 
+- Added a portable, manually invoked `htmlview` Agent Skill to the npm artifact.
+  It keeps live CLI help authoritative, chooses the narrowest serving grant,
+  preserves the raw/review fidelity boundary, and discloses the durable
+  feedback loop only when that branch is needed. OpenAI metadata disables
+  implicit invocation, matching the external skill-catalog convention.
+- Added skill contract and package-contents coverage plus version-matched
+  installation guidance. Official skill validation, local and packaged skill
+  discovery, isolated raw/review forward tests, the complete current-platform
+  `pnpm run check` gate, and Node 22 Linux package validation pass. The bounded
+  implementation/design/diet review applied only narrow lifecycle and removal
+  clarifications and left no pending decision.
 - Added release-gated browser coverage for a waiting CLI consumer receiving a
   sent element comment, applying the edit, refreshing the live review and raw
   bytes, and acknowledging the durable cursor.
