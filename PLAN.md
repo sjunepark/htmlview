@@ -2,7 +2,7 @@
 
 - Updated: 2026-07-18
 - Release target: `0.1.0`
-- Publication status: unpublished
+- Publication status: published
 
 ## Goal
 
@@ -27,10 +27,10 @@ and the macOS and Node 22 Linux installed review/observer lifecycle checks are
 now implemented. A portable Agent Skill for external CLI users is implemented
 and included in the version-matched npm artifact. The complete release-command
 matrix, refreshed resource measurements, and final implementation/diet review
-pass against the current bounded served-resource observer. The `0.1.0`
-candidate is release-ready and remains unpublished. Release Please and the
-GitHub Actions npm publication job are configured; the initial registry
-bootstrap, trusted-publisher binding, tag, and GitHub release remain. The annotation
+pass against the current bounded served-resource observer. Version `0.1.0` is
+published as `@sjunepark/htmlview@0.1.0`. Release Please and the GitHub Actions
+npm publication job are configured; the registry bootstrap, trusted-publisher
+binding, `v0.1.0` tag, and GitHub release are complete. The annotation
 authorization, hostile-content, authenticated probe-readiness, and explicit
 instrumentation-limitation matrices pass and must remain intact through the
 refresh work. Review navigation now requires a shell-minted one-use capability,
@@ -63,7 +63,7 @@ closure pass the complete current-platform `pnpm run check` gate.
 | Effect CLI and diagnostic logging | Complete | Native CLI, private logs, measurements, and complete release evidence    |
 | Annotation runtime                | Complete | Durable feedback, trusted review UI, and bounded automatic refresh       |
 | Packaging and release hardening   | Complete | Installed checks, Agent Skill, measurements, release matrix, review pass |
-| Publication                       | Pending  | Release Please PR, initial 2FA publish, and trusted-publisher binding    |
+| Publication                       | Complete | npm package, trusted publisher, `v0.1.0` tag, and GitHub release         |
 
 ## Release invariants
 
@@ -114,7 +114,7 @@ bootstrap creates the registry package.
 
 ## Release gate
 
-Before publication, pass:
+The `0.1.0` publication passed:
 
 - `pnpm run check`;
 - `pnpm run validate:browser-use`;
@@ -123,7 +123,8 @@ Before publication, pass:
 - `pnpm run validate:docs`; and
 - `git diff --check`.
 
-Extend those gates with native Effect CLI/channel/logging checks first, then
+Future releases must rerun the same gate. Extend it with native Effect
+CLI/channel/logging checks first, then
 annotation origin, persistence, feedback, automatic refresh, raw-fidelity,
 adversarial, and real-browser checks. Rerun package size, cold-command,
 readiness, and idle-memory measurements after Phase 10 and account for the
@@ -137,16 +138,21 @@ and a size comparison justifies changing it.
 
 ## Next action
 
-Merge the release-pipeline setup, review the generated Release Please PR for
-exactly `@sjunepark/htmlview@0.1.0`, and rerun the complete release gate before
-merging it. Then perform the documented one-time interactive npm publication,
-bind the trusted publisher, and verify the registry, tag, GitHub release, and
-installed CLI.
+Develop the next change with Conventional Commits and let Release Please open
+the next version PR. Before merging that PR, review its SemVer impact and rerun
+the complete release gate. GitHub Actions can publish through the package's npm
+trusted-publisher binding without an npm token or interactive 2FA.
 
 ## Progress log
 
 ### 2026-07-18
 
+- Published `@sjunepark/htmlview@0.1.0`, created the `v0.1.0` GitHub release,
+  and bound npm trusted publishing to `sjunepark/htmlview`, workflow
+  `release-please.yml`, environment `npm`, with only `npm publish` allowed. The
+  registry integrity and SHA-1 match the retained workflow artifact exactly;
+  a clean install reports `htmlview v0.1.0`, and the complete release workflow
+  rerun passes.
 - Hardened the release-pipeline PR against Linux scheduling races: observer
   coverage now changes files through the same atomic-replacement boundary it
   is asserting, and CLI metadata cases use independent supervisor state with
