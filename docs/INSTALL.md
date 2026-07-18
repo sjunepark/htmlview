@@ -44,15 +44,26 @@ inspect and install the version-matched skill with the Agent Skills installer:
 ```sh
 skill_source="$(npm root --global)/@sejunpark/htmlview/skills"
 npx skills add "$skill_source" --list
+```
+
+For project scope, run this command from the intended project root:
+
+```sh
 npx skills add "$skill_source" --skill htmlview --copy
 ```
 
-Choose the intended agent and project or user scope when prompted. The installed
-skill delegates command syntax to the installed CLI's live help and adds the
-serving-grant, browser-handoff, durable-feedback, and cleanup process that spans
-commands. Invoke it explicitly as `$htmlview`; its OpenAI metadata disables
-implicit invocation, and its portable description carries the same rule for
-other clients.
+For user scope, add the explicit global flag:
+
+```sh
+npx skills add "$skill_source" --skill htmlview --copy --global
+```
+
+Choose only the intended scope; the installer may prompt for the target agent.
+The installed skill delegates command syntax to the installed CLI's live help
+and adds the serving-grant, browser-handoff, durable-feedback, and cleanup
+process that spans commands. Invoke it explicitly as `$htmlview`; its OpenAI
+metadata disables implicit invocation, and its portable description carries the
+same rule for other clients.
 
 ## Review an installed page
 
@@ -100,8 +111,20 @@ npm install --global @sejunpark/htmlview@latest
 htmlview --version
 ```
 
-Repeat [Install the Agent Skill](#install-the-agent-skill) after an upgrade to
-refresh any copied skill installation from the same package version.
+After an upgrade, recompute the skill source and refresh only the scope that was
+installed originally. Run the project command from the intended project root:
+
+```sh
+skill_source="$(npm root --global)/@sejunpark/htmlview/skills"
+npx skills add "$skill_source" --skill htmlview --copy
+```
+
+For an existing user-scoped installation, refresh with the global flag instead:
+
+```sh
+skill_source="$(npm root --global)/@sejunpark/htmlview/skills"
+npx skills add "$skill_source" --skill htmlview --copy --global
+```
 
 `stop --all` waits for the old supervisor and all raw/review content listeners
 to close. It preserves annotation drafts and unacknowledged feedback. An

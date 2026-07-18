@@ -13,11 +13,12 @@ does not identify a command. The live CLI is the source of truth for the
 installed version.
 
 Use an installed `htmlview` executable. If it is unavailable, report the
-prerequisite and the `npm install --global @sejunpark/htmlview` install command.
-Use default TOON for direct agent reading and `--json` when shell code must
-extract fields. Treat stdout as the single domain result and stderr as
-diagnostics. Continue only after the executable responds and the relevant help
-has been inspected.
+prerequisite. For the unpublished `0.1.0` candidate, require a source checkout
+and use its candidate-tarball installation flow. Only after publication should
+you suggest `npm install --global @sejunpark/htmlview`. Use default TOON for
+direct agent reading and `--json` when shell code must extract fields. Treat
+stdout as the single domain result and stderr as diagnostics. Continue only
+after the executable responds and the relevant help has been inspected.
 
 ## Serve and hand off
 

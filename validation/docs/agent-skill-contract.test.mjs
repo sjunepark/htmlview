@@ -6,10 +6,11 @@ import test from "node:test";
 const skillDirectory = path.join(process.cwd(), "skills", "htmlview");
 
 test("the distributed htmlview skill preserves its agent contract", async () => {
-  const [skill, review, metadata] = await Promise.all([
+  const [skill, review, metadata, install] = await Promise.all([
     readFile(path.join(skillDirectory, "SKILL.md"), "utf8"),
     readFile(path.join(skillDirectory, "references", "review-loop.md"), "utf8"),
     readFile(path.join(skillDirectory, "agents", "openai.yaml"), "utf8"),
+    readFile(path.join(process.cwd(), "docs", "INSTALL.md"), "utf8"),
   ]);
   const frontmatter = skill.match(/^---\n([\s\S]*?)\n---\n/);
 
@@ -26,6 +27,11 @@ test("the distributed htmlview skill preserves its agent contract", async () => 
   assert.match(skill, /htmlview <command> --help/);
   assert.match(skill, /narrowest serving grant/);
   assert.match(skill, /references\/review-loop\.md/);
+  assert.match(skill, /unpublished `0\.1\.0` candidate/);
+  assert.match(
+    skill,
+    /Only after publication should\s+you suggest `npm install --global @sejunpark\/htmlview`/,
+  );
   assert.match(review, /Delivery does not\s+acknowledge the batch/);
   assert.match(review, /htmlview feedback --after <cursor>/);
   assert.match(review, /feedback returned by either acknowledgement command/);
@@ -35,4 +41,23 @@ test("the distributed htmlview skill preserves its agent contract", async () => 
   );
   assert.match(metadata, /default_prompt: "Use \$htmlview /);
   assert.match(metadata, /policy:\n {2}allow_implicit_invocation: false/);
+
+  const installSection = install.match(
+    /^## Install the Agent Skill$[\s\S]*?(?=^## Review an installed page$)/m,
+  )?.[0];
+  const upgradeSection = install.match(
+    /^## Upgrade$[\s\S]*?(?=^## Remove$)/m,
+  )?.[0];
+  assert.notEqual(installSection, undefined);
+  assert.notEqual(upgradeSection, undefined);
+  for (const section of [installSection, upgradeSection]) {
+    assert.match(
+      section,
+      /^npx skills add "\$skill_source" --skill htmlview --copy$/m,
+    );
+    assert.match(
+      section,
+      /^npx skills add "\$skill_source" --skill htmlview --copy --global$/m,
+    );
+  }
 });
