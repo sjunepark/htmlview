@@ -7,6 +7,7 @@ import {
   rename,
   rm,
   stat,
+  utimes,
   writeFile,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -289,6 +290,238 @@ describe("review entry observer", () => {
       await writeFile(stylesheet, blue);
       await new Promise((resolve) => setTimeout(resolve, 100));
       assert.equal(observations.length, changedCount + 1);
+    } finally {
+      await Effect.runPromise(Scope.close(scope, Exit.void));
+      await rm(parent, { recursive: true, force: true });
+    }
+  });
+
+  it("force-reads changed asset candidates before publishing", async () => {
+    const parent = await mkdtemp(
+      path.join(tmpdir(), "htmlview-asset-confirmation-"),
+    );
+    const root = path.join(parent, "root");
+    const assets = path.join(root, "assets");
+    const entry = path.join(root, "index.html");
+    const stylesheet = path.join(assets, "site.css");
+    const initial = "<!doctype html><link rel=stylesheet href=assets/site.css>";
+    const green = "#x{color:lime}";
+    const blue = "#x{color:blue}";
+    const fixedTime = new Date("2026-01-01T00:00:00.000Z");
+    await mkdir(assets, { recursive: true });
+    await writeFile(entry, initial);
+    await writeFile(stylesheet, green);
+    await utimes(stylesheet, fixedTime, fixedTime);
+    const grant = await Effect.runPromise(resolveServingGrant(entry, { root }));
+    const observations: ReviewEntryObservation[] = [];
+    const scope = await Effect.runPromise(Scope.make());
+    try {
+      const observer = await Effect.runPromise(
+        Scope.provide(scope)(
+          startReviewEntryObserver(
+            grant,
+            (observation) => observations.push(observation),
+            {
+              quietMilliseconds: 100,
+              pollMilliseconds: 200,
+              forcedPollInterval: 1,
+              watchFactory: () => {
+                throw new Error("watch unavailable");
+              },
+            },
+          ),
+        ),
+      );
+      observer.recordServedFile(
+        await servedFile(path.join(grant.root, "assets", "site.css")),
+      );
+      const baselineCount = observations.length;
+
+      await writeFile(stylesheet, blue);
+      await utimes(stylesheet, fixedTime, fixedTime);
+      await new Promise((resolve) => setTimeout(resolve, 250));
+      await writeFile(stylesheet, green);
+      await utimes(stylesheet, fixedTime, fixedTime);
+      await new Promise((resolve) => setTimeout(resolve, 120));
+      assert.equal(observations.length, baselineCount);
+
+      await writeFile(stylesheet, blue);
+      await utimes(stylesheet, fixedTime, fixedTime);
+      await waitFor(() => observations.length === baselineCount + 1);
+    } finally {
+      await Effect.runPromise(Scope.close(scope, Exit.void));
+      await rm(parent, { recursive: true, force: true });
+    }
+  });
+
+  it("preserves every changed target across candidate transitions", async () => {
+    const parent = await mkdtemp(
+      path.join(tmpdir(), "htmlview-asset-candidate-union-"),
+    );
+    const root = path.join(parent, "root");
+    const assets = path.join(root, "assets");
+    const entry = path.join(root, "index.html");
+    const primary = path.join(assets, "primary.css");
+    const secondary = path.join(assets, "secondary.css");
+    const initial =
+      "<!doctype html><link rel=stylesheet href=assets/primary.css><link rel=stylesheet href=assets/secondary.css>";
+    const green = "#x{color:lime}";
+    const blue = "#x{color:blue}";
+    const fixedTime = new Date("2026-01-01T00:00:00.000Z");
+    const watchListeners = new Map<
+      string,
+      (event: "rename" | "change", filename: string | Buffer | null) => void
+    >();
+    await mkdir(assets, { recursive: true });
+    await writeFile(entry, initial);
+    await writeFile(primary, green);
+    await writeFile(secondary, green);
+    await utimes(primary, fixedTime, fixedTime);
+    await utimes(secondary, fixedTime, fixedTime);
+    const grant = await Effect.runPromise(resolveServingGrant(entry, { root }));
+    const canonicalAssets = path.join(grant.root, "assets");
+    const canonicalPrimary = path.join(canonicalAssets, "primary.css");
+    const canonicalSecondary = path.join(canonicalAssets, "secondary.css");
+    const observations: ReviewEntryObservation[] = [];
+    const scope = await Effect.runPromise(Scope.make());
+    try {
+      const observer = await Effect.runPromise(
+        Scope.provide(scope)(
+          startReviewEntryObserver(
+            grant,
+            (observation) => observations.push(observation),
+            {
+              quietMilliseconds: 500,
+              pollMilliseconds: 1_000,
+              forcedPollInterval: 1,
+              watchFactory: (target, _options, listener) => {
+                watchListeners.set(target, listener);
+                return {
+                  on() {
+                    return this;
+                  },
+                  close() {},
+                };
+              },
+            },
+          ),
+        ),
+      );
+      observer.recordServedFile(await servedFile(canonicalPrimary));
+      observer.recordServedFile(await servedFile(canonicalSecondary));
+      const baselineCount = observations.length;
+
+      await writeFile(primary, blue);
+      await utimes(primary, fixedTime, fixedTime);
+      await new Promise((resolve) => setTimeout(resolve, 1_250));
+
+      await writeFile(secondary, blue);
+      watchListeners.get(canonicalAssets)?.("change", "secondary.css");
+      await new Promise((resolve) => setTimeout(resolve, 650));
+
+      await writeFile(primary, green);
+      await utimes(primary, fixedTime, fixedTime);
+      await waitFor(() => observations.length === baselineCount + 1, 3_000);
+
+      observer.recordServedFile(await servedFile(canonicalPrimary));
+      assert.equal(observations.length, baselineCount + 1);
+    } finally {
+      await Effect.runPromise(Scope.close(scope, Exit.void));
+      await rm(parent, { recursive: true, force: true });
+    }
+  }, 8_000);
+
+  it("resets tracked assets when a new entry revision is confirmed", async () => {
+    const parent = await mkdtemp(
+      path.join(tmpdir(), "htmlview-asset-generation-"),
+    );
+    const root = path.join(parent, "root");
+    const assets = path.join(root, "assets");
+    const entry = path.join(root, "index.html");
+    const stylesheet = path.join(assets, "site.css");
+    const initial = "<!doctype html><link rel=stylesheet href=assets/site.css>";
+    const changedEntry = "<!doctype html><p>replacement without assets</p>";
+    const green = "body { color: green; }";
+    const blue = "body { color: blue; }";
+    const watchListeners = new Map<
+      string,
+      (event: "rename" | "change", filename: string | Buffer | null) => void
+    >();
+    await mkdir(assets, { recursive: true });
+    await writeFile(entry, initial);
+    await writeFile(stylesheet, green);
+    const grant = await Effect.runPromise(resolveServingGrant(entry, { root }));
+    const observations: ReviewEntryObservation[] = [];
+    const scope = await Effect.runPromise(Scope.make());
+    try {
+      const observer = await Effect.runPromise(
+        Scope.provide(scope)(
+          startReviewEntryObserver(
+            grant,
+            (observation) => observations.push(observation),
+            {
+              quietMilliseconds: 10,
+              pollMilliseconds: 10_000,
+              watchFactory: (target, _options, listener) => {
+                watchListeners.set(target, listener);
+                return {
+                  on() {
+                    return this;
+                  },
+                  close() {},
+                };
+              },
+            },
+          ),
+        ),
+      );
+      const canonicalAssets = path.join(grant.root, "assets");
+      const initialAsset = await servedFile(
+        path.join(canonicalAssets, "site.css"),
+      );
+      observer.recordServedFile(initialAsset);
+      const staleObservation =
+        observer.beginServedFileObservation(initialAsset);
+      assert.notEqual(staleObservation, undefined);
+      for (let index = 1; index < 128; index += 1)
+        observer.recordServedFile({
+          ...initialAsset,
+          target: path.join(canonicalAssets, `old-${index}.css`),
+        });
+      assert.equal(
+        observer.beginServedFileObservation({
+          ...initialAsset,
+          target: path.join(canonicalAssets, "over-cap.css"),
+        }),
+        undefined,
+      );
+      await writeFile(entry, changedEntry);
+      watchListeners.get(grant.root)?.("change", "index.html");
+      await waitFor(() => {
+        const latest = observations.at(-1);
+        return (
+          latest?.availability === "available" &&
+          latest.revision === revision(changedEntry)
+        );
+      });
+      assert.deepEqual(observations.at(-1), {
+        availability: "available",
+        revision: revision(changedEntry),
+      });
+
+      staleObservation?.complete(initialAsset.revision);
+      const newObservation = observer.beginServedFileObservation({
+        ...initialAsset,
+        target: path.join(canonicalAssets, "new.css"),
+      });
+      assert.notEqual(newObservation, undefined);
+      newObservation?.cancel();
+
+      const resetCount = observations.length;
+      await writeFile(stylesheet, blue);
+      watchListeners.get(canonicalAssets)?.("change", "site.css");
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      assert.equal(observations.length, resetCount);
     } finally {
       await Effect.runPromise(Scope.close(scope, Exit.void));
       await rm(parent, { recursive: true, force: true });

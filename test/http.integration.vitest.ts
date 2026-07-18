@@ -166,6 +166,18 @@ function requestServer(
   });
 }
 
+async function waitFor(
+  predicate: () => boolean,
+  timeoutMilliseconds = 2_000,
+): Promise<void> {
+  const deadline = Date.now() + timeoutMilliseconds;
+  while (!predicate()) {
+    if (Date.now() >= deadline)
+      throw new Error("Timed out waiting for HTTP observation");
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+}
+
 function assertTextResponse(
   response: ResponseResult,
   status: number,
@@ -344,10 +356,12 @@ describe("faithful static HTTP", () => {
     let cancelledObservations = 0;
     const rejected = path.join(root, "assets", "rejected.bin");
     const aborted = path.join(root, "assets", "aborted.bin");
+    const shortened = path.join(root, "assets", "shortened.bin");
     const empty = path.join(root, "assets", "observed-empty.txt");
     const linked = path.join(root, "observed-linked.css");
     const canonicalRejected = path.join(grant.root, "assets", "rejected.bin");
     const canonicalAborted = path.join(grant.root, "assets", "aborted.bin");
+    const canonicalShortened = path.join(grant.root, "assets", "shortened.bin");
     const canonicalEmpty = path.join(
       grant.root,
       "assets",
@@ -358,6 +372,8 @@ describe("faithful static HTTP", () => {
     await writeFile(aborted, "");
     await truncate(rejected, 16 * 1024 * 1024);
     await truncate(aborted, 64 * 1024 * 1024);
+    await writeFile(shortened, "");
+    await truncate(shortened, 8 * 1024 * 1024);
     await writeFile(empty, "");
     await symlink(path.join(root, "assets", "app.css"), linked);
     const observedServer = await startObservedStaticServer(grant, {
@@ -409,6 +425,40 @@ describe("faithful static HTTP", () => {
       assert.equal(observed.length, beforeRejected);
 
       await new Promise<void>((resolve, reject) => {
+        let settled = false;
+        const finish = (): void => {
+          if (settled) return;
+          settled = true;
+          resolve();
+        };
+        const operation = request(
+          {
+            hostname: "127.0.0.1",
+            port: observedServer.port,
+            path: "/assets/shortened.bin",
+            headers: {
+              host: `${observedServer.hostname}:${observedServer.port}`,
+            },
+          },
+          (response) => {
+            response.once("data", () => {
+              void truncate(shortened, 0).catch(reject);
+            });
+            response.once("aborted", finish);
+            response.once("close", finish);
+            response.resume();
+          },
+        );
+        operation.once("error", reject);
+        operation.end();
+      });
+      await waitFor(() => cancelledObservations === 1);
+      assert.equal(
+        observed.some((file) => file.target === canonicalShortened),
+        false,
+      );
+
+      await new Promise<void>((resolve, reject) => {
         const operation = request(
           {
             hostname: "127.0.0.1",
@@ -426,16 +476,16 @@ describe("faithful static HTTP", () => {
         operation.once("error", reject);
         operation.end();
       });
-      await new Promise((resolve) => setTimeout(resolve, 50));
+      await waitFor(() => cancelledObservations === 2);
       assert.equal(
         observed.some((file) => file.target === canonicalAborted),
         false,
       );
-      assert.equal(cancelledObservations, 1);
+      assert.equal(cancelledObservations, 2);
     } finally {
       await observedServer.close();
     }
-  });
+  }, 10_000);
 
   it("selects MIME types for web assets without sniffing", async () => {
     const expectedTypes = {

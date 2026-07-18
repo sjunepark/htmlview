@@ -22,6 +22,7 @@ export interface StaticSessionServer {
 
 export interface StaticHandlerOptions {
   readonly hostname: string;
+  readonly cachePolicy?: "revalidate" | "no-store";
   readonly observeServedFile?: (
     file: ServedFileDescriptor,
   ) => ServedFileObservation | undefined;
@@ -121,6 +122,7 @@ function isNotModified(
 function streamAuthorizedFile(
   stream: Readable,
   response: ServerResponse,
+  expectedSize: bigint,
   observation?: ServedFileObservation,
 ): Effect.Effect<void> {
   return Effect.callback<void>((resume, signal) => {
@@ -130,6 +132,7 @@ function streamAuthorizedFile(
       if (!response.destroyed) response.destroy();
     };
     let completed = false;
+    let bytesRead = 0n;
     let sourceEnded = false;
     let observationSettled = false;
     const cancelObservation = (): void => {
@@ -165,7 +168,9 @@ function streamAuthorizedFile(
       resume(Effect.void);
     };
     const onData = (chunk: Buffer | string): void => {
-      hash?.update(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+      const body = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+      bytesRead += BigInt(body.byteLength);
+      hash?.update(body);
     };
     const onEnd = (): void => {
       sourceEnded = true;
@@ -174,7 +179,7 @@ function streamAuthorizedFile(
       if (!response.destroyed) response.destroy();
     };
     const onResponseFinish = (): void => {
-      if (sourceEnded && hash !== undefined)
+      if (sourceEnded && bytesRead === expectedSize && hash !== undefined)
         completeObservation(`sha256:${hash.digest("hex")}`);
       finish();
     };
@@ -183,6 +188,13 @@ function streamAuthorizedFile(
       finish();
     };
     try {
+      if (response.destroyed || signal.aborted) {
+        completed = true;
+        cancelObservation();
+        destroy();
+        resume(Effect.void);
+        return Effect.void;
+      }
       if (hash !== undefined) stream.on("data", onData);
       stream.once("end", onEnd);
       stream.once("error", onStreamError);
@@ -220,6 +232,14 @@ function beginFileObservation(
 function completeEmptyObservation(observation: ServedFileObservation): void {
   try {
     observation.complete(`sha256:${createHash("sha256").digest("hex")}`);
+  } catch {
+    // Observation is auxiliary; a consumer failure must not change serving.
+  }
+}
+
+function cancelFileObservation(observation: ServedFileObservation): void {
+  try {
+    observation.cancel();
   } catch {
     // Observation is auxiliary; a consumer failure must not change serving.
   }
@@ -272,23 +292,28 @@ export function createStaticHandler(
           opened.metadata.modifiedNanoseconds,
           opened.metadata.inode,
         );
+        const cacheControl =
+          options.cachePolicy === "no-store" ? "no-store" : "no-cache";
         const headers = {
           "content-type":
             contentType(path.extname(target)) || "application/octet-stream",
           "content-length": opened.metadata.size.toString(),
           "last-modified": modified.toUTCString(),
           etag: tag,
-          "cache-control": "no-cache",
+          "cache-control": cacheControl,
           "x-content-type-options": "nosniff",
           "cross-origin-resource-policy": "same-origin",
         };
 
-        if (isNotModified(request, tag, modified))
+        if (
+          cacheControl !== "no-store" &&
+          isNotModified(request, tag, modified)
+        )
           return yield* Effect.sync(() => {
             response.writeHead(304, {
               etag: tag,
               "last-modified": modified.toUTCString(),
-              "cache-control": "no-cache",
+              "cache-control": cacheControl,
               "x-content-type-options": "nosniff",
             });
             response.end();
@@ -305,6 +330,10 @@ export function createStaticHandler(
         if (opened.metadata.size === 0n)
           return yield* Effect.sync(() => {
             if (observation !== undefined) {
+              if (response.destroyed) {
+                cancelFileObservation(observation);
+                return;
+              }
               let settled = false;
               response.once("finish", () => {
                 if (settled) return;
@@ -314,17 +343,18 @@ export function createStaticHandler(
               response.once("close", () => {
                 if (settled) return;
                 settled = true;
-                try {
-                  observation.cancel();
-                } catch {
-                  // Observation is auxiliary.
-                }
+                cancelFileObservation(observation);
               });
             }
             response.end();
           });
         const stream = yield* opened.openReadStream;
-        return yield* streamAuthorizedFile(stream, response, observation);
+        return yield* streamAuthorizedFile(
+          stream,
+          response,
+          opened.metadata.size,
+          observation,
+        );
       }),
     );
 }

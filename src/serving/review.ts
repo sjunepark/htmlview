@@ -990,6 +990,7 @@ function contentHandler(
       }
       return yield* createStaticHandler(configuration.grant, {
         hostname,
+        cachePolicy: "no-store",
         observeServedFile: (file) => state.beginServedFileObservation(file),
       })(request, response);
     }),

@@ -267,6 +267,16 @@ function aggregateAssetRevision(
   return `sha256:${hash.digest("hex")}`;
 }
 
+function sameAssetState(left: AssetState, right: AssetState): boolean {
+  if (left.availability !== right.availability) return false;
+  if (left.availability !== "available" || right.availability !== "available")
+    return true;
+  return (
+    left.revision === right.revision &&
+    sameMetadata(left.metadata, right.metadata)
+  );
+}
+
 class ReviewEntryObserver implements ReviewRefreshObserver {
   readonly #entryName: string;
   readonly #grant: ServingGrant;
@@ -288,16 +298,21 @@ class ReviewEntryObserver implements ReviewRefreshObserver {
   #assetInFlight = false;
   #assetPending = false;
   #assetForcePending = false;
+  readonly #assetForceTargetsPending = new Set<string>();
+  #assetConfirmationPending: `sha256:${string}` | undefined;
   #assetForceCursor = 0;
   #pollCount = 0;
   #knownMetadata: AuthorizedFileMetadata | undefined;
+  #entryRevision: `sha256:${string}` | undefined;
   #published: ReviewEntryObservation;
   #candidate: ReviewEntryObservation | undefined;
   readonly #assets = new Map<string, TrackedAsset>();
   readonly #assetReservations = new Map<string, number>();
   #nextAssetVersion = 0;
+  #assetGeneration = 0;
   #assetRevision: `sha256:${string}` | undefined;
   #assetCandidate: `sha256:${string}` | undefined;
+  readonly #assetCandidateTargets = new Set<string>();
 
   constructor(
     grant: ServingGrant,
@@ -329,6 +344,10 @@ class ReviewEntryObserver implements ReviewRefreshObserver {
     this.#published = publicObservation(initial) ?? {
       availability: "unavailable",
     };
+    this.#entryRevision =
+      this.#published.availability === "available"
+        ? this.#published.revision
+        : undefined;
   }
 
   start(): void {
@@ -370,6 +389,7 @@ class ReviewEntryObserver implements ReviewRefreshObserver {
     this.#ensureAssetWatcher(path.dirname(file.target));
     const revision = aggregateAssetRevision(this.#grant.root, this.#assets);
     this.#assetCandidate = undefined;
+    this.#assetCandidateTargets.clear();
     if (previous === undefined) {
       this.#assetRevision = revision;
       if (this.#published.availability === "available")
@@ -407,10 +427,12 @@ class ReviewEntryObserver implements ReviewRefreshObserver {
       file.target,
       (this.#assetReservations.get(file.target) ?? 0) + 1,
     );
+    const generation = this.#assetGeneration;
     let settled = false;
     const release = (): boolean => {
       if (settled) return false;
       settled = true;
+      if (generation !== this.#assetGeneration) return false;
       const remaining = (this.#assetReservations.get(file.target) ?? 1) - 1;
       if (remaining === 0) this.#assetReservations.delete(file.target);
       else this.#assetReservations.set(file.target, remaining);
@@ -458,6 +480,25 @@ class ReviewEntryObserver implements ReviewRefreshObserver {
     this.#quietTimer = undefined;
     this.#assetQuietTimer = undefined;
     this.#pollTimer = undefined;
+  }
+
+  #resetAssetTracking(): void {
+    this.#assetGeneration += 1;
+    this.#assets.clear();
+    this.#assetReservations.clear();
+    for (const watcher of this.#assetWatchers.values()) watcher.close();
+    this.#assetWatchers.clear();
+    if (this.#assetQuietTimer !== undefined)
+      clearTimeout(this.#assetQuietTimer);
+    this.#assetQuietTimer = undefined;
+    this.#assetPending = false;
+    this.#assetForcePending = false;
+    this.#assetForceTargetsPending.clear();
+    this.#assetConfirmationPending = undefined;
+    this.#assetForceCursor = 0;
+    this.#assetRevision = undefined;
+    this.#assetCandidate = undefined;
+    this.#assetCandidateTargets.clear();
   }
 
   #ensureAssetWatcher(directory: string): void {
@@ -526,7 +567,13 @@ class ReviewEntryObserver implements ReviewRefreshObserver {
       clearTimeout(this.#assetQuietTimer);
     this.#assetQuietTimer = setTimeout(() => {
       this.#assetQuietTimer = undefined;
-      this.#requestAssetInspection();
+      const candidate = this.#assetCandidate;
+      if (candidate === undefined) return;
+      this.#requestAssetInspection(
+        false,
+        new Set(this.#assetCandidateTargets),
+        candidate,
+      );
     }, this.#quietMilliseconds);
     this.#assetQuietTimer.unref();
   }
@@ -577,11 +624,19 @@ class ReviewEntryObserver implements ReviewRefreshObserver {
     );
   }
 
-  #requestAssetInspection(forceNext = false): void {
+  #requestAssetInspection(
+    forceNext = false,
+    forceTargets: ReadonlySet<string> = new Set(),
+    confirmCandidate?: `sha256:${string}`,
+  ): void {
     if (this.#closed || this.#assets.size === 0) return;
     if (this.#assetInFlight) {
       this.#assetPending = true;
       this.#assetForcePending ||= forceNext;
+      for (const target of forceTargets)
+        this.#assetForceTargetsPending.add(target);
+      if (confirmCandidate !== undefined)
+        this.#assetConfirmationPending = confirmCandidate;
       return;
     }
     this.#assetInFlight = true;
@@ -604,14 +659,15 @@ class ReviewEntryObserver implements ReviewRefreshObserver {
               target,
               version,
               state,
-              target === forceTarget,
+              target === forceTarget || forceTargets.has(target),
             ),
           ),
         { concurrency: assetInspectionConcurrency },
       ).pipe(
         Effect.flatMap((inspections) =>
           Effect.sync(() => {
-            if (!this.#closed) this.#consumeAssetInspections(inspections);
+            if (!this.#closed)
+              this.#consumeAssetInspections(inspections, confirmCandidate);
           }),
         ),
         Effect.ensuring(
@@ -619,22 +675,36 @@ class ReviewEntryObserver implements ReviewRefreshObserver {
             this.#assetInFlight = false;
             if (this.#closed || !this.#assetPending) return;
             const pendingForce = this.#assetForcePending;
+            const pendingForceTargets = new Set(this.#assetForceTargetsPending);
+            const pendingConfirmation = this.#assetConfirmationPending;
             this.#assetPending = false;
             this.#assetForcePending = false;
-            this.#requestAssetInspection(pendingForce);
+            this.#assetForceTargetsPending.clear();
+            this.#assetConfirmationPending = undefined;
+            this.#requestAssetInspection(
+              pendingForce,
+              pendingForceTargets,
+              pendingConfirmation,
+            );
           }),
         ),
       ),
     );
   }
 
-  #consumeAssetInspections(inspections: readonly AssetInspection[]): void {
+  #consumeAssetInspections(
+    inspections: readonly AssetInspection[],
+    confirmedCandidate?: `sha256:${string}`,
+  ): void {
+    const changedTargets = new Set<string>();
     for (const inspection of inspections) {
       const current = this.#assets.get(inspection.target);
       if (current?.version !== inspection.version) {
         this.#assetPending = true;
         continue;
       }
+      if (!sameAssetState(current.state, inspection.state))
+        changedTargets.add(inspection.target);
       this.#assets.set(inspection.target, {
         version: ++this.#nextAssetVersion,
         state: inspection.state,
@@ -643,14 +713,25 @@ class ReviewEntryObserver implements ReviewRefreshObserver {
     const revision = aggregateAssetRevision(this.#grant.root, this.#assets);
     if (revision === this.#assetRevision) {
       this.#assetCandidate = undefined;
+      this.#assetCandidateTargets.clear();
       return;
     }
     if (revision !== this.#assetCandidate) {
+      if (this.#assetCandidate === undefined)
+        this.#assetCandidateTargets.clear();
       this.#assetCandidate = revision;
+      for (const target of changedTargets)
+        this.#assetCandidateTargets.add(target);
       this.#scheduleAssetConfirmation();
       return;
     }
+    if (confirmedCandidate !== this.#assetCandidate) {
+      if (this.#assetQuietTimer === undefined)
+        this.#scheduleAssetConfirmation();
+      return;
+    }
     this.#assetCandidate = undefined;
+    this.#assetCandidateTargets.clear();
     this.#assetRevision = revision;
     if (this.#published.availability !== "available") return;
     this.#published = {
@@ -670,7 +751,14 @@ class ReviewEntryObserver implements ReviewRefreshObserver {
       this.#knownMetadata = sample.metadata;
     else this.#knownMetadata = undefined;
 
-    const observation = publicObservation(sample, this.#assetRevision);
+    const entryRevisionChanged =
+      sample.outcome === "available" &&
+      this.#entryRevision !== undefined &&
+      sample.revision !== this.#entryRevision;
+    const observation = publicObservation(
+      sample,
+      entryRevisionChanged ? undefined : this.#assetRevision,
+    );
     if (observation === undefined) return;
     if (sameObservation(this.#published, observation)) {
       this.#candidate = undefined;
@@ -682,6 +770,9 @@ class ReviewEntryObserver implements ReviewRefreshObserver {
       return;
     }
     this.#candidate = undefined;
+    if (entryRevisionChanged) this.#resetAssetTracking();
+    if (observation.availability === "available")
+      this.#entryRevision = observation.revision;
     this.#published = observation;
     this.#publish(observation);
   }
