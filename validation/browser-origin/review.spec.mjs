@@ -1909,6 +1909,10 @@ test("served assets refresh without unrelated reloads or lost in-flight changes"
     await writeFile(stylesheet, "#target { color: rgb(255, 0, 0); }");
     await expect.poll(entryAssetRevision).toBe(renderedRedRevision);
     await expect(page.locator("#limitation")).toBeHidden();
+    await writeFile(stylesheet, "#target { color: rgb(255, 165, 0); }");
+    await expect.poll(() => failedNavigationRequests).toBeGreaterThanOrEqual(4);
+    await expect.poll(targetColor).toBe("rgb(255, 165, 0)");
+    await expect(page.locator("#limitation")).toBeHidden();
     await page.unroute("**/.htmlview/api/navigation");
 
     let supersededNavigationRequests = 0;
