@@ -1,6 +1,13 @@
 import { spawn } from "node:child_process";
+import { readdirSync, readFileSync } from "node:fs";
 
 const maximumTimerMilliseconds = 2_147_483_647;
+const supportedPlatforms = new Set(["darwin", "linux"]);
+
+export function assertProcessGroupPlatform(platform = process.platform) {
+  if (!supportedPlatforms.has(platform))
+    throw new Error("Codex acceptance process groups require macOS or Linux");
+}
 
 function positiveTimer(name, value) {
   if (
@@ -16,8 +23,7 @@ function positiveTimer(name, value) {
 function signalProcessGroup(child, signal) {
   if (child.pid === undefined) return;
   try {
-    if (process.platform === "win32") child.kill(signal);
-    else process.kill(-child.pid, signal);
+    process.kill(-child.pid, signal);
   } catch (error) {
     if (error?.code === "ESRCH") return;
     try {
@@ -28,14 +34,67 @@ function signalProcessGroup(child, signal) {
   }
 }
 
-function processGroupPresent(child) {
-  if (process.platform === "win32" || child.pid === undefined) return false;
+function readLinuxProcessStat(pid) {
   try {
-    process.kill(-child.pid, 0);
+    const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
+    const commandEnd = stat.lastIndexOf(")");
+    if (commandEnd < 0) return undefined;
+    const fields = stat
+      .slice(commandEnd + 2)
+      .trim()
+      .split(/\s+/);
+    const processGroup = Number(fields[2]);
+    if (fields.length < 3 || !Number.isSafeInteger(processGroup))
+      return undefined;
+    return { state: fields[0], processGroup };
+  } catch {
+    return undefined;
+  }
+}
+
+function linuxProcessGroupPresent(processGroup) {
+  let entries;
+  try {
+    entries = readdirSync("/proc", { withFileTypes: true });
+  } catch {
     return true;
+  }
+
+  for (const entry of entries) {
+    if (!entry.isDirectory() || !/^[1-9][0-9]*$/.test(entry.name)) continue;
+    const stat = readLinuxProcessStat(entry.name);
+    if (
+      stat?.processGroup === processGroup &&
+      stat.state !== "Z" &&
+      stat.state !== "X"
+    )
+      return true;
+  }
+  return false;
+}
+
+export function processIsRunning(pid) {
+  if (!Number.isSafeInteger(pid) || pid < 1) return false;
+  try {
+    process.kill(pid, 0);
   } catch (error) {
     return error?.code !== "ESRCH";
   }
+  if (process.platform !== "linux") return true;
+  const stat = readLinuxProcessStat(pid);
+  return stat === undefined || (stat.state !== "Z" && stat.state !== "X");
+}
+
+function processGroupPresent(child) {
+  if (child.pid === undefined) return false;
+  try {
+    process.kill(-child.pid, 0);
+  } catch (error) {
+    if (error?.code === "ESRCH") return false;
+  }
+  return process.platform === "linux"
+    ? linuxProcessGroupPresent(child.pid)
+    : true;
 }
 
 export function runProcessGroup(
@@ -50,6 +109,7 @@ export function runProcessGroup(
     maximumOutputBytes = 10 * 1024 * 1024,
   },
 ) {
+  assertProcessGroupPlatform();
   positiveTimer("timeoutMilliseconds", timeoutMilliseconds);
   positiveTimer("terminationGraceMilliseconds", terminationGraceMilliseconds);
   positiveTimer("streamDrainMilliseconds", streamDrainMilliseconds);
@@ -60,7 +120,7 @@ export function runProcessGroup(
     const child = spawn(command, args, {
       cwd,
       env,
-      detached: process.platform !== "win32",
+      detached: true,
       stdio: ["ignore", "pipe", "pipe"],
     });
     const stdout = [];

@@ -10,19 +10,34 @@ import {
   symlink,
   writeFile,
 } from "node:fs/promises";
+import { request } from "node:http";
 import { tmpdir } from "node:os";
 import { createServer } from "node:net";
 import path from "node:path";
 import { promisify } from "node:util";
 import { chromium, expect } from "@playwright/test";
-import { runProcessGroup } from "./process.mjs";
+import {
+  assertProcessGroupPlatform,
+  processIsRunning,
+  runProcessGroup,
+} from "./process.mjs";
 import {
   codexPermissionConfig,
   permissionProfileName,
 } from "./sandbox-profile.mjs";
+import {
+  combineFailures,
+  stopSupervisorSafely,
+} from "./supervisor-cleanup.mjs";
 
 const execute = promisify(execFile);
 const repository = process.cwd();
+assertProcessGroupPlatform();
+const codexBinary = process.env.HTMLVIEW_CODEX_BINARY ?? "codex";
+const codexModel = process.env.HTMLVIEW_CODEX_MODEL;
+const timeoutMilliseconds = parseTimeout(
+  process.env.HTMLVIEW_CODEX_TIMEOUT_MS ?? "300000",
+);
 const temporary = await mkdtemp(path.join(tmpdir(), "htmlview-codex-"));
 const artifacts = path.join(temporary, "artifacts");
 const packageSource = path.join(temporary, "package-source");
@@ -44,11 +59,6 @@ const initial =
 const comment =
   "Change the button text from Save to exactly Submit report. Do not change any other content.";
 const expected = initial.replace(">Save<", ">Submit report<");
-const codexBinary = process.env.HTMLVIEW_CODEX_BINARY ?? "codex";
-const codexModel = process.env.HTMLVIEW_CODEX_MODEL;
-const timeoutMilliseconds = parseTimeout(
-  process.env.HTMLVIEW_CODEX_TIMEOUT_MS ?? "300000",
-);
 
 function parseTimeout(value) {
   const parsed = Number(value);
@@ -113,15 +123,7 @@ async function waitForSupervisorExit(pid) {
           .catch(() => false),
       ),
     );
-    let processPresent = false;
-    if (pid !== undefined) {
-      try {
-        process.kill(pid, 0);
-        processPresent = true;
-      } catch {
-        processPresent = false;
-      }
-    }
+    const processPresent = processIsRunning(pid);
     if (!socketPresent && !lockPresent && !processPresent) return;
     await new Promise((resolve) => setTimeout(resolve, 20));
   }
@@ -130,31 +132,21 @@ async function waitForSupervisorExit(pid) {
   );
 }
 
-async function stopSupervisor(pid) {
-  let stopFailure;
-  try {
-    await installed(["stop", "--all", "--json"]);
-  } catch (error) {
-    stopFailure = error;
+async function waitForSupervisorProcessExit(pid) {
+  const deadline = Date.now() + 5_000;
+  while (Date.now() < deadline) {
+    if (!processIsRunning(pid)) return;
+    await new Promise((resolve) => setTimeout(resolve, 20));
   }
+  throw new Error("Codex validation retained the htmlview supervisor process");
+}
 
-  let cleanupFailure;
+function signalSupervisor(pid, signal) {
   try {
-    await waitForSupervisorExit(pid);
+    process.kill(pid, signal);
   } catch (error) {
-    cleanupFailure = error;
-    if (pid !== undefined) {
-      try {
-        process.kill(pid, "SIGTERM");
-      } catch {
-        // The supervisor may have exited between the failed wait and signal.
-      }
-      await waitForSupervisorExit(pid);
-    }
+    if (error?.code !== "ESRCH") throw error;
   }
-
-  if (stopFailure !== undefined) throw stopFailure;
-  if (cleanupFailure !== undefined) throw cleanupFailure;
 }
 
 async function git(args) {
@@ -180,9 +172,41 @@ function listen(socketPath) {
   });
 }
 
+function loopbackRequest(url) {
+  const target = new URL(url);
+  return new Promise((resolve, reject) => {
+    const operation = request(
+      {
+        hostname: "127.0.0.1",
+        port: target.port,
+        path: `${target.pathname}${target.search}`,
+        method: "GET",
+        headers: { host: target.host },
+      },
+      (response) => {
+        const chunks = [];
+        response.on("data", (chunk) => chunks.push(chunk));
+        response.on("end", () =>
+          resolve({
+            status: response.statusCode,
+            body: Buffer.concat(chunks),
+          }),
+        );
+      },
+    );
+    operation.setTimeout(5_000, () =>
+      operation.destroy(new Error(`HTTP request for ${target.host} timed out`)),
+    );
+    operation.on("error", reject);
+    operation.end();
+  });
+}
+
 let browser;
 let supervisorStarted = false;
 let supervisorPid;
+let result;
+let primaryFailure;
 
 try {
   await checked(codexBinary, ["--version"]);
@@ -468,28 +492,69 @@ try {
 
   await expect(content.locator("#save")).toHaveText("Submit report");
   await expect(content.locator("p")).toHaveText("Keep this text");
-  assert.equal(
-    await fetch(served.session.url).then((response) => response.text()),
-    expected,
-  );
+  const raw = await loopbackRequest(served.session.url);
+  assert.equal(raw.status, 200);
+  assert.equal(raw.body.toString("utf8"), expected);
 
   await browser.close();
   browser = undefined;
   await installed(["review", "delete", opened.review.id, "--json"]);
-  await stopSupervisor(supervisorPid);
-  supervisorStarted = false;
-
-  process.stdout.write(
-    `${JSON.stringify({
-      codex: "passed",
-      feedback: "acknowledged",
-      raw: "updated",
-      review: "refreshed",
-    })}\n`,
-  );
-} finally {
-  await browser?.close().catch(() => undefined);
-  if (supervisorStarted)
-    await stopSupervisor(supervisorPid).catch(() => undefined);
-  await rm(temporary, { recursive: true, force: true });
+  result = {
+    codex: "passed",
+    feedback: "acknowledged",
+    raw: "updated",
+    review: "refreshed",
+  };
+} catch (error) {
+  primaryFailure = error;
 }
+
+const cleanupFailures = [];
+if (browser !== undefined) {
+  try {
+    await browser.close();
+  } catch (error) {
+    cleanupFailures.push(new Error("browser cleanup failed", { cause: error }));
+  }
+}
+
+let safeToRemove = !supervisorStarted;
+if (supervisorStarted) {
+  try {
+    const cleanup = await stopSupervisorSafely({
+      pid: supervisorPid,
+      requestStop: () => installed(["stop", "--all", "--json"]),
+      waitForCleanExit: () => waitForSupervisorExit(supervisorPid),
+      waitForProcessExit: () => waitForSupervisorProcessExit(supervisorPid),
+      signalProcess: signalSupervisor,
+      isProcessRunning: processIsRunning,
+    });
+    cleanupFailures.push(...cleanup.failures);
+    safeToRemove = cleanup.safeToRemove;
+  } catch (error) {
+    cleanupFailures.push(
+      new Error("supervisor cleanup failed unexpectedly", { cause: error }),
+    );
+    safeToRemove = false;
+  }
+}
+
+if (safeToRemove) {
+  try {
+    await rm(temporary, { recursive: true, force: true });
+  } catch (error) {
+    cleanupFailures.push(
+      new Error("temporary fixture cleanup failed", { cause: error }),
+    );
+  }
+} else {
+  cleanupFailures.push(
+    new Error(
+      `A live htmlview supervisor may remain; private state was retained at ${temporary}`,
+    ),
+  );
+}
+
+const combinedFailure = combineFailures(primaryFailure, cleanupFailures);
+if (combinedFailure !== undefined) throw combinedFailure;
+process.stdout.write(`${JSON.stringify(result)}\n`);

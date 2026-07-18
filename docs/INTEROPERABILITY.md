@@ -107,11 +107,14 @@ through Playwright; lets Codex retrieve and acknowledge that batch through the
 installed CLI; and verifies the exact source edit, raw bytes, and automatic
 review refresh.
 
-This evaluation is intentionally separate from `pnpm run check`: it requires
-Playwright Chromium, an installed and authenticated Codex CLI with permission
-profile support, model capacity, and a network call. `HTMLVIEW_CODEX_BINARY` may
-select another Codex executable, `HTMLVIEW_CODEX_MODEL` may select a model, and
-`HTMLVIEW_CODEX_TIMEOUT_MS` may change the default five-minute agent timeout.
+This evaluation is intentionally separate from `pnpm run check`. It currently
+supports macOS and glibc-based Linux only because its bounded tree termination,
+Unix-domain socket probes, and command paths require that platform contract. It
+also requires Playwright Chromium, an installed and authenticated Codex CLI with
+permission profile support, model capacity, and a network call.
+`HTMLVIEW_CODEX_BINARY` may select another Codex executable,
+`HTMLVIEW_CODEX_MODEL` may select a model, and `HTMLVIEW_CODEX_TIMEOUT_MS` may
+change the default five-minute agent timeout.
 
 The harness removes model credentials from build, pack, install, Git, browser,
 htmlview, and sandbox-probe subprocesses; only the explicit `codex exec` child
