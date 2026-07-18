@@ -2,8 +2,8 @@
 
 > **Status:** The package is not published. These instructions describe the
 > accepted `0.1.0` interface. Annotation commands and the review runtime are
-> implemented, including automatic selected-entry refresh, and the complete
-> release validation matrix passes.
+> implemented, including bounded entry and linked-resource refresh, and the
+> complete release validation matrix passes.
 
 `htmlview` is distributed as an npm package containing compiled JavaScript. It
 supports macOS and glibc-based Linux environments supported by Node.js 22,
@@ -60,8 +60,12 @@ htmlview feedback --wait --json "$review_id"
 ```
 
 Use **Send selected** in the review to keep iterating. Editing the original
-entry automatically refreshes only the instrumented review iframe; the raw URL
-remains byte-faithful and passive. A later feedback wait acknowledges the prior
+entry automatically refreshes the instrumented review iframe. Linked resources
+are tracked only when an authorized response is admitted within the observer's
+size and count bounds and completes successfully; confirmed changes also
+refresh the iframe. Other resources require a manual or entry-driven reload.
+The raw URL remains byte-faithful and passive.
+A later feedback wait acknowledges the prior
 batch by passing its returned cursor with `--after <cursor>`. See
 [Browser-controller interoperability](INTEROPERABILITY.md#human-review-workflow-010-target)
 for the complete cursor loop and cleanup commands.

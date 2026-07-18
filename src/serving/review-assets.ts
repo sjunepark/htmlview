@@ -183,6 +183,7 @@ const shellJs = embeddedJavaScript(String.raw`(() => {
   let readyIntervalTimer;
   let navigationPending = false;
   let navigationInFlight = false;
+  let navigationEpoch = 0;
   let stagedNavigation;
   let entryPollTimer;
   let entryPollController;
@@ -193,7 +194,10 @@ const shellJs = embeddedJavaScript(String.raw`(() => {
   let entryAvailable = true;
   let entryLimitation;
   let observedEntryRevision;
+  let renderedAssetRevision;
+  let pendingAssetRevision;
   let entryNavigationRevision;
+  let entryNavigationAssetRevision;
   let entryNavigationAttempts = 0;
   let localLimitation;
   let loadGeneration = 0;
@@ -280,6 +284,11 @@ const shellJs = embeddedJavaScript(String.raw`(() => {
       return;
     }
     resetEditor();
+    maybeNavigatePendingAsset().catch(() => undefined);
+  }
+
+  function editorBlocksAssetNavigation() {
+    return draftSaveInFlight || (!editor.hidden && (editorDirty || editorSaving));
   }
 
   function entryRevisionPending() {
@@ -308,6 +317,7 @@ const shellJs = embeddedJavaScript(String.raw`(() => {
   }
 
   function discardStagedNavigation() {
+    navigationEpoch += 1;
     const pending = stagedNavigation;
     stagedNavigation = undefined;
     if (pending) pending.frame.remove();
@@ -405,7 +415,7 @@ const shellJs = embeddedJavaScript(String.raw`(() => {
     return true;
   }
 
-  function stageNavigation(navigationUrl, expectedRevision, attempt) {
+  function stageNavigation(navigationUrl, expectedRevision, attempt, assetRevision) {
     const frame = document.createElement("iframe");
     frame.className = "content-frame";
     frame.dataset.staging = "true";
@@ -416,6 +426,7 @@ const shellJs = embeddedJavaScript(String.raw`(() => {
     const pending = {
       frame,
       revision: expectedRevision,
+      assetRevision,
       attempt,
       generation: 0,
     };
@@ -473,6 +484,7 @@ const shellJs = embeddedJavaScript(String.raw`(() => {
       announce("Updated review could not be loaded");
     }
     renderLimitation();
+    maybeNavigatePendingAsset().catch(() => undefined);
   }
 
   function promoteStagedNavigation(pending, nextRevision, lease) {
@@ -496,7 +508,13 @@ const shellJs = embeddedJavaScript(String.raw`(() => {
     navigationPending = false;
     navigationInFlight = false;
     entryNavigationRevision = nextRevision;
+    entryNavigationAssetRevision = pending.assetRevision;
     entryNavigationAttempts = 0;
+    if (pending.assetRevision !== undefined) {
+      renderedAssetRevision = pending.assetRevision;
+      if (pendingAssetRevision === pending.assetRevision)
+        pendingAssetRevision = undefined;
+    }
     localLimitation = undefined;
     if (state) delete state.limitation;
     clearPendingTargetMessages();
@@ -504,16 +522,22 @@ const shellJs = embeddedJavaScript(String.raw`(() => {
     announce("Annotation tools ready");
     sendMode();
     renderLimitation();
+    maybeNavigatePendingAsset().catch(() => undefined);
   }
 
-  async function navigate(expectedRevision) {
+  async function navigate(expectedRevision, expectedAssetRevision) {
     if (reviewConnectionClosed) return;
     discardStagedNavigation();
+    const epoch = navigationEpoch;
     navigationInFlight = true;
     if (expectedRevision !== undefined) {
-      if (entryNavigationRevision !== expectedRevision)
+      if (
+        entryNavigationRevision !== expectedRevision ||
+        entryNavigationAssetRevision !== expectedAssetRevision
+      )
         entryNavigationAttempts = 0;
       entryNavigationRevision = expectedRevision;
+      entryNavigationAssetRevision = expectedAssetRevision;
       entryNavigationAttempts += 1;
     }
     clearPendingTargetMessages();
@@ -528,7 +552,7 @@ const shellJs = embeddedJavaScript(String.raw`(() => {
             : { expected_revision: expectedRevision },
         ),
       });
-      if (reviewConnectionClosed) return;
+      if (reviewConnectionClosed || epoch !== navigationEpoch) return;
       clearTimeout(readyTimer);
       stopModeRetry();
       if (expectedRevision === undefined)
@@ -538,8 +562,10 @@ const shellJs = embeddedJavaScript(String.raw`(() => {
           navigation.navigation_url,
           expectedRevision,
           entryNavigationAttempts,
+          expectedAssetRevision,
         );
     } catch (error) {
+      if (epoch !== navigationEpoch) return;
       navigationInFlight = false;
       if (
         expectedRevision !== undefined &&
@@ -551,6 +577,23 @@ const shellJs = embeddedJavaScript(String.raw`(() => {
       } else renderAnnotationAvailability();
       throw error;
     }
+  }
+
+  async function maybeNavigatePendingAsset() {
+    if (
+      reviewConnectionClosed ||
+      navigationInFlight ||
+      editorBlocksAssetNavigation() ||
+      pendingAssetRevision === undefined ||
+      pendingAssetRevision === renderedAssetRevision ||
+      revision === undefined ||
+      (entryNavigationRevision === revision &&
+        entryNavigationAssetRevision === pendingAssetRevision &&
+        entryNavigationAttempts >= maximumEntryNavigationAttempts)
+    )
+      return;
+    announce("Loading updated assets");
+    await navigate(revision, pendingAssetRevision);
   }
 
   async function pollEntry() {
@@ -580,9 +623,12 @@ const shellJs = embeddedJavaScript(String.raw`(() => {
         entry.availability === "unsupported" &&
         entry.limitation === "entry_too_large";
       const available =
-        exactKeys(entry, ["availability", "revision"]) &&
+        (exactKeys(entry, ["availability", "revision"]) ||
+          exactKeys(entry, ["availability", "revision", "asset_revision"])) &&
         entry.availability === "available" &&
-        /^sha256:[0-9a-f]{64}$/.test(entry.revision || "");
+        /^sha256:[0-9a-f]{64}$/.test(entry.revision || "") &&
+        (entry.asset_revision === undefined ||
+          /^sha256:[0-9a-f]{64}$/.test(entry.asset_revision));
       if (!checking && !unavailable && !unsupported && !available)
         throw new TypeError("Invalid review entry observation");
       validResponse = true;
@@ -594,6 +640,7 @@ const shellJs = embeddedJavaScript(String.raw`(() => {
         entryLimitation = undefined;
         observedEntryRevision = revision;
         entryNavigationRevision = undefined;
+        entryNavigationAssetRevision = undefined;
         entryNavigationAttempts = 0;
         clearPendingTargetMessages();
         resetEditor();
@@ -607,6 +654,7 @@ const shellJs = embeddedJavaScript(String.raw`(() => {
         entryLimitation = entry.limitation;
         observedEntryRevision = revision;
         entryNavigationRevision = undefined;
+        entryNavigationAssetRevision = undefined;
         entryNavigationAttempts = 0;
         clearPendingTargetMessages();
         resetEditor();
@@ -621,26 +669,63 @@ const shellJs = embeddedJavaScript(String.raw`(() => {
             Boolean(state?.limitation) ||
             (revision !== undefined && revision !== entry.revision)
           : observedEntryRevision !== entry.revision;
-      const canSupersedeLimitedNavigation =
-        observedRevisionChanged &&
-        (!wasAvailable || Boolean(state?.limitation));
       entryAvailable = true;
       entryLimitation = undefined;
+      if (entry.asset_revision === renderedAssetRevision) {
+        pendingAssetRevision = undefined;
+        const staleAssetAttempt =
+          entryNavigationRevision === revision &&
+          entryNavigationAssetRevision !== entry.asset_revision;
+        if (staleAssetAttempt) {
+          if (navigationInFlight) discardStagedNavigation();
+          entryNavigationRevision = revision;
+          entryNavigationAssetRevision = entry.asset_revision;
+          entryNavigationAttempts = 0;
+          if (localLimitation === "instrumentation_unavailable")
+            localLimitation = undefined;
+        }
+      } else if (entry.asset_revision !== undefined) {
+        pendingAssetRevision = entry.asset_revision;
+      }
+      if (
+        !navigationInFlight &&
+        entryNavigationRevision === revision &&
+        entryNavigationAssetRevision !== undefined &&
+        entryNavigationAssetRevision !== entry.asset_revision
+      ) {
+        entryNavigationAssetRevision = undefined;
+        entryNavigationAttempts = 0;
+        if (localLimitation === "instrumentation_unavailable")
+          localLimitation = undefined;
+      }
       if (revision === entry.revision) {
         observedEntryRevision = entry.revision;
-        entryNavigationRevision = entry.revision;
-        entryNavigationAttempts = 0;
-        localLimitation = undefined;
+        if (entryNavigationRevision !== entry.revision) {
+          entryNavigationRevision = entry.revision;
+          entryNavigationAssetRevision = undefined;
+          entryNavigationAttempts = 0;
+        }
+        const assetRefreshExhausted =
+          entryNavigationAssetRevision === pendingAssetRevision &&
+          entryNavigationAttempts >= maximumEntryNavigationAttempts;
+        if (!assetRefreshExhausted) localLimitation = undefined;
         if (state) delete state.limitation;
         renderLimitation();
         if (!wasAvailable) {
           announce("Annotation tools ready");
           sendMode();
         }
+        maybeNavigatePendingAsset().catch(() => undefined);
         return;
       }
-      if (entryNavigationRevision !== entry.revision) {
+      const navigationMatchesObservation =
+        entryNavigationRevision === entry.revision &&
+        entryNavigationAssetRevision === entry.asset_revision;
+      if (navigationInFlight && !navigationMatchesObservation)
+        discardStagedNavigation();
+      if (!navigationMatchesObservation) {
         entryNavigationRevision = entry.revision;
+        entryNavigationAssetRevision = entry.asset_revision;
         entryNavigationAttempts = 0;
       }
       if (!observedRevisionChanged && entryNavigationAttempts === 0) {
@@ -650,7 +735,7 @@ const shellJs = embeddedJavaScript(String.raw`(() => {
       }
       if (
         !iframe.hasAttribute("src") ||
-        (navigationInFlight && !canSupersedeLimitedNavigation) ||
+        navigationInFlight ||
         entryNavigationAttempts >= maximumEntryNavigationAttempts
       ) {
         if (!observedRevisionChanged) observedEntryRevision = entry.revision;
@@ -661,7 +746,7 @@ const shellJs = embeddedJavaScript(String.raw`(() => {
       localLimitation = undefined;
       renderLimitation();
       announce("Loading updated review");
-      await navigate(entry.revision);
+      navigate(entry.revision, entry.asset_revision).catch(() => undefined);
     } catch {
       if (
         !validResponse &&
@@ -937,6 +1022,7 @@ const shellJs = embeddedJavaScript(String.raw`(() => {
     finally {
       draftSaveInFlight = false;
       render();
+      maybeNavigatePendingAsset().catch(() => undefined);
     }
   }
 

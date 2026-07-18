@@ -20,7 +20,7 @@ test("public docs make annotation a required 0.1.0 feature", async () => {
   assert.match(readme, /trusted review surface\s+are implemented/);
   assert.match(
     readme,
-    /Ready reviews now refresh automatically after confirmed entry\s+HTML changes/s,
+    /Ready reviews now refresh automatically after confirmed entry\s+or bounded linked-resource changes/s,
   );
   assert.match(readme, /release-ready but\s+has not been published/s);
   assert.doesNotMatch(readme, /runtime is not implemented/);
@@ -29,7 +29,7 @@ test("public docs make annotation a required 0.1.0 feature", async () => {
     install,
     /Annotation commands and the review runtime are.*implemented/s,
   );
-  assert.match(install, /including automatic selected-entry refresh/);
+  assert.match(install, /including bounded entry and linked-resource refresh/);
   assert.match(install, /complete.*release validation matrix passes/s);
   assert.match(install, /^## Review an installed page$/m);
   assert.match(install, /pnpm pack --json --pack-destination/);
@@ -64,16 +64,15 @@ test("public docs make automatic refresh review-owned and leave raw passive", as
     product,
     /automatically reload only the instrumented review iframe/,
   );
-  assert.match(product, /does not.*inject a client into raw\s+HTML/s);
-  assert.match(
-    architecture,
-    /^### Automatic selected-entry refresh \(implemented\)$/m,
-  );
+  assert.match(product, /Do not.*inject a\s+client into raw HTML/s);
+  assert.match(architecture, /^### Automatic review refresh \(implemented\)$/m);
   assert.match(
     architecture,
     /already-loaded\s+raw page.*under its own control/s,
   );
   assert.match(adr, /review-owned, revision-bound, automatic/);
+  assert.match(adr, /never recursively watches the serving grant/);
+  assert.match(adr, /successfully rendered\s+resource revisions distinct/s);
   assert.match(adr, /binds the confirmed expected revision/);
   assert.match(
     architecture,
@@ -87,8 +86,9 @@ test("public docs make automatic refresh review-owned and leave raw passive", as
     interoperability,
     /external browser\/controller must reload any already-open raw page/,
   );
-  assert.match(plan, /Phases 0–6 complete/);
-  assert.match(plan, /browser\s+evidence covers\s+edit-only refresh/i);
+  assert.match(plan, /Phases 0–6 complete; release-ready and unpublished/);
+  assert.match(plan, /Browser evidence covers\s+edit-only refresh/i);
+  assert.match(plan, /linked-resource refresh, unrelated-file exclusion/);
   assert.match(security, /third makes the shell terminal and read-only/);
 });
 

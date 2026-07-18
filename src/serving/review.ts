@@ -11,7 +11,11 @@ import {
 } from "../errors.js";
 import { openAuthorizedFile } from "./authorized-file.js";
 import type { ServingGrant } from "./grant.js";
-import { createStaticHandler } from "./http.js";
+import {
+  createStaticHandler,
+  type ServedFileDescriptor,
+  type ServedFileObservation,
+} from "./http.js";
 import {
   maximumInstrumentedEntryBytes,
   reviewProbePathPrefix,
@@ -28,7 +32,10 @@ import {
   reviewProbeAsset,
   type ReviewAsset,
 } from "./review-assets.js";
-import type { ReviewEntryObservation } from "./review-entry-observer.js";
+import type {
+  ReviewEntryObservation,
+  ReviewRefreshObserver,
+} from "./review-entry-observer.js";
 import {
   decodeActivateProbeRequest,
   decodeEndReviewRequest,
@@ -90,6 +97,7 @@ export class ReviewSurfaceState {
   readonly #entryTransforms = Semaphore.makeUnsafe(1);
   #limitation: ReviewEntryLimitation | undefined;
   #entryObservation: ReviewEntryObservation | undefined;
+  #refreshObserver: ReviewRefreshObserver | undefined;
 
   configure(configuration: ReviewSurfaceConfiguration): void {
     if (this.#configuration !== undefined)
@@ -164,6 +172,18 @@ export class ReviewSurfaceState {
 
   entryObservation(): ReviewEntryObservation | undefined {
     return this.#entryObservation;
+  }
+
+  attachRefreshObserver(observer: ReviewRefreshObserver): void {
+    if (this.#refreshObserver !== undefined)
+      throw new Error("The review refresh observer was already attached");
+    this.#refreshObserver = observer;
+  }
+
+  beginServedFileObservation(
+    file: ServedFileDescriptor,
+  ): ServedFileObservation | undefined {
+    return this.#refreshObserver?.beginServedFileObservation(file);
   }
 
   issueNavigation(
@@ -968,10 +988,11 @@ function contentHandler(
           }),
         );
       }
-      return yield* createStaticHandler(configuration.grant, { hostname })(
-        request,
-        response,
-      );
+      return yield* createStaticHandler(configuration.grant, {
+        hostname,
+        cachePolicy: "no-store",
+        observeServedFile: (file) => state.beginServedFileObservation(file),
+      })(request, response);
     }),
   );
 }

@@ -909,6 +909,12 @@ describe("review origins", () => {
 
         const asset = await send(content, "GET", "/asset.txt");
         assert.equal(asset.body.toString(), "asset bytes");
+        assert.equal(asset.headers["cache-control"], "no-store");
+        const revalidatedAsset = await send(content, "GET", "/asset.txt", {
+          headers: { "if-none-match": String(asset.headers.etag) },
+        });
+        assert.equal(revalidatedAsset.status, 200);
+        assert.equal(revalidatedAsset.body.toString(), "asset bytes");
         assert.equal(
           (await send(content, "GET", "/.htmlview/authored.txt")).status,
           404,

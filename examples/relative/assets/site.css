@@ -1,18 +1,21 @@
 :root {
   font-family: Inter, ui-sans-serif, system-ui, sans-serif;
-  color: #16231d;
-  background: #edf5f0;
+  color: #17243a;
+  background: #e8eef8;
 }
 
 body {
-  display: grid;
   min-height: 100vh;
   margin: 0;
-  place-items: center;
+  background:
+    radial-gradient(circle at 15% 0%, #ffffff 0, transparent 38rem),
+    linear-gradient(145deg, #eef4ff, #dce8f8);
 }
 
 main {
-  width: min(42rem, calc(100% - 3rem));
+  width: min(54rem, calc(100% - 3rem));
+  margin: 0 auto;
+  padding: 4rem 0;
 }
 
 img {
@@ -20,9 +23,15 @@ img {
   height: 4rem;
 }
 
+.hero {
+  display: flex;
+  gap: 1.5rem;
+  align-items: flex-start;
+}
+
 .eyebrow {
   margin-bottom: 0.5rem;
-  color: #367151;
+  color: #2d5eaa;
   font-weight: 700;
   letter-spacing: 0.08em;
   text-transform: uppercase;
@@ -34,11 +43,78 @@ h1 {
   line-height: 1;
 }
 
+#message {
+  color: #50688b;
+  font-size: 1.05rem;
+}
+
+.cards {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 1rem;
+  margin: 2.5rem 0;
+}
+
+.card {
+  display: grid;
+  gap: 0.45rem;
+  min-height: 8rem;
+  padding: 1.25rem;
+  border: 1px solid #b8c9e3;
+  border-radius: 1rem;
+  background: rgb(255 255 255 / 70%);
+  box-shadow: 0 1rem 2rem rgb(45 79 130 / 10%);
+}
+
+.card-accent {
+  color: #fff;
+  border-color: #2d5eaa;
+  background: linear-gradient(145deg, #2d5eaa, #1f3f78);
+}
+
+.card-label {
+  font-size: 0.75rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  opacity: 0.75;
+}
+
+.card strong {
+  font-size: 1.35rem;
+}
+
+.card small {
+  opacity: 0.75;
+}
+
+.details {
+  padding: 1.5rem;
+  border: 1px solid #b8c9e3;
+  border-radius: 1rem;
+  background: rgb(255 255 255 / 72%);
+}
+
+.section-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.pill {
+  padding: 0.4rem 0.7rem;
+  border-radius: 999px;
+  color: #2d5eaa;
+  background: #dce9fc;
+  font-size: 0.75rem;
+  font-weight: 700;
+}
+
 dl div {
   display: grid;
   grid-template-columns: 9rem 1fr;
   padding-block: 0.75rem;
-  border-top: 1px solid #aac6b5;
+  border-top: 1px solid #b4c8e5;
 }
 
 dt {
@@ -48,4 +124,22 @@ dt {
 dd {
   margin: 0;
   overflow-wrap: anywhere;
+}
+
+@media (max-width: 42rem) {
+  main {
+    padding: 2.5rem 0;
+  }
+
+  .hero {
+    display: block;
+  }
+
+  .cards {
+    grid-template-columns: 1fr;
+  }
+
+  .details {
+    padding: 1rem;
+  }
 }

@@ -76,11 +76,14 @@ htmlview feedback --after <cursor> --wait --json "$review_id"
 ```
 
 A ready review automatically refreshes its instrumented iframe after a
-confirmed byte change to that entry, so the human sees the edit without a
-manual reload and can send another batch. Use the original raw `$url` for
-fidelity checks and application E2E. It serves the latest bytes on the next
-request; an external browser/controller must reload any already-open raw page
-when it wants to observe them.
+confirmed byte change to that entry. It also tracks authorized linked-resource
+responses admitted within the observer's size and count bounds that complete
+successfully; other resources require a manual or entry-driven reload. Use the
+original raw `$url` for fidelity checks and application E2E. It serves the
+latest bytes on the next request.
+
+An external browser/controller must reload any already-open raw page when it
+wants to observe those bytes.
 
 ## Validated controllers
 

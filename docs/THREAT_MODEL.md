@@ -2,7 +2,7 @@
 
 > **Status:** Raw-serving controls, Effect CLI grammar, diagnostic filtering and
 > persistence, durable annotations, and existing review controls are
-> implemented. Automatic selected-entry refresh and its adversarial evidence
+> implemented. Bounded entry and served-resource refresh plus its adversarial evidence
 > are also implemented; final release evidence remains in
 > [Security validation](SECURITY_VALIDATION.md).
 
@@ -17,9 +17,9 @@ isolated from both the raw path and trusted annotation controls.
 This model covers the Effect CLI boundary, foreground and detached diagnostic
 logging, supervisor, state files, control channel, raw static HTTP service,
 trusted review shell, instrumented-content origin, annotation store, and
-feedback delivery. It also covers the accepted review-owned entry observer and
-trusted-shell change notification without extending that mechanism to the raw
-origin. It does not claim that rendered HTML is safe or that target metadata
+feedback delivery. It also covers the accepted review-owned entry and
+served-resource observer plus trusted-shell change notification without
+extending that mechanism to the raw origin. It does not claim that rendered HTML is safe or that target metadata
 reported by authored code is authentic.
 
 ## Assets
@@ -74,9 +74,9 @@ reported by authored code is authentic.
 7. Raw and review-content handlers cross from URL paths into the granted local
    filesystem; the annotation store and supervisor log sink cross into separate
    private state.
-8. The ready review's entry observer crosses from a filesystem change hint into
-   an authorized revision check, then a bounded same-origin notification asks
-   the trusted shell to reload its content iframe.
+8. The ready review's refresh observer crosses from completed authorized asset
+   responses and filesystem hints into authorized revision checks, then a
+   bounded same-origin notification asks the trusted shell to reload its iframe.
 9. Authored page scripts cross from local content into the browser's network,
    storage, and credential environment.
 10. Effect CLI's native text help, version, completion, and syntax diagnostics
@@ -152,21 +152,29 @@ reported by authored code is authentic.
   corruption rather than using partial records. Logs are not replayed as state.
 - **Source modification.** Open content read-only and never place state,
   generated files, or annotations under the serving root.
-- **Unsafe or forged source-change refresh.** Scope observation to the fixed
-  pathname represented by the ready review's public entry route, not the
-  complete grant, its initial canonical target, or a path supplied by the
-  browser. Treat watcher events and metadata differences as hints, reauthorize
-  the path's current regular-file target, and distinguish availability state
-  from content change. Missing, forbidden, or unreadable may produce a bounded
-  unavailable notification without a revision; iframe reload requires a
-  confirmed byte revision different from the last rendered bytes. Coalesce
-  bursts and atomic replacement, bind observer-driven navigation capabilities
-  to that expected revision, and reject different transform bytes before probe
-  creation or recording a limitation derived from those mismatched bytes. Bound
-  requests, retries, hidden/page-lifecycle pause and resume, and terminal closure; close
-  every observer and notification resource with its review scope. Never send
-  canonical paths, source bytes, comments, or anchors in a notification, and
-  expose no equivalent raw-origin route.
+- **Unsafe or forged source-change refresh.** Always observe the fixed public
+  entry pathname. Admit a non-entry resource only after the review content
+  origin completes an authorized GET and reports its streamed byte hash. Bound
+  admitted files, individual size, watched parent directories, and inspection
+  concurrency; reserve concurrent admissions until completion or abort, reject
+  unadmittable bodies before observer hashing, and rotate
+  fallback byte verification rather than hashing the complete admitted set in
+  one poll. Never recursively watch or enumerate the complete grant and
+  never accept a resource path from the shell browser API. Treat watcher and
+  metadata events as hints, reauthorize every current regular-file target, and
+  confirm bytes before publishing a deterministic entry or aggregate resource
+  revision. Missing, forbidden, unreadable, or oversized tracked resources have
+  stable bounded states; unrelated and byte-identical writes publish nothing.
+  Coalesce bursts and atomic replacement, publish changed completed re-requests
+  instead of silently rebasing other clients, bind entry-driven navigation to
+  its expected revision, retain resource changes arriving during staged
+  navigation, and defer resource reload while feedback is dirty. Keep entry
+  polling independent of pending navigation so a newer entry can supersede an
+  asset-only candidate. Bound requests, retries,
+  hidden/page-lifecycle pause and resume, and terminal closure; close every
+  observer and notification resource with its review scope. Never send canonical
+  paths, source bytes, comments, or anchors in a notification, and expose no
+  equivalent raw-origin route.
 - **Feedback loss or implicit deletion.** Persist queue success before the
   browser reports it, convert drafts to sent events atomically, read events
   non-destructively, and advance acknowledgement only through an explicit
@@ -279,7 +287,7 @@ The canonical matrix of implemented evidence and pending release checks is
 [Security validation](SECURITY_VALIDATION.md). It covers confinement, hostile
 protocol and browser input, ownership and interruption races, resource bounds,
 origin isolation, structured output, Effect CLI/logging, raw/review fidelity,
-durable feedback, and automatic selected-entry refresh. A required control is
+durable feedback, and bounded automatic review refresh. A required control is
 not complete merely because it is described here.
 
 ## Residual risks
@@ -318,10 +326,11 @@ not complete merely because it is described here.
 - Review rendering differs from raw rendering because of framing, sandboxing,
   event handling, and the inserted probe. The review URL is not a fidelity or
   end-to-end testing substitute.
-- Automatic refresh observes ordinary filesystem state rather than an editor
-  transaction. A quiet-window policy can coalesce partial writes but cannot
-  make arbitrary multi-step edits atomic; a temporarily unsupported entry may
-  therefore surface a review limitation until a later confirmed change.
+- Automatic refresh observes completed review resources and ordinary filesystem
+  state rather than an editor transaction. A quiet-window policy can coalesce
+  partial writes but cannot make arbitrary multi-file edits atomic. The shell
+  therefore coalesces a follow-up navigation, and tracked oversized resources
+  require manual or entry-driven reload until they return within the bound.
 - Annotation persistence increases the lifetime of sensitive human comments.
   User-only permissions and explicit deletion reduce exposure but do not
   protect against another process running as the same operating-system user.

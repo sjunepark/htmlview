@@ -1,7 +1,7 @@
 # Annotation MVP plan
 
 - Status: Phases 0–6 complete; release-ready and unpublished
-- Updated: 2026-07-17
+- Updated: 2026-07-18
 - Parent: [`PLAN.md`](../../PLAN.md)
 - Decision: [ADR 0008](../decisions/0008-separate-raw-serving-from-instrumented-review.md)
 - CLI boundary: [ADR 0009](../decisions/0009-adopt-effect-cli-and-logging.md)
@@ -11,9 +11,9 @@
 Ship human annotation in `0.1.0` without changing the raw URL or writing into a
 served project. A human selects an element or leaves freeform feedback in a
 separate review surface; one agent receives durable structured events through a
-foreground CLI operation. After the agent edits the selected entry HTML, the
-ready review refreshes its own iframe automatically so the same human-agent
-feedback loop can continue.
+foreground CLI operation. After the agent edits the selected entry HTML or a
+bounded linked resource loaded by the review, the ready review refreshes its
+own iframe automatically so the same human-agent feedback loop can continue.
 
 The design borrows the useful separation in Lavish AXI—detached serving,
 browser-side review, and a foreground structured wait—but not its public bind,
@@ -58,13 +58,15 @@ specifications.
 - Stop preserves pending work. Deletion of drafts or unacknowledged events
   requires explicit discard; retry tombstones are bounded.
 - Logs remain content-free diagnostics and never deliver feedback.
-- A ready review owns one bounded observer for its original selected entry.
-  Confirmed byte changes notify the trusted shell and refresh only its
+- A ready review owns one bounded observer for its original selected entry and
+  authorized non-entry resources successfully served to the review content
+  origin. Confirmed byte changes notify the trusted shell and refresh only its
   instrumented iframe; raw responses and already-loaded raw consumers remain
   passive.
-- Observation is limited to the selected entry path. It does not watch the
-  whole serving grant, switch to a newly created output file, launch or control
-  a browser, or turn raw serving into a development server.
+- Observation never watches the whole serving grant. Entry identity stays fixed;
+  linked resources enter a bounded set only after completed review GET bodies.
+  The runtime does not launch a browser or turn raw serving into a development
+  server.
 - Browser installation and product browser launch or automation stay outside
   this repository. Development-only browser validation remains package-excluded.
 
@@ -80,9 +82,10 @@ htmlview feedback --wait <review>
 Explore/Annotate switch. Queue persists a draft; Send publishes selected work;
 Send & End publishes the final work and closes the review listeners. The agent
 uses the returned cursor in its next feedback request after applying a batch.
-While the review remains ready, an edit to the original entry automatically
-reloads the review iframe; the human uses Send rather than Send & End to keep
-iterating. The raw URL serves the latest bytes on its next request, but
+While the review remains ready, an edit to the original entry or a linked
+resource loaded by the review automatically reloads its iframe; the human uses
+Send rather than Send & End to keep iterating. The raw URL serves the latest
+bytes on its next request, but
 `htmlview` does not force unrelated raw tabs or other consumers to refetch.
 
 A stopped, unended review resumes for the same canonical-root/public-entry
@@ -189,19 +192,21 @@ channel that later needs replacing.
   stopped lifecycle barrier, leaving every failed transition retryable as
   ready-and-live or stopped-and-closed.
 
-## Phase 5: automatic selected-entry refresh
+## Phase 5: automatic review refresh
 
-**Complete.** One scoped observer per ready review combines fixed-path
-filesystem hints with bounded metadata fallback checks, reauthorizes through
-the shared file boundary, confirms byte revisions, and coalesces transitions.
+**Complete.** One scoped observer per ready review combines fixed-entry hints
+with bounded completed-resource registration, exact-path watches, and metadata
+fallback checks. It reauthorizes through the shared file boundary, confirms
+byte revisions, and coalesces transitions without enumerating the grant.
 The shell polls a same-origin bounded entry-state endpoint and stages only its
 instrumented iframe through a one-use expected-revision capability, promoting
-the candidate after authenticated probe readiness. Browser evidence covers
+the candidate after authenticated probe readiness. Pending resource revisions
+survive staged navigation, and dirty feedback defers resource reload. Browser evidence covers
 edit-only refresh, transform-time B→C→B races, failed-candidate preservation,
 rapid and unchanged writes, atomic replacement, temporary unavailability,
 transient poll failure, hidden/page-history pause and resume, terminal peer End,
-multiple shell clients, stale editor clearing, draft revision continuity, and
-raw fidelity.
+multiple shell clients, linked-resource refresh, unrelated-file exclusion,
+stale editor clearing, draft revision continuity, and raw fidelity.
 
 ## Phase 6: packaging and release matrix
 
@@ -209,43 +214,46 @@ raw fidelity.
   installed-package guidance, build/package checks, and macOS/Node 22 Linux
   installed review/observer lifecycle evidence are implemented and tested;
   browser controllers remain external.
-- **Complete:** rerun the automatic-refresh resource and performance
+- **Complete:** reran the automatic-refresh resource and performance
   measurements against the recorded Phase 10 baseline, including one ready
-  review with its bounded observer.
-- **Complete:** the full release-command matrix and final implementation/diet
-  review pass after the automatic-refresh resource and performance bounds were
-  recorded.
+  review with the current bounded served-resource observer.
+- **Complete:** the external browser-use check, Linux package check, audit, and
+  final implementation/diet review pass after the current observer's resource
+  and performance bounds were recorded.
 
 ### Release measurement evidence
 
-Commit `a006c375b35c93c61c2404938a66653cdba87150` was measured on macOS
+Commit `292e727c1428e4361605d2276c4cd732b5e2cab4` was measured on macOS
 26.5.1 arm64 with Node 24.15.0 and pnpm 11.13.0. These are local medians, not
 benchmarks. Package and install figures use one clean packed artifact; process
 samples use the installed executable. An empty query uses a fresh state root
 and does not launch a supervisor. Empty-supervisor RSS is sampled after its only
-raw session stops; ready-review RSS is sampled after the review observer reports
-the selected entry revision.
+raw session stops. The ready-review RSS fixture loads one linked stylesheet;
+sampling follows the selected-entry revision, completed resource registration,
+and a confirmed stylesheet byte-change revision.
 
 | Measure                                 | Phase 10 baseline | Annotation artifact | Change              |
 | --------------------------------------- | ----------------- | ------------------- | ------------------- |
-| Tarball                                 | 1,058,473 bytes   | 1,122,730 bytes     | +6.1%               |
+| Tarball                                 | 1,058,473 bytes   | 1,129,081 bytes     | +6.7%               |
 | Packed files                            | 29                | 29                  | none                |
-| Installed size including dependencies   | 3,908 KiB         | 4,976 KiB           | +27.3%              |
+| Installed size including dependencies   | 3,908 KiB         | 4,996 KiB           | +27.8%              |
 | Installed files                         | 47                | 137                 | +90                 |
-| Version command median, 11 spawns       | 98.07 ms          | 90.87 ms            | -7.3%               |
-| Empty query median, 7 fresh state roots | 132.88 ms         | 109.82 ms           | -17.4%              |
-| Fresh `serve` readiness median, 7       | 236.43 ms         | 232.75 ms           | -1.6%               |
-| Empty-supervisor RSS median, 7          | 75,968 KiB        | 85,264 KiB          | +12.2%              |
-| Fresh `review` readiness median, 7      | —                 | 122.32 ms           | annotation baseline |
-| Ready-review observer RSS median, 7     | —                 | 85,968 KiB          | +704 KiB vs empty   |
+| Version command median, 11 spawns       | 98.07 ms          | 97.76 ms            | -0.3%               |
+| Empty query median, 7 fresh state roots | 132.88 ms         | 122.78 ms           | -7.6%               |
+| Fresh `serve` readiness median, 7       | 236.43 ms         | 244.12 ms           | +3.3%               |
+| Empty-supervisor RSS median, 7          | 75,968 KiB        | 85,344 KiB          | +12.3%              |
+| Fresh `review` readiness median, 7      | —                 | 135.70 ms           | annotation baseline |
+| Ready-review observer RSS median, 7     | —                 | 86,736 KiB          | +1,392 KiB vs empty |
 
 The package keeps the same packed file count. Installed size and file count
 increase primarily because the token-aware transform adds external `parse5`
 8.0.1 and `entities` 8.0.0 runtime trees rather than duplicating them into the
-standalone bundles. Cold version, empty-query, and serving readiness show no
-regression in this sample. The complete annotation service raises empty-daemon
-RSS by 9,296 KiB from Phase 10; activating one bounded selected-entry observer
-adds 704 KiB (0.8%) over that current empty supervisor.
+standalone bundles. Cold version and empty-query latency remain below the Phase
+10 sample; serving readiness is 3.3% higher. The complete annotation service
+raises empty-daemon RSS by 9,376 KiB from Phase 10; activating one bounded
+refresh observer with a linked resource adds 1,392 KiB (1.6%) over that current
+empty supervisor. The complete release matrix and final implementation/diet
+review pass for this unpublished candidate.
 
 ## Deliberately deferred
 
@@ -268,7 +276,7 @@ this plan and requires a later explicit action.
 
 Annotation is complete only when a human can send element-targeted and freeform
 feedback, one foreground agent command receives it durably across interruption,
-an agent edit to the original entry refreshes the ready review automatically,
+an agent edit to the original entry or a tracked linked resource refreshes the ready review automatically,
 raw serving remains byte-faithful and independent, review limitations are
 explicit, private state stays outside every grant, and the complete release
 matrix passes. Do not publish automatically.

@@ -701,11 +701,12 @@ class SessionRegistry {
             }),
           },
         });
-        yield* Scope.provide(scope)(
+        const refreshObserver = yield* Scope.provide(scope)(
           startReviewEntryObserver(session.grant, (observation) =>
             surface.publishEntryObservation(observation),
           ),
         );
+        surface.attachRefreshObserver(refreshObserver);
         const verify = (server: ReviewOriginServer) =>
           verifyListenerReady(server, server.readinessPath, 204).pipe(
             Effect.timeoutOrElse({

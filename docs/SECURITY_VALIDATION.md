@@ -5,7 +5,7 @@ repeatable evidence. `pnpm run check` runs the automated macOS/current-platform
 set; Linux package installation is the separate
 `pnpm run validate:package:linux` release check. The first table is the
 implemented raw-serving, native CLI, logging, annotation, and browser-review
-baseline, including automatic selected-entry refresh. The release commands
+baseline, including bounded entry and served-resource refresh. The release commands
 pass for the unpublished `0.1.0` release candidate.
 
 | Control or adversarial case                                             | Evidence                                                                                                                                           |
@@ -42,10 +42,10 @@ pass for the unpublished `0.1.0` release candidate.
 | Hostile authored content cannot read or replace typed comments          | Playwright shell API attempts, stored XSS, forged-message floods, bounded preview work, dirty/end guards, single-flight save, and service workers  |
 | Instrumentation admission/readiness cannot be forged or replayed        | One-use expected-revision navigation capability and probe URL/lease, foreign/same-origin iframe rejection, clean authored URL, redemption, replay  |
 | Instrumentation failure remains explicit                                | Playwright CSP/encoding/markup limits, authenticated navigation/recovery, native controls, modes, and stale revisions                              |
-| Edit-only automatic review refresh                                      | Playwright source edit without manual reload, authenticated replacement readiness, second-revision draft/send, and distinct delivered revisions    |
-| Observer authorization, coalescing, and lifecycle                       | Authorized-file observer tests cover rapid/in-place writes, unchanged bytes, atomic replacement, missing/restore, and scoped shutdown              |
+| Entry and served-resource automatic review refresh                      | Playwright HTML and linked-CSS edits update the iframe; unrequested writes and dirty feedback do not trigger replacement                           |
+| Observer authorization, fallback, coalescing, and lifecycle             | Authorized-file tests cover rapid/unchanged writes, atomic replacement, missing/restore, watcher failure, polling, and scoped shutdown             |
 | Trusted-shell notification boundary                                     | Exact-Host/fetch-metadata, two-second reads, transient recovery, visibility/BFCache pause-resume, failure budget, and End cleanup                  |
-| Revision and annotation continuity                                      | Playwright staged B→C→B rejection, stale-editor clearing, old-revision drafts, same-byte recovery, and multiple-shell refresh                      |
+| Revision and annotation continuity                                      | Playwright staged B→C→B rejection, stale-editor clearing, old-revision drafts, in-flight asset follow-up, and multiple-shell refresh               |
 | Raw independence through automatic refresh                              | Playwright raw URL/body/header comparison around observed writes; raw handler and browser route tables remain unchanged                            |
 
 ## `0.1.0` release evidence
@@ -80,10 +80,18 @@ accepted residual risk. This file records evidence and pending gates only.
   rejects entries larger than 8 MiB before parsing.
   Each review-origin start/readiness sequence is bounded at 2 seconds, and the
   private two-origin client operation is bounded at 6 seconds.
-- Every ready review owns at most one non-persistent fixed-entry watcher and one
-  in-flight authorized inspection. Filesystem hints use a 100 ms quiet window;
-  metadata fallback checks run every second, while unchanged metadata forces a
-  byte confirmation every 30 checks. Each shell client performs at most one
+- Every ready review owns one non-persistent fixed-entry watcher, tracks at
+  most 128 completed non-entry GET resources no larger than 8 MiB each, and
+  opens at most 32 non-persistent watched parent directories. Pre-stream
+  reservations count concurrent new targets against the resource cap and are
+  released on response completion or abort. Entry inspection
+  is single-flight; tracked-resource inspection uses concurrency four.
+  Filesystem hints use a 100 ms quiet window; metadata fallback checks run every
+  second. The entry forces a byte confirmation every 30 checks; tracked
+  resources rotate forced confirmation across at most one unchanged resource
+  per poll, preventing a synchronized whole-set hash burst.
+  Watcher absence, missing filenames, and watcher errors retain polling as the
+  authoritative path. Each shell client performs at most one
   same-origin entry-state request at a time, bounds it at 2 seconds, and waits
   500 ms after completion before polling again. Two consecutive failures are
   tolerated; the third makes the shell terminal and read-only. Pagehide pauses

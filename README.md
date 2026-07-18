@@ -15,8 +15,8 @@ install, launch, or automate a browser.
 Raw serving, the Effect CLI grammar, native output boundary, and foreground
 and private diagnostic seams, durable feedback, and the trusted review surface
 are implemented. Ready reviews now refresh automatically after confirmed entry
-HTML changes. The complete release matrix passes; `0.1.0` is release-ready but
-has not been published.
+or bounded linked-resource changes. The complete release matrix passes; `0.1.0`
+is release-ready but has not been published.
 
 The public docs describe the implemented `0.1.0` release candidate. See the repository
 [`PLAN.md`](https://github.com/sjunepark/htmlview/blob/main/PLAN.md) for
@@ -55,9 +55,9 @@ The first release will:
   instrumented-content origins;
 - let a human queue element-targeted and freeform comments without writing to
   the served project;
-- automatically refresh the instrumented review iframe when the original
-  selected entry HTML changes, without injecting a reload client into raw
-  responses;
+- automatically refresh the instrumented review iframe when the original entry
+  or a bounded linked resource loaded by the review changes, without injecting
+  a reload client into raw responses;
 - persist feedback outside the serving grant and deliver it through a
   retry-safe foreground agent command;
 - keep the local server alive across CLI invocations;
@@ -92,9 +92,10 @@ htmlview feedback --wait <review>
 The human and agent may both open the review URL, but only the raw URL is the
 fidelity and end-to-end testing reference. The foreground feedback command is
 the agent wake path; diagnostic logs never deliver feedback. While the review
-remains open, editing the original entry refreshes the review iframe
-automatically. The raw URL serves the latest bytes on its next request, but
-`htmlview` does not force already-loaded raw consumers to refresh.
+remains open, editing the original entry or a linked resource loaded by the
+review refreshes its iframe automatically. The raw URL serves the latest bytes
+on its next request, but `htmlview` does not force already-loaded raw consumers
+to refresh.
 
 ## Start here
 

@@ -1,18 +1,32 @@
 import { createHash } from "node:crypto";
-import { watch, type FSWatcher } from "node:fs";
+import {
+  watch as nodeWatch,
+  type FSWatcher,
+  type WatchEventType,
+} from "node:fs";
 import path from "node:path";
 import { Effect, FiberSet, type Scope } from "effect";
 import {
   openAuthorizedFile,
   type AuthorizedFileMetadata,
 } from "./authorized-file.js";
-import type { ServingGrant } from "./grant.js";
+import { isWithinRoot, type ServingGrant } from "./grant.js";
+import type {
+  ServedFileDescriptor,
+  ServedFileObservation,
+  ServedFileSnapshot,
+} from "./http.js";
 import { maximumInstrumentedEntryBytes } from "./instrumented-entry.js";
+
+export const maximumTrackedReviewAssets = 128;
+export const maximumTrackedReviewAssetBytes = 8 * 1024 * 1024;
+export const maximumReviewAssetWatchDirectories = 32;
 
 export type ReviewEntryObservation =
   | {
       readonly availability: "available";
       readonly revision: `sha256:${string}`;
+      readonly asset_revision?: `sha256:${string}`;
     }
   | { readonly availability: "unavailable" }
   | {
@@ -44,15 +58,63 @@ interface UnsupportedSample {
 type EntrySample =
   AvailableSample | UnchangedSample | UnavailableSample | UnsupportedSample;
 
+interface AvailableAssetState {
+  readonly availability: "available";
+  readonly metadata: AuthorizedFileMetadata;
+  readonly revision: `sha256:${string}`;
+}
+
+interface UnavailableAssetState {
+  readonly availability: "unavailable";
+}
+
+interface UnsupportedAssetState {
+  readonly availability: "unsupported";
+}
+
+type AssetState =
+  AvailableAssetState | UnavailableAssetState | UnsupportedAssetState;
+
+interface TrackedAsset {
+  readonly version: number;
+  readonly state: AssetState;
+}
+
+interface AssetInspection {
+  readonly target: string;
+  readonly version: number;
+  readonly state: AssetState;
+}
+
+interface ReviewWatcher {
+  on(event: "error", listener: () => void): this;
+  close(): void;
+}
+
+type ReviewWatchFactory = (
+  target: string,
+  options: { readonly persistent: false },
+  listener: (event: WatchEventType, filename: string | Buffer | null) => void,
+) => ReviewWatcher;
+
 export interface ReviewEntryObserverOptions {
   readonly quietMilliseconds?: number;
   readonly pollMilliseconds?: number;
   readonly forcedPollInterval?: number;
+  readonly watchFactory?: ReviewWatchFactory;
+}
+
+export interface ReviewRefreshObserver {
+  beginServedFileObservation(
+    file: ServedFileDescriptor,
+  ): ServedFileObservation | undefined;
+  recordServedFile(file: ServedFileSnapshot): void;
 }
 
 const defaultQuietMilliseconds = 100;
 const defaultPollMilliseconds = 1_000;
 const defaultForcedPollInterval = 30;
+const assetInspectionConcurrency = 4;
 
 function sameMetadata(
   left: AuthorizedFileMetadata | undefined,
@@ -72,7 +134,10 @@ function sameObservation(
 ): boolean {
   if (left?.availability !== right.availability) return false;
   if (left.availability === "available" && right.availability === "available")
-    return left.revision === right.revision;
+    return (
+      left.revision === right.revision &&
+      left.asset_revision === right.asset_revision
+    );
   if (
     left.availability === "unsupported" &&
     right.availability === "unsupported"
@@ -83,10 +148,17 @@ function sameObservation(
 
 function publicObservation(
   sample: EntrySample,
+  assetRevision?: `sha256:${string}`,
 ): ReviewEntryObservation | undefined {
   switch (sample.outcome) {
     case "available":
-      return { availability: "available", revision: sample.revision };
+      return {
+        availability: "available",
+        revision: sample.revision,
+        ...(assetRevision === undefined
+          ? {}
+          : { asset_revision: assetRevision }),
+      };
     case "unavailable":
       return { availability: "unavailable" };
     case "unsupported":
@@ -137,7 +209,75 @@ function inspectReviewEntry(
   });
 }
 
-class ReviewEntryObserver {
+function inspectReviewAsset(
+  grant: ServingGrant,
+  target: string,
+  version: number,
+  known: AssetState,
+  forceRead: boolean,
+): Effect.Effect<AssetInspection, never, Scope.Scope> {
+  return Effect.gen(function* () {
+    const opened = yield* openAuthorizedFile(grant.root, target);
+    if (opened.outcome !== "file")
+      return { target, version, state: { availability: "unavailable" } };
+    if (opened.metadata.size > BigInt(maximumTrackedReviewAssetBytes))
+      return { target, version, state: { availability: "unsupported" } };
+    if (
+      !forceRead &&
+      known.availability === "available" &&
+      sameMetadata(known.metadata, opened.metadata)
+    )
+      return { target, version, state: known };
+    const stream = yield* opened.openReadStream;
+    const revision = yield* readStreamRevision(stream);
+    return revision === undefined
+      ? { target, version, state: { availability: "unavailable" } }
+      : {
+          target,
+          version,
+          state: {
+            availability: "available",
+            metadata: opened.metadata,
+            revision,
+          },
+        };
+  });
+}
+
+function aggregateAssetRevision(
+  root: string,
+  assets: ReadonlyMap<string, TrackedAsset>,
+): `sha256:${string}` | undefined {
+  if (assets.size === 0) return undefined;
+  const hash = createHash("sha256");
+  for (const [target, tracked] of [...assets].sort(([left], [right]) =>
+    left.localeCompare(right),
+  )) {
+    const relative = path.relative(root, target);
+    hash.update(String(Buffer.byteLength(relative)));
+    hash.update(":");
+    hash.update(relative);
+    hash.update("\0");
+    hash.update(tracked.state.availability);
+    hash.update("\0");
+    if (tracked.state.availability === "available")
+      hash.update(tracked.state.revision);
+    hash.update("\0");
+  }
+  return `sha256:${hash.digest("hex")}`;
+}
+
+function sameAssetState(left: AssetState, right: AssetState): boolean {
+  if (left.availability !== right.availability) return false;
+  if (left.availability !== "available" || right.availability !== "available")
+    return true;
+  return (
+    left.revision === right.revision &&
+    sameMetadata(left.metadata, right.metadata)
+  );
+}
+
+class ReviewEntryObserver implements ReviewRefreshObserver {
   readonly #entryName: string;
   readonly #grant: ServingGrant;
   readonly #publish: (observation: ReviewEntryObservation) => void;
@@ -145,17 +285,34 @@ class ReviewEntryObserver {
   readonly #quietMilliseconds: number;
   readonly #pollMilliseconds: number;
   readonly #forcedPollInterval: number;
-  #watcher: FSWatcher | undefined;
+  readonly #watchFactory: ReviewWatchFactory;
+  #entryWatcher: ReviewWatcher | undefined;
+  readonly #assetWatchers = new Map<string, ReviewWatcher>();
   #quietTimer: NodeJS.Timeout | undefined;
+  #assetQuietTimer: NodeJS.Timeout | undefined;
   #pollTimer: NodeJS.Timeout | undefined;
   #closed = false;
   #inFlight = false;
   #pending = false;
   #forcePending = false;
+  #assetInFlight = false;
+  #assetPending = false;
+  #assetForcePending = false;
+  readonly #assetForceTargetsPending = new Set<string>();
+  #assetConfirmationPending: `sha256:${string}` | undefined;
+  #assetForceCursor = 0;
   #pollCount = 0;
   #knownMetadata: AuthorizedFileMetadata | undefined;
+  #entryRevision: `sha256:${string}` | undefined;
   #published: ReviewEntryObservation;
   #candidate: ReviewEntryObservation | undefined;
+  readonly #assets = new Map<string, TrackedAsset>();
+  readonly #assetReservations = new Map<string, number>();
+  #nextAssetVersion = 0;
+  #assetGeneration = 0;
+  #assetRevision: `sha256:${string}` | undefined;
+  #assetCandidate: `sha256:${string}` | undefined;
+  readonly #assetCandidateTargets = new Set<string>();
 
   constructor(
     grant: ServingGrant,
@@ -174,6 +331,10 @@ class ReviewEntryObserver {
       options.pollMilliseconds ?? defaultPollMilliseconds;
     this.#forcedPollInterval =
       options.forcedPollInterval ?? defaultForcedPollInterval;
+    this.#watchFactory =
+      options.watchFactory ??
+      ((target, watchOptions, listener) =>
+        nodeWatch(target, watchOptions, listener) as FSWatcher);
     this.#knownMetadata =
       initial.outcome === "available" ||
       initial.outcome === "unsupported" ||
@@ -183,11 +344,15 @@ class ReviewEntryObserver {
     this.#published = publicObservation(initial) ?? {
       availability: "unavailable",
     };
+    this.#entryRevision =
+      this.#published.availability === "available"
+        ? this.#published.revision
+        : undefined;
   }
 
   start(): void {
     try {
-      this.#watcher = watch(
+      this.#entryWatcher = this.#watchFactory(
         path.dirname(this.#grant.routeEntry),
         { persistent: false },
         (_event, filename) => {
@@ -195,25 +360,174 @@ class ReviewEntryObserver {
             this.#scheduleQuietInspection();
         },
       );
-      this.#watcher.on("error", () => {
-        this.#watcher?.close();
-        this.#watcher = undefined;
+      this.#entryWatcher.on("error", () => {
+        this.#entryWatcher?.close();
+        this.#entryWatcher = undefined;
       });
     } catch {
-      this.#watcher = undefined;
+      this.#entryWatcher = undefined;
     }
     this.#schedulePoll();
+  }
+
+  recordServedFile(file: ServedFileSnapshot): void {
+    if (
+      !this.#canTrackServedFile(file) ||
+      (!this.#assets.has(file.target) &&
+        this.#assets.size >= maximumTrackedReviewAssets)
+    )
+      return;
+    const previous = this.#assets.get(file.target);
+    this.#assets.set(file.target, {
+      version: ++this.#nextAssetVersion,
+      state: {
+        availability: "available",
+        metadata: file.metadata,
+        revision: file.revision,
+      },
+    });
+    this.#ensureAssetWatcher(path.dirname(file.target));
+    const revision = aggregateAssetRevision(this.#grant.root, this.#assets);
+    this.#assetCandidate = undefined;
+    this.#assetCandidateTargets.clear();
+    if (previous === undefined) {
+      this.#assetRevision = revision;
+      if (this.#published.availability === "available")
+        this.#published = {
+          availability: "available",
+          revision: this.#published.revision,
+          ...(revision === undefined ? {} : { asset_revision: revision }),
+        };
+      return;
+    }
+    if (revision === this.#assetRevision) return;
+    this.#assetRevision = revision;
+    if (this.#published.availability === "available")
+      this.#published = {
+        availability: "available",
+        revision: this.#published.revision,
+        ...(revision === undefined ? {} : { asset_revision: revision }),
+      };
+    if (this.#published.availability === "available")
+      this.#publish(this.#published);
+  }
+
+  beginServedFileObservation(
+    file: ServedFileDescriptor,
+  ): ServedFileObservation | undefined {
+    if (!this.#canTrackServedFile(file)) return undefined;
+    if (
+      !this.#assets.has(file.target) &&
+      !this.#assetReservations.has(file.target) &&
+      this.#assets.size + this.#newAssetReservationCount() >=
+        maximumTrackedReviewAssets
+    )
+      return undefined;
+    this.#assetReservations.set(
+      file.target,
+      (this.#assetReservations.get(file.target) ?? 0) + 1,
+    );
+    const generation = this.#assetGeneration;
+    let settled = false;
+    const release = (): boolean => {
+      if (settled) return false;
+      settled = true;
+      if (generation !== this.#assetGeneration) return false;
+      const remaining = (this.#assetReservations.get(file.target) ?? 1) - 1;
+      if (remaining === 0) this.#assetReservations.delete(file.target);
+      else this.#assetReservations.set(file.target, remaining);
+      return true;
+    };
+    return {
+      complete: (revision) => {
+        if (!release()) return;
+        this.recordServedFile({ ...file, revision });
+      },
+      cancel: () => {
+        release();
+      },
+    };
+  }
+
+  #canTrackServedFile(file: ServedFileDescriptor): boolean {
+    return (
+      !this.#closed &&
+      file.target !== this.#grant.routeEntry &&
+      isWithinRoot(this.#grant.root, file.target) &&
+      file.metadata.size <= BigInt(maximumTrackedReviewAssetBytes)
+    );
+  }
+
+  #newAssetReservationCount(): number {
+    let count = 0;
+    for (const target of this.#assetReservations.keys())
+      if (!this.#assets.has(target)) count += 1;
+    return count;
   }
 
   close(): void {
     if (this.#closed) return;
     this.#closed = true;
-    this.#watcher?.close();
-    this.#watcher = undefined;
+    this.#entryWatcher?.close();
+    this.#entryWatcher = undefined;
+    for (const watcher of this.#assetWatchers.values()) watcher.close();
+    this.#assetWatchers.clear();
+    this.#assetReservations.clear();
     if (this.#quietTimer !== undefined) clearTimeout(this.#quietTimer);
+    if (this.#assetQuietTimer !== undefined)
+      clearTimeout(this.#assetQuietTimer);
     if (this.#pollTimer !== undefined) clearTimeout(this.#pollTimer);
     this.#quietTimer = undefined;
+    this.#assetQuietTimer = undefined;
     this.#pollTimer = undefined;
+  }
+
+  #resetAssetTracking(): void {
+    this.#assetGeneration += 1;
+    this.#assets.clear();
+    this.#assetReservations.clear();
+    for (const watcher of this.#assetWatchers.values()) watcher.close();
+    this.#assetWatchers.clear();
+    if (this.#assetQuietTimer !== undefined)
+      clearTimeout(this.#assetQuietTimer);
+    this.#assetQuietTimer = undefined;
+    this.#assetPending = false;
+    this.#assetForcePending = false;
+    this.#assetForceTargetsPending.clear();
+    this.#assetConfirmationPending = undefined;
+    this.#assetForceCursor = 0;
+    this.#assetRevision = undefined;
+    this.#assetCandidate = undefined;
+    this.#assetCandidateTargets.clear();
+  }
+
+  #ensureAssetWatcher(directory: string): void {
+    if (
+      this.#assetWatchers.has(directory) ||
+      this.#assetWatchers.size >= maximumReviewAssetWatchDirectories
+    )
+      return;
+    try {
+      const watcher = this.#watchFactory(
+        directory,
+        { persistent: false },
+        (_event, filename) => {
+          if (
+            filename === null ||
+            this.#assets.has(path.join(directory, filename.toString()))
+          )
+            this.#scheduleAssetQuietInspection();
+        },
+      );
+      watcher.on("error", () => {
+        watcher.close();
+        if (this.#assetWatchers.get(directory) === watcher)
+          this.#assetWatchers.delete(directory);
+      });
+      this.#assetWatchers.set(directory, watcher);
+    } catch {
+      // Polling remains authoritative when native watching is unavailable.
+    }
   }
 
   #scheduleQuietInspection(): void {
@@ -236,6 +550,34 @@ class ReviewEntryObserver {
     this.#quietTimer.unref();
   }
 
+  #scheduleAssetQuietInspection(): void {
+    if (this.#closed) return;
+    if (this.#assetQuietTimer !== undefined)
+      clearTimeout(this.#assetQuietTimer);
+    this.#assetQuietTimer = setTimeout(() => {
+      this.#assetQuietTimer = undefined;
+      this.#requestAssetInspection();
+    }, this.#quietMilliseconds);
+    this.#assetQuietTimer.unref();
+  }
+
+  #scheduleAssetConfirmation(): void {
+    if (this.#closed) return;
+    if (this.#assetQuietTimer !== undefined)
+      clearTimeout(this.#assetQuietTimer);
+    this.#assetQuietTimer = setTimeout(() => {
+      this.#assetQuietTimer = undefined;
+      const candidate = this.#assetCandidate;
+      if (candidate === undefined) return;
+      this.#requestAssetInspection(
+        false,
+        new Set(this.#assetCandidateTargets),
+        candidate,
+      );
+    }, this.#quietMilliseconds);
+    this.#assetQuietTimer.unref();
+  }
+
   #schedulePoll(): void {
     if (this.#closed) return;
     this.#pollTimer = setTimeout(() => {
@@ -244,6 +586,7 @@ class ReviewEntryObserver {
       const forceRead = this.#pollCount >= this.#forcedPollInterval;
       if (forceRead) this.#pollCount = 0;
       this.#requestInspection(forceRead);
+      this.#requestAssetInspection(true);
       this.#schedulePoll();
     }, this.#pollMilliseconds);
     this.#pollTimer.unref();
@@ -281,6 +624,124 @@ class ReviewEntryObserver {
     );
   }
 
+  #requestAssetInspection(
+    forceNext = false,
+    forceTargets: ReadonlySet<string> = new Set(),
+    confirmCandidate?: `sha256:${string}`,
+  ): void {
+    if (this.#closed || this.#assets.size === 0) return;
+    if (this.#assetInFlight) {
+      this.#assetPending = true;
+      this.#assetForcePending ||= forceNext;
+      for (const target of forceTargets)
+        this.#assetForceTargetsPending.add(target);
+      if (confirmCandidate !== undefined)
+        this.#assetConfirmationPending = confirmCandidate;
+      return;
+    }
+    this.#assetInFlight = true;
+    const targets = [...this.#assets.keys()];
+    const forceTarget = forceNext
+      ? targets[this.#assetForceCursor++ % targets.length]
+      : undefined;
+    const snapshot = [...this.#assets].map(([target, tracked]) => ({
+      target,
+      version: tracked.version,
+      state: tracked.state,
+    }));
+    this.#run(
+      Effect.forEach(
+        snapshot,
+        ({ target, version, state }) =>
+          Effect.scoped(
+            inspectReviewAsset(
+              this.#grant,
+              target,
+              version,
+              state,
+              target === forceTarget || forceTargets.has(target),
+            ),
+          ),
+        { concurrency: assetInspectionConcurrency },
+      ).pipe(
+        Effect.flatMap((inspections) =>
+          Effect.sync(() => {
+            if (!this.#closed)
+              this.#consumeAssetInspections(inspections, confirmCandidate);
+          }),
+        ),
+        Effect.ensuring(
+          Effect.sync(() => {
+            this.#assetInFlight = false;
+            if (this.#closed || !this.#assetPending) return;
+            const pendingForce = this.#assetForcePending;
+            const pendingForceTargets = new Set(this.#assetForceTargetsPending);
+            const pendingConfirmation = this.#assetConfirmationPending;
+            this.#assetPending = false;
+            this.#assetForcePending = false;
+            this.#assetForceTargetsPending.clear();
+            this.#assetConfirmationPending = undefined;
+            this.#requestAssetInspection(
+              pendingForce,
+              pendingForceTargets,
+              pendingConfirmation,
+            );
+          }),
+        ),
+      ),
+    );
+  }
+
+  #consumeAssetInspections(
+    inspections: readonly AssetInspection[],
+    confirmedCandidate?: `sha256:${string}`,
+  ): void {
+    const changedTargets = new Set<string>();
+    for (const inspection of inspections) {
+      const current = this.#assets.get(inspection.target);
+      if (current?.version !== inspection.version) {
+        this.#assetPending = true;
+        continue;
+      }
+      if (!sameAssetState(current.state, inspection.state))
+        changedTargets.add(inspection.target);
+      this.#assets.set(inspection.target, {
+        version: ++this.#nextAssetVersion,
+        state: inspection.state,
+      });
+    }
+    const revision = aggregateAssetRevision(this.#grant.root, this.#assets);
+    if (revision === this.#assetRevision) {
+      this.#assetCandidate = undefined;
+      this.#assetCandidateTargets.clear();
+      return;
+    }
+    if (revision !== this.#assetCandidate) {
+      if (this.#assetCandidate === undefined)
+        this.#assetCandidateTargets.clear();
+      this.#assetCandidate = revision;
+      for (const target of changedTargets)
+        this.#assetCandidateTargets.add(target);
+      this.#scheduleAssetConfirmation();
+      return;
+    }
+    if (confirmedCandidate !== this.#assetCandidate) {
+      if (this.#assetQuietTimer === undefined)
+        this.#scheduleAssetConfirmation();
+      return;
+    }
+    this.#assetCandidate = undefined;
+    this.#assetCandidateTargets.clear();
+    this.#assetRevision = revision;
+    if (this.#published.availability !== "available") return;
+    this.#published = {
+      availability: "available",
+      revision: this.#published.revision,
+      ...(revision === undefined ? {} : { asset_revision: revision }),
+    };
+    this.#publish(this.#published);
+  }
+
   #consume(sample: EntrySample): void {
     if (
       sample.outcome === "available" ||
@@ -290,7 +751,14 @@ class ReviewEntryObserver {
       this.#knownMetadata = sample.metadata;
     else this.#knownMetadata = undefined;
 
-    const observation = publicObservation(sample);
+    const entryRevisionChanged =
+      sample.outcome === "available" &&
+      this.#entryRevision !== undefined &&
+      sample.revision !== this.#entryRevision;
+    const observation = publicObservation(
+      sample,
+      entryRevisionChanged ? undefined : this.#assetRevision,
+    );
     if (observation === undefined) return;
     if (sameObservation(this.#published, observation)) {
       this.#candidate = undefined;
@@ -302,6 +770,9 @@ class ReviewEntryObserver {
       return;
     }
     this.#candidate = undefined;
+    if (entryRevisionChanged) this.#resetAssetTracking();
+    if (observation.availability === "available")
+      this.#entryRevision = observation.revision;
     this.#published = observation;
     this.#publish(observation);
   }
@@ -311,7 +782,7 @@ export function startReviewEntryObserver(
   grant: ServingGrant,
   publish: (observation: ReviewEntryObservation) => void,
   options: ReviewEntryObserverOptions = {},
-): Effect.Effect<void, never, Scope.Scope> {
+): Effect.Effect<ReviewRefreshObserver, never, Scope.Scope> {
   return Effect.gen(function* () {
     const initial = yield* Effect.scoped(
       inspectReviewEntry(grant, undefined, true),
@@ -321,7 +792,7 @@ export function startReviewEntryObserver(
     };
     publish(initialObservation);
     const run = yield* FiberSet.makeRuntime<never, void, never>();
-    yield* Effect.acquireRelease(
+    return yield* Effect.acquireRelease(
       Effect.sync(() => {
         const observer = new ReviewEntryObserver(
           grant,
