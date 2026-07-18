@@ -1,0 +1,6 @@
+interface:
+  display_name: "htmlview"
+  short_description: "Serve and review local HTML with htmlview"
+  default_prompt: "Use $htmlview to serve this local HTML file and return its ready raw URL."
+policy:
+  allow_implicit_invocation: false

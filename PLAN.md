@@ -24,11 +24,12 @@ diagnostic sinks, durable annotation delivery, and the trusted browser review
 surface are implemented. Bounded entry and served-resource refresh and the
 source-checkout `example:review` workflow, installed-package review guidance,
 and the macOS and Node 22 Linux installed review/observer lifecycle checks are
-now implemented. The complete release-command matrix, refreshed resource
-measurements, and final implementation/diet review pass against the current
-bounded served-resource observer. The `0.1.0` candidate is release-ready and
-remains unpublished. The annotation authorization,
-hostile-content, authenticated probe-readiness, and explicit
+now implemented. A portable Agent Skill for external CLI users is implemented
+and included in the version-matched npm artifact. The complete release-command
+matrix, refreshed resource measurements, and final implementation/diet review
+pass against the current bounded served-resource observer. The `0.1.0`
+candidate is release-ready and remains unpublished. The annotation
+authorization, hostile-content, authenticated probe-readiness, and explicit
 instrumentation-limitation matrices pass and must remain intact through the
 refresh work. Review navigation now requires a shell-minted one-use capability,
 target messages are bound to the active probe lease/revision, and stop/delete
@@ -39,23 +40,28 @@ automatic replacements are promoted only after authenticated probe readiness,
 and shell polling now has explicit active, hidden-page paused, and terminal
 phases rather than an unbounded reconnect path. Source-checkout feedback stays
 behind the example wrapper without exposing the private state-directory
-override.
+override. A deterministic browser-to-waiting-CLI-to-refresh test now closes the
+complete feedback-loop evidence in the normal gate. A separate source-checkout
+`validate:codex` evaluation uses a freshly installed package and ephemeral
+Codex session to prove that a real coding agent can consume, apply, acknowledge,
+and visibly refresh one controlled feedback batch without coupling validation
+to the developer's active session.
 
 Documentation now has explicit ownership and current-versus-target status; see
 [`docs/README.md`](docs/README.md). There is no external blocker.
 The organized surface, contract tests, link/fragment checks, and packaged-link
 closure pass the complete current-platform `pnpm run check` gate.
 
-| Slice                             | Status   | Detail                                                                |
-| --------------------------------- | -------- | --------------------------------------------------------------------- |
-| Raw serving and supervisor        | Complete | Fidelity, confinement, private control, lifecycle, packaging          |
-| Effect execution model            | Complete | Typed failures, schemas, cancellation, scopes, release measurements   |
-| Annotation and CLI contracts      | Complete | Product, CLI, architecture, threat model, ADRs 0008–0009              |
-| Documentation organization        | Complete | Canonical map, ADR index, contract cleanup, validation hardening      |
-| Effect CLI and diagnostic logging | Complete | Native CLI, private logs, measurements, and complete release evidence |
-| Annotation runtime                | Complete | Durable feedback, trusted review UI, and bounded automatic refresh    |
-| Packaging and release hardening   | Complete | Installed checks, measurements, release matrix, and review pass       |
-| Publication                       | Pending  | Requires a later explicit production-promotion action                 |
+| Slice                             | Status   | Detail                                                                   |
+| --------------------------------- | -------- | ------------------------------------------------------------------------ |
+| Raw serving and supervisor        | Complete | Fidelity, confinement, private control, lifecycle, packaging             |
+| Effect execution model            | Complete | Typed failures, schemas, cancellation, scopes, release measurements      |
+| Annotation and CLI contracts      | Complete | Product, CLI, architecture, threat model, ADRs 0008–0009                 |
+| Documentation organization        | Complete | Canonical map, ADR index, contract cleanup, validation hardening         |
+| Effect CLI and diagnostic logging | Complete | Native CLI, private logs, measurements, and complete release evidence    |
+| Annotation runtime                | Complete | Durable feedback, trusted review UI, and bounded automatic refresh       |
+| Packaging and release hardening   | Complete | Installed checks, Agent Skill, measurements, release matrix, review pass |
+| Publication                       | Pending  | Requires a later explicit production-promotion action                    |
 
 ## Release invariants
 
@@ -130,6 +136,45 @@ automatically.
 
 ### 2026-07-18
 
+- Addressed PR #7 review findings across the Codex acceptance harness and Agent
+  Skill guidance. Cleanup now fails before allocation on unsupported platforms,
+  preserves the original Host on loopback raw checks, retains every primary and
+  cleanup failure, and removes private state only after a nonce- and
+  process-identity-bound supervisor exit. Linux process-group checks ignore
+  terminated zombies without weakening live-descendant detection.
+- Made process escalation tests readiness-driven, documented the exact supported
+  acceptance platforms and project/user skill scopes, and included an actionable
+  unpublished-candidate install path in the copied skill. The bounded
+  implementation/design/diet review is clean; `pnpm run check`, the authenticated
+  `pnpm run validate:codex`, Linux packaged-artifact validation, documentation
+  validation, and Node 22/24 Linux process tests—including throttled runs—pass.
+- Added a portable, manually invoked `htmlview` Agent Skill to the npm artifact.
+  It keeps live CLI help authoritative, chooses the narrowest serving grant,
+  preserves the raw/review fidelity boundary, and discloses the durable
+  feedback loop only when that branch is needed. OpenAI metadata disables
+  implicit invocation, matching the external skill-catalog convention.
+- Added skill contract and package-contents coverage plus version-matched
+  installation guidance. Official skill validation, local and packaged skill
+  discovery, isolated raw/review forward tests, the complete current-platform
+  `pnpm run check` gate, and Node 22 Linux package validation pass. The bounded
+  implementation/design/diet review applied only narrow lifecycle and removal
+  clarifications and left no pending decision.
+- Added release-gated browser coverage for a waiting CLI consumer receiving a
+  sent element comment, applying the edit, refreshing the live review and raw
+  bytes, and acknowledging the durable cursor.
+- Added the opt-in `pnpm run validate:codex` acceptance evaluation. It packs and
+  installs htmlview in an isolated temporary fixture, submits controlled browser
+  feedback, runs a fresh ephemeral `codex exec`, and checks the exact edit,
+  acknowledgement, refresh, raw response, and cleanup. Model credentials are
+  excluded from every setup and htmlview subprocess; sandboxed commands can
+  reach only the temporary private control socket through an exact network-proxy
+  allowlist. A least-privilege permission profile now limits reads to the fixture,
+  installed package, runtime tools, and private state, limits writes to the
+  served fixture subtree and isolated private state, and proves the filesystem
+  and socket boundary with pre-agent canaries. Agent timeout and output limits
+  terminate the complete process group so descendants cannot retain cleanup
+  pipes. The hardened live acceptance evaluation passes with the installed
+  Codex CLI.
 - Addressed PR review findings in the served-resource refresh path: confirmed
   entry revisions now reset the tracked-resource generation, candidate assets
   are force-read as an accumulated set before publication, review assets bypass

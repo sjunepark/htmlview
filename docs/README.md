@@ -6,18 +6,19 @@ source of truth for implementation progress.
 
 ## Canonical documents
 
-| Document                                    | Owns                                                                         |
-| ------------------------------------------- | ---------------------------------------------------------------------------- |
-| [README](../README.md)                      | Product summary, release status, and first routes into the docs              |
-| [Product requirements](PRODUCT.md)          | User jobs, release scope, non-goals, and success criteria                    |
-| [CLI contract](CLI.md)                      | Commands, flags, logical results, errors, channels, and exit behavior        |
-| [Domain language](../CONTEXT.md)            | Canonical names for serving, review, feedback, and private state             |
-| [Architecture](../ARCHITECTURE.md)          | Implemented system shape, accepted additions, flows, ownership, and code map |
-| [Threat model](THREAT_MODEL.md)             | Assets, trust boundaries, required controls, and residual risks              |
-| [Security evidence](SECURITY_VALIDATION.md) | Implemented and pending validation evidence plus enforced resource bounds    |
-| [Install and remove](INSTALL.md)            | Consumer installation, upgrade, recovery, and removal operations             |
-| [Interoperability](INTEROPERABILITY.md)     | Browser-neutral URL handoff and externally supplied controller workflows     |
-| [Decision index](decisions/README.md)       | ADR status, current applicability, and relationships                         |
+| Document                                    | Owns                                                                          |
+| ------------------------------------------- | ----------------------------------------------------------------------------- |
+| [README](../README.md)                      | Product summary, release status, and first routes into the docs               |
+| [Product requirements](PRODUCT.md)          | User jobs, release scope, non-goals, and success criteria                     |
+| [CLI contract](CLI.md)                      | Commands, flags, logical results, errors, channels, and exit behavior         |
+| [Domain language](../CONTEXT.md)            | Canonical names for serving, review, feedback, and private state              |
+| [Architecture](../ARCHITECTURE.md)          | Implemented system shape, accepted additions, flows, ownership, and code map  |
+| [Threat model](THREAT_MODEL.md)             | Assets, trust boundaries, required controls, and residual risks               |
+| [Security evidence](SECURITY_VALIDATION.md) | Implemented and pending validation evidence plus enforced resource bounds     |
+| [Install and remove](INSTALL.md)            | Consumer installation, upgrade, recovery, and removal operations              |
+| [Interoperability](INTEROPERABILITY.md)     | Browser-neutral URL handoff and externally supplied controller workflows      |
+| [Agent Skill](../skills/htmlview/SKILL.md)  | Manually invoked workflow for serving, review feedback, and lifecycle cleanup |
+| [Decision index](decisions/README.md)       | ADR status, current applicability, and relationships                          |
 
 The [browser-origin evidence](validation/browser-origin.md) records why every
 live surface receives a fresh `.localhost` authority.

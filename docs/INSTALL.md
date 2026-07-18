@@ -35,6 +35,36 @@ npx --yes @sejunpark/htmlview serve ./report.html
 The npm package does not include a browser. Supply a browser controller
 separately when the returned URL needs interactive inspection.
 
+## Install the Agent Skill
+
+The npm package includes the portable, manually invoked `htmlview` Agent Skill
+but does not edit any agent configuration. After a global CLI installation,
+inspect and install the version-matched skill with the Agent Skills installer:
+
+```sh
+skill_source="$(npm root --global)/@sejunpark/htmlview/skills"
+npx skills add "$skill_source" --list
+```
+
+For project scope, run this command from the intended project root:
+
+```sh
+npx skills add "$skill_source" --skill htmlview --copy
+```
+
+For user scope, add the explicit global flag:
+
+```sh
+npx skills add "$skill_source" --skill htmlview --copy --global
+```
+
+Choose only the intended scope; the installer may prompt for the target agent.
+The installed skill delegates command syntax to the installed CLI's live help
+and adds the serving-grant, browser-handoff, durable-feedback, and cleanup
+process that spans commands. Invoke it explicitly as `$htmlview`; its OpenAI
+metadata disables implicit invocation, and its portable description carries the
+same rule for other clients.
+
 ## Review an installed page
 
 Until the package is published, create and install the candidate tarball from a
@@ -81,6 +111,21 @@ npm install --global @sejunpark/htmlview@latest
 htmlview --version
 ```
 
+After an upgrade, recompute the skill source and refresh only the scope that was
+installed originally. Run the project command from the intended project root:
+
+```sh
+skill_source="$(npm root --global)/@sejunpark/htmlview/skills"
+npx skills add "$skill_source" --skill htmlview --copy
+```
+
+For an existing user-scoped installation, refresh with the global flag instead:
+
+```sh
+skill_source="$(npm root --global)/@sejunpark/htmlview/skills"
+npx skills add "$skill_source" --skill htmlview --copy --global
+```
+
 `stop --all` waits for the old supervisor and all raw/review content listeners
 to close. It preserves annotation drafts and unacknowledged feedback. An
 upgrade does not read or modify served projects; the next command validates
@@ -102,7 +147,13 @@ htmlview stop --all
 npm uninstall --global @sejunpark/htmlview
 ```
 
-No project files were created. To remove all private htmlview state—including
+A copied Agent Skill is managed separately. Remove it through the same agent
+and project or user scope in the Agent Skills installer when it is no longer
+needed; uninstalling the CLI package does not remove it.
+
+The htmlview CLI itself created no project files. A project-scoped Agent Skill
+is the installer-managed exception described above. To remove all private
+htmlview state—including
 pending annotation drafts/feedback, retry tombstones, ownership records, and
 bounded diagnostic logs—delete the applicable path only after the supervisor
 exits:

@@ -149,6 +149,7 @@ try {
     "docs/INSTALL.md",
     "LICENSE",
     "README.md",
+    "skills/htmlview/SKILL.md",
     "THIRD_PARTY_NOTICES.md",
   ])
     assert.equal(paths.has(required), true, `package is missing ${required}`);
@@ -179,6 +180,9 @@ try {
     "docs/THREAT_MODEL.md",
     "docs/validation/browser-origin.md",
     "package.json",
+    "skills/htmlview/SKILL.md",
+    "skills/htmlview/agents/openai.yaml",
+    "skills/htmlview/references/review-loop.md",
   ]);
   for (const file of paths)
     assert.equal(
