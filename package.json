@@ -34,7 +34,7 @@
   },
   "scripts": {
     "build": "tsc -p tsconfig.json && node scripts/build.mjs",
-    "check": "pnpm run format:check && pnpm run lint && pnpm run typecheck && pnpm test && pnpm run validate:docs && pnpm run build && pnpm run validate:build && pnpm run test:e2e && pnpm run validate:browser-origin && pnpm run validate:interoperability && pnpm run validate:package",
+    "check": "pnpm run format:check && pnpm run lint && pnpm run typecheck && pnpm test && pnpm run validate:docs && pnpm run build && pnpm run validate:build && pnpm run validate:codex:unit && pnpm run test:e2e && pnpm run validate:browser-origin && pnpm run validate:interoperability && pnpm run validate:package",
     "example:standalone": "pnpm run build && node scripts/run-example.mjs standalone",
     "example:relative": "pnpm run build && node scripts/run-example.mjs relative",
     "example:root": "pnpm run build && node scripts/run-example.mjs root",
@@ -51,6 +51,8 @@
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.test.json && effect-language-service diagnostics --project tsconfig.test.json --strict",
     "validate:browser-origin": "pnpm --silent run build && playwright test --config validation/browser-origin/playwright.config.mjs",
     "validate:build": "node --test validation/build/*.test.mjs",
+    "validate:codex": "pnpm --silent run validate:codex:unit && node validation/codex-agent/agent-loop.mjs",
+    "validate:codex:unit": "node --test validation/codex-agent/*.test.mjs",
     "validate:docs": "node --test validation/docs/*.test.mjs && node validation/docs/check-links.mjs",
     "validate:interoperability": "pnpm --silent run build && playwright test --config validation/interoperability/playwright.config.mjs",
     "validate:browser-use": "pnpm --silent run build && bash validation/interoperability/run-browser-use.sh",

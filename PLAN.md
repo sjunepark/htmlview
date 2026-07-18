@@ -39,7 +39,12 @@ automatic replacements are promoted only after authenticated probe readiness,
 and shell polling now has explicit active, hidden-page paused, and terminal
 phases rather than an unbounded reconnect path. Source-checkout feedback stays
 behind the example wrapper without exposing the private state-directory
-override.
+override. A deterministic browser-to-waiting-CLI-to-refresh test now closes the
+complete feedback-loop evidence in the normal gate. A separate source-checkout
+`validate:codex` evaluation uses a freshly installed package and ephemeral
+Codex session to prove that a real coding agent can consume, apply, acknowledge,
+and visibly refresh one controlled feedback batch without coupling validation
+to the developer's active session.
 
 Documentation now has explicit ownership and current-versus-target status; see
 [`docs/README.md`](docs/README.md). There is no external blocker.
@@ -130,6 +135,22 @@ automatically.
 
 ### 2026-07-18
 
+- Added release-gated browser coverage for a waiting CLI consumer receiving a
+  sent element comment, applying the edit, refreshing the live review and raw
+  bytes, and acknowledging the durable cursor.
+- Added the opt-in `pnpm run validate:codex` acceptance evaluation. It packs and
+  installs htmlview in an isolated temporary fixture, submits controlled browser
+  feedback, runs a fresh ephemeral `codex exec`, and checks the exact edit,
+  acknowledgement, refresh, raw response, and cleanup. Model credentials are
+  excluded from every setup and htmlview subprocess; sandboxed commands can
+  reach only the temporary private control socket through an exact network-proxy
+  allowlist. A least-privilege permission profile now limits reads to the fixture,
+  installed package, runtime tools, and private state, limits writes to the
+  served fixture subtree and isolated private state, and proves the filesystem
+  and socket boundary with pre-agent canaries. Agent timeout and output limits
+  terminate the complete process group so descendants cannot retain cleanup
+  pipes. The hardened live acceptance evaluation passes with the installed
+  Codex CLI.
 - Addressed PR review findings in the served-resource refresh path: confirmed
   entry revisions now reset the tracked-resource generation, candidate assets
   are force-read as an accumulated set before publication, review assets bypass

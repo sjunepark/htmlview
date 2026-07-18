@@ -274,6 +274,104 @@ test("a human can deliver durable element and page feedback without changing raw
   }
 });
 
+test("a waiting CLI consumer can apply, acknowledge, and refresh one browser feedback batch", async ({
+  page,
+}) => {
+  const temporary = await mkdtemp(path.join(tmpdir(), "hv-review-loop-"));
+  const root = path.join(temporary, "root");
+  const entry = path.join(root, "report.html");
+  const state = path.join(temporary, "state");
+  const initial =
+    '<!doctype html><html><body><button id="save">Save</button><p>Keep this text</p></body></html>\n';
+  const changed = initial.replace(">Save<", ">Submit report<");
+  const environment = {
+    ...process.env,
+    HTMLVIEW_STATE_DIR: state,
+    HTMLVIEW_IDLE_MS: "10000",
+  };
+  delete environment.NO_COLOR;
+  delete environment.FORCE_COLOR;
+  let waitingFeedback;
+
+  await mkdir(root);
+  await writeFile(entry, initial);
+
+  try {
+    const served = await command(environment, "serve", entry, "--root", root);
+    const opened = await command(environment, "review", served.session.id);
+    await page.goto(opened.review.url);
+    const content = page.frameLocator("#content");
+    await expect(page.locator("#live")).toHaveText("Annotation tools ready");
+    await expect(content.locator("#save")).toHaveText("Save");
+
+    await content.locator("#save").click();
+    await expect(page.locator("#target-label")).toHaveText(
+      "button · untrusted page context",
+    );
+    await page
+      .locator("#comment")
+      .fill(
+        "Change the button text from Save to exactly Submit report. Do not change any other content.",
+      );
+    await page.getByRole("button", { name: "Add draft" }).click();
+    await expect(page.locator(".draft")).toHaveCount(1);
+
+    waitingFeedback = command(
+      environment,
+      "feedback",
+      opened.review.id,
+      "--wait",
+    );
+    waitingFeedback.catch(() => undefined);
+
+    await page.getByRole("button", { name: "Send selected" }).click();
+    await expect(page.locator("#live")).toHaveText("1 draft sent");
+    const delivered = await waitingFeedback;
+    expect(delivered).toMatchObject({
+      review: { id: opened.review.id, status: "ready" },
+      count: 1,
+      feedback: [
+        {
+          kind: "element",
+          comment:
+            "Change the button text from Save to exactly Submit report. Do not change any other content.",
+          entry: "/report.html",
+          anchor: { selector: "#save", tag: "button", text: "Save" },
+        },
+      ],
+    });
+    expect(delivered.cursor).toBeGreaterThan(0);
+
+    await writeFile(entry, changed);
+    await expect(content.locator("#save")).toHaveText("Submit report");
+    await expect(content.locator("p")).toHaveText("Keep this text");
+    await expect(page.locator("#live")).toHaveText("Annotation tools ready");
+    expect(
+      await fetch(served.session.url).then((response) => response.text()),
+    ).toBe(changed);
+
+    const acknowledged = await command(
+      environment,
+      "feedback",
+      opened.review.id,
+      "--after",
+      String(delivered.cursor),
+    );
+    expect(acknowledged).toMatchObject({
+      review: { id: opened.review.id, status: "ready" },
+      cursor: delivered.cursor,
+      count: 0,
+      feedback: [],
+    });
+  } finally {
+    await execute(process.execPath, [cli, "stop", "--all", "--json"], {
+      env: environment,
+    }).catch(() => undefined);
+    await waitingFeedback?.catch(() => undefined);
+    await rm(temporary, { recursive: true, force: true });
+  }
+});
+
 test("an authored base URL cannot redirect the immutable review probe", async ({
   page,
 }) => {

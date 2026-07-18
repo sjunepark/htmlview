@@ -98,6 +98,40 @@ Neither controller is imported by the runtime or included in the published
 package. Before `0.1.0`, the same independence requirement also covers the
 complete review/send/feedback browser flow.
 
+## Codex agent acceptance validation
+
+From a source checkout, `pnpm run validate:codex` performs an opt-in acceptance
+evaluation with a fresh ephemeral `codex exec` session. It builds, packs, and
+installs htmlview under a temporary prefix; submits one element-targeted comment
+through Playwright; lets Codex retrieve and acknowledge that batch through the
+installed CLI; and verifies the exact source edit, raw bytes, and automatic
+review refresh.
+
+This evaluation is intentionally separate from `pnpm run check`: it requires
+Playwright Chromium, an installed and authenticated Codex CLI with permission
+profile support, model capacity, and a network call. `HTMLVIEW_CODEX_BINARY` may
+select another Codex executable, `HTMLVIEW_CODEX_MODEL` may select a model, and
+`HTMLVIEW_CODEX_TIMEOUT_MS` may change the default five-minute agent timeout.
+
+The harness removes model credentials from build, pack, install, Git, browser,
+htmlview, and sandbox-probe subprocesses; only the explicit `codex exec` child
+receives the caller's Codex environment. Generated commands inherit none of that
+caller environment; the harness sets only the installed-package path and
+temporary private-state location, while Codex may add its own sandbox and proxy
+variables. A pre-agent sentinel verifies that caller variables remain excluded.
+
+Model-generated commands run under a custom least-privilege permission profile.
+The fixture workspace is read-only except for its served `site` subtree; the
+installed package is read-only; and the isolated private state is writable so
+the CLI can maintain its permission and lifecycle invariants. Unrelated user and
+temporary paths outside Codex's minimal platform/runtime roots are inaccessible.
+The matching network profile permits only the temporary htmlview control socket.
+Before starting the model, the harness proves allowed fixture reads and writes,
+denies an outside read and write, completes one installed-CLI read through the
+allowed socket, and rejects a second Unix socket. The timeout owns a separate
+process group, escalates from termination to forced termination, caps captured
+output, and waits for descendant-held pipes to close before cleanup.
+
 ## Agent Skill evaluation
 
 Version one does not ship an Agent Skill. The structured home view and native
