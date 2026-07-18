@@ -23,7 +23,6 @@
 * harden review asset observation ([8845438](https://github.com/sjunepark/htmlview/commit/8845438eef0caea9e27171f4976c2f9456e402c5))
 * harden review lifecycle and browser boundaries ([47c7452](https://github.com/sjunepark/htmlview/commit/47c74520002c80eeb7d3aeea2c591a639eb22f28))
 * harden reviewed serving contracts ([2bbfbff](https://github.com/sjunepark/htmlview/commit/2bbfbff1e830346e4ca07b874ae7d52dbfbb55ed))
-* permit Release Please generated formatting ([11c10ae](https://github.com/sjunepark/htmlview/commit/11c10aea83005c1f7a161a72ce03c528f1e5688b))
 * permit Release Please generated formatting ([6d86691](https://github.com/sjunepark/htmlview/commit/6d8669191a86a712a6f29941ba848d341f9a3a46))
 * preserve review interaction state ([831efac](https://github.com/sjunepark/htmlview/commit/831efacd7e25f0ce109cb6827bda083e1a972700))
 * reload served review assets safely ([292e727](https://github.com/sjunepark/htmlview/commit/292e727c1428e4361605d2276c4cd732b5e2cab4))
