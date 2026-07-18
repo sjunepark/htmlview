@@ -7,11 +7,13 @@ async function read(relativePath) {
 }
 
 test("Release Please owns one root npm package", async () => {
-  const [packageText, configText, manifestText] = await Promise.all([
-    read("package.json"),
-    read("release-please-config.json"),
-    read(".release-please-manifest.json"),
-  ]);
+  const [packageText, configText, manifestText, prettierIgnore] =
+    await Promise.all([
+      read("package.json"),
+      read("release-please-config.json"),
+      read(".release-please-manifest.json"),
+      read(".prettierignore"),
+    ]);
   const packageJson = JSON.parse(packageText);
   const config = JSON.parse(configText);
   const manifest = JSON.parse(manifestText);
@@ -31,6 +33,8 @@ test("Release Please owns one root npm package", async () => {
     manifest,
     Object.keys(manifest).length === 0 ? {} : { ".": packageJson.version },
   );
+  assert.match(prettierIgnore, /^\.release-please-manifest\.json$/m);
+  assert.match(prettierIgnore, /^CHANGELOG\.md$/m);
 });
 
 test("release workflow publishes only the Release Please output through OIDC", async () => {
