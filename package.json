@@ -1,9 +1,17 @@
 {
-  "name": "@sejunpark/htmlview",
+  "name": "@sjunepark/htmlview",
   "version": "0.1.0",
   "packageManager": "pnpm@11.13.0",
   "description": "Serve local HTML through confined loopback HTTP",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/sjunepark/htmlview.git"
+  },
+  "homepage": "https://github.com/sjunepark/htmlview#readme",
+  "bugs": {
+    "url": "https://github.com/sjunepark/htmlview/issues"
+  },
   "type": "module",
   "bin": {
     "htmlview": "dist/cli.js"
@@ -20,6 +28,7 @@
     "docs/INSTALL.md",
     "docs/INTEROPERABILITY.md",
     "docs/PRODUCT.md",
+    "docs/RELEASING.md",
     "docs/SECURITY_VALIDATION.md",
     "docs/THREAT_MODEL.md",
     "docs/decisions",
@@ -27,6 +36,7 @@
     "README.md",
     "ARCHITECTURE.md",
     "CONTEXT.md",
+    "CHANGELOG.md",
     "LICENSE",
     "THIRD_PARTY_NOTICES.md"
   ],

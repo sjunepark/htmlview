@@ -3,9 +3,8 @@
 > **Status:** This is the accepted `0.1.0` target. Raw serving, Effect CLI,
 > foreground/private diagnostics, annotation runtime, and automatic
 > review refresh are implemented and release validation is complete.
-> The package remains unpublished. See
-> [the repository plan](https://github.com/sjunepark/htmlview/blob/main/PLAN.md)
-> for implementation status.
+> See [the repository plan](https://github.com/sjunepark/htmlview/blob/main/PLAN.md)
+> for current publication status.
 
 ## Problem
 

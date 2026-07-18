@@ -172,10 +172,12 @@ try {
     "docs/decisions/0007-adopt-effect-v4.md",
     "docs/decisions/0008-separate-raw-serving-from-instrumented-review.md",
     "docs/decisions/0009-adopt-effect-cli-and-logging.md",
+    "docs/decisions/0010-automate-releases-with-release-please.md",
     "docs/decisions/README.md",
     "docs/INSTALL.md",
     "docs/INTEROPERABILITY.md",
     "docs/PRODUCT.md",
+    "docs/RELEASING.md",
     "docs/SECURITY_VALIDATION.md",
     "docs/THREAT_MODEL.md",
     "docs/validation/browser-origin.md",
@@ -184,6 +186,7 @@ try {
     "skills/htmlview/agents/openai.yaml",
     "skills/htmlview/references/review-loop.md",
   ]);
+  if (paths.has("CHANGELOG.md")) exactFiles.add("CHANGELOG.md");
   for (const file of paths)
     assert.equal(
       exactFiles.has(file),

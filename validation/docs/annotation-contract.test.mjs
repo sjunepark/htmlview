@@ -22,18 +22,21 @@ test("public docs make annotation a required 0.1.0 feature", async () => {
     readme,
     /Ready reviews now refresh automatically after confirmed entry\s+or bounded linked-resource changes/s,
   );
-  assert.match(readme, /release-ready but\s+has not been published/s);
+  assert.match(readme, /implemented `0\.1\.0` contract is release-ready/);
   assert.doesNotMatch(readme, /runtime is not implemented/);
   assert.doesNotMatch(readme, /Human annotations are a possible later layer/);
   assert.match(
     install,
     /Annotation commands and the review runtime are.*implemented/s,
   );
-  assert.match(install, /including bounded entry and linked-resource refresh/);
-  assert.match(install, /complete.*release validation matrix passes/s);
+  assert.match(
+    install,
+    /including[\s>]+bounded entry and linked-resource refresh/,
+  );
+  assert.match(install, /complete[\s>]*release[\s>]*validation matrix passes/);
   assert.match(install, /^## Review an installed page$/m);
-  assert.match(install, /pnpm pack --json --pack-destination/);
-  assert.match(install, /npm install --global "\$candidate_dir\/\$tarball"/);
+  assert.match(install, /node scripts\/pack-release\.mjs "\$candidate_dir"/);
+  assert.match(install, /npm install --global "\$tarball"/);
   assert.match(install, /htmlview review "\$session" --json/);
   assert.match(install, /htmlview feedback --wait --json "\$review_id"/);
   assert.match(install, /external browser/);

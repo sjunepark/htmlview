@@ -1,16 +1,17 @@
 # Install, upgrade, and remove
 
-> **Status:** The package is not published. These instructions describe the
-> accepted `0.1.0` interface. Annotation commands and the review runtime are
-> implemented, including bounded entry and linked-resource refresh, and the
-> complete release validation matrix passes.
+> **Status:** These instructions describe the accepted `0.1.0` interface.
+> Annotation commands and the review runtime are implemented, including
+> bounded entry and linked-resource refresh, and the complete release
+> validation matrix passes. See the repository plan for current publication
+> status.
 
 `htmlview` is distributed as an npm package containing compiled JavaScript. It
 supports macOS and glibc-based Linux environments supported by Node.js 22,
 on arm64 or x64, with Node.js 22.13 or newer.
 
-The package identity is `@sejunpark/htmlview`; the installed executable remains
-`htmlview`. The package is not published yet.
+The package identity is `@sjunepark/htmlview`; the installed executable remains
+`htmlview`.
 
 ## Install
 
@@ -18,7 +19,7 @@ Install the command for the current user with the npm prefix your environment
 already uses:
 
 ```sh
-npm install --global @sejunpark/htmlview
+npm install --global @sjunepark/htmlview
 htmlview --version
 ```
 
@@ -29,7 +30,7 @@ shell completions. `--json` applies to domain commands, not these meta options.
 For one-shot use without a persistent global install:
 
 ```sh
-npx --yes @sejunpark/htmlview serve ./report.html
+npx --yes @sjunepark/htmlview serve ./report.html
 ```
 
 The npm package does not include a browser. Supply a browser controller
@@ -42,7 +43,7 @@ but does not edit any agent configuration. After a global CLI installation,
 inspect and install the version-matched skill with the Agent Skills installer:
 
 ```sh
-skill_source="$(npm root --global)/@sejunpark/htmlview/skills"
+skill_source="$(npm root --global)/@sjunepark/htmlview/skills"
 npx skills add "$skill_source" --list
 ```
 
@@ -67,13 +68,13 @@ same rule for other clients.
 
 ## Review an installed page
 
-Until the package is published, create and install the candidate tarball from a
-source checkout first:
+When validating a source checkout instead of the registry release, create and
+install a candidate tarball first:
 
 ```sh
 candidate_dir="$(mktemp -d)"
-tarball="$(pnpm pack --json --pack-destination "$candidate_dir" | node -e 'const v=JSON.parse(require("fs").readFileSync(0,"utf8")); process.stdout.write(v.filename)')"
-npm install --global "$candidate_dir/$tarball"
+tarball="$(node scripts/pack-release.mjs "$candidate_dir")"
+npm install --global "$tarball"
 htmlview --version
 ```
 
@@ -107,7 +108,7 @@ CLI use the same release:
 
 ```sh
 htmlview stop --all
-npm install --global @sejunpark/htmlview@latest
+npm install --global @sjunepark/htmlview@latest
 htmlview --version
 ```
 
@@ -115,14 +116,14 @@ After an upgrade, recompute the skill source and refresh only the scope that was
 installed originally. Run the project command from the intended project root:
 
 ```sh
-skill_source="$(npm root --global)/@sejunpark/htmlview/skills"
+skill_source="$(npm root --global)/@sjunepark/htmlview/skills"
 npx skills add "$skill_source" --skill htmlview --copy
 ```
 
 For an existing user-scoped installation, refresh with the global flag instead:
 
 ```sh
-skill_source="$(npm root --global)/@sejunpark/htmlview/skills"
+skill_source="$(npm root --global)/@sjunepark/htmlview/skills"
 npx skills add "$skill_source" --skill htmlview --copy --global
 ```
 
@@ -144,7 +145,7 @@ Stop sessions and the supervisor, then uninstall the package:
 
 ```sh
 htmlview stop --all
-npm uninstall --global @sejunpark/htmlview
+npm uninstall --global @sjunepark/htmlview
 ```
 
 A copied Agent Skill is managed separately. Remove it through the same agent
