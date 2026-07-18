@@ -136,6 +136,18 @@ automatically.
 
 ### 2026-07-18
 
+- Addressed PR #7 review findings across the Codex acceptance harness and Agent
+  Skill guidance. Cleanup now fails before allocation on unsupported platforms,
+  preserves the original Host on loopback raw checks, retains every primary and
+  cleanup failure, and removes private state only after a nonce- and
+  process-identity-bound supervisor exit. Linux process-group checks ignore
+  terminated zombies without weakening live-descendant detection.
+- Made process escalation tests readiness-driven, documented the exact supported
+  acceptance platforms and project/user skill scopes, and included an actionable
+  unpublished-candidate install path in the copied skill. The bounded
+  implementation/design/diet review is clean; `pnpm run check`, the authenticated
+  `pnpm run validate:codex`, Linux packaged-artifact validation, documentation
+  validation, and Node 22/24 Linux process tests—including throttled runs—pass.
 - Added a portable, manually invoked `htmlview` Agent Skill to the npm artifact.
   It keeps live CLI help authoritative, chooses the narrowest serving grant,
   preserves the raw/review fidelity boundary, and discloses the durable
