@@ -60,8 +60,11 @@ htmlview feedback --wait --json "$review_id"
 ```
 
 Use **Send selected** in the review to keep iterating. Editing the original
-entry or a linked resource loaded by the review automatically refreshes only
-the instrumented review iframe; the raw URL remains byte-faithful and passive.
+entry automatically refreshes the instrumented review iframe. Linked resources
+are tracked only when an authorized response is admitted within the observer's
+size and count bounds and completes successfully; confirmed changes also
+refresh the iframe. Other resources require a manual or entry-driven reload.
+The raw URL remains byte-faithful and passive.
 A later feedback wait acknowledges the prior
 batch by passing its returned cursor with `--after <cursor>`. See
 [Browser-controller interoperability](INTEROPERABILITY.md#human-review-workflow-010-target)

@@ -264,7 +264,12 @@ hash through a small observer interface. A pre-stream admission check excludes
 the entry, oversized bodies, and resources beyond the tracking cap before any
 observer hashing. Admission reserves capacity until successful completion or
 abort, so concurrent requests cannot race past the cap; raw serving does not
-use that seam.
+use that seam. A confirmed entry revision starts a fresh resource generation:
+the observer closes the prior watchers, releases their capacity, and ignores
+late completions from the superseded document. Review-content assets use
+`no-store` responses and bypass conditional validators so a confirmed byte
+change cannot be hidden by stale browser cache state; raw cache behavior is
+unchanged.
 The observer watches only registered paths' parent directories and polls every
 registered path as the authoritative fallback. It never recursively watches or
 enumerates the grant.

@@ -79,7 +79,11 @@ explicit review attached to a live raw session:
   rejects resources outside those bounds before the handler hashes their bodies,
   reserves concurrent admissions until their response completes or aborts,
   watches only those exact paths' parent directories and retains polling as the
-  authoritative fallback; it never recursively watches the serving grant.
+  authoritative fallback; it never recursively watches the serving grant. A
+  confirmed entry revision resets that tracked-resource generation and ignores
+  late completions from the superseded document. Review-content assets use
+  `no-store` responses without conditional 304 reuse; raw cache behavior stays
+  unchanged.
 - After each hint or fallback check, reauthorize the current target and confirm
   its bytes before changing the deterministic entry or aggregate resource
   revision. This supports atomic replacement and symlink retargeting while

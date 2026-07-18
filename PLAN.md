@@ -130,6 +130,15 @@ automatically.
 
 ### 2026-07-18
 
+- Addressed PR review findings in the served-resource refresh path: confirmed
+  entry revisions now reset the tracked-resource generation, candidate assets
+  are force-read as an accumulated set before publication, review assets bypass
+  stale validators, and incomplete or disconnected responses release
+  observation capacity.
+- Added regression coverage for generation reset, unchanged-metadata races,
+  short response bodies, retry-exhaustion recovery, and review-only cache
+  behavior. The focused suites, complete `pnpm run check` gate, and Node 22
+  Linux installed-package validation pass.
 - Revalidated commit `292e727c1428e4361605d2276c4cd732b5e2cab4` on macOS
   26.5.1 arm64 with Node 24.15.0 and pnpm 11.13.0. The ready-review RSS sample
   registered one linked stylesheet and confirmed an observed byte change before
@@ -137,10 +146,10 @@ automatically.
 - Refreshed package, cold-command, readiness, and RSS measurements against the
   Phase 10 baseline. One ready review with an active linked-resource observer
   adds a median 1,392 KiB over the current empty supervisor.
-- Final implementation and diet review found no material defect, validation
-  gap, or unearned abstraction. The completed-body observation handshake,
-  separate bounded entry/asset state, opaque aggregate revision, navigation
-  epoch, and watcher-plus-polling fallback remain justified.
+- The pre-PR implementation and diet review found no material defect,
+  validation gap, or unearned abstraction. The completed-body observation
+  handshake, separate bounded entry/asset state, opaque aggregate revision,
+  navigation epoch, and watcher-plus-polling fallback remain justified.
 - Final release matrix: `pnpm run check`, `pnpm run validate:browser-use`,
   `pnpm run validate:package:linux`, `pnpm audit`, `pnpm run validate:docs`, and
   `git diff --check` pass. A registry read confirms `0.1.0` remains unpublished.
